@@ -9,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD environment variable is required}
 
   # Comment out API and Dashboard for local development
   # They are built and run locally during dev

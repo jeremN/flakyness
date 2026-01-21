@@ -12,7 +12,7 @@ services:
     environment:
       POSTGRES_DB: flackyness
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD environment variable is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -37,7 +37,7 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://postgres:${DB_PASSWORD:-postgres}@postgres:5432/flackyness
+      DATABASE_URL: postgres://postgres:${DB_PASSWORD}@postgres:5432/flackyness
       API_PORT: 8080
       API_HOST: 0.0.0.0
       DASHBOARD_URL: http://localhost:3000

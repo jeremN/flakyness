@@ -1,0 +1,172 @@
+@import 'tailwindcss';
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Colors */
+  --color-bg: #F9F9FB;
+  --color-bg-sidebar: #FFFFFF;
+  --color-card: #FFFFFF;
+  --color-text: #1F2937;
+  --color-text-muted: #6B7280;
+  --color-text-light: #9CA3AF;
+  --color-border: #E5E7EB;
+  --color-border-light: #F3F4F6;
+  
+  /* Accents */
+  --color-accent-purple: #8B5CF6;
+  --color-accent-purple-light: #EDE9FE;
+  --color-accent-orange: #F97316;
+  --color-accent-orange-light: #FFF7ED;
+  --color-accent-green: #10B981;
+  --color-accent-green-light: #ECFDF5;
+  --color-accent-red: #EF4444;
+  --color-accent-red-light: #FEF2F2;
+  --color-accent-blue: #3B82F6;
+  --color-accent-blue-light: #EFF6FF;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  /* Card styles */
+  .card {
+    background: var(--color-card);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+  }
+  
+  /* Pill button styles */
+  .pill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-full);
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 150ms ease;
+  }
+  
+  .pill-btn-primary {
+    background: #000;
+    color: #fff;
+  }
+  
+  .pill-btn-primary:hover {
+    background: #1f2937;
+  }
+  
+  .pill-btn-ghost {
+    background: var(--color-card);
+    color: var(--color-text-muted);
+    border: 1px solid var(--color-border);
+  }
+  
+  .pill-btn-ghost:hover {
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+  
+  /* Status badges */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--radius-full);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  
+  .badge-orange {
+    background: var(--color-accent-orange-light);
+    color: var(--color-accent-orange);
+  }
+  
+  .badge-green {
+    background: var(--color-accent-green-light);
+    color: var(--color-accent-green);
+  }
+  
+  .badge-red {
+    background: var(--color-accent-red-light);
+    color: var(--color-accent-red);
+  }
+  
+  .badge-purple {
+    background: var(--color-accent-purple-light);
+    color: var(--color-accent-purple);
+  }
+  
+  .badge-gray {
+    background: var(--color-border-light);
+    color: var(--color-text-muted);
+  }
+  
+  /* Icon circles */
+  .icon-circle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--radius-full);
+    font-size: 1rem;
+  }
+  
+  .icon-circle-purple {
+    background: var(--color-accent-purple-light);
+    color: var(--color-accent-purple);
+  }
+  
+  .icon-circle-orange {
+    background: var(--color-accent-orange-light);
+    color: var(--color-accent-orange);
+  }
+  
+  .icon-circle-green {
+    background: var(--color-accent-green-light);
+    color: var(--color-accent-green);
+  }
+  
+  .icon-circle-blue {
+    background: var(--color-accent-blue-light);
+    color: var(--color-accent-blue);
+  }
+}
+
+@layer utilities {
+  .text-muted {
+    color: var(--color-text-muted);
+  }
+  
+  .text-light {
+    color: var(--color-text-light);
+  }
+  
+  .border-subtle {
+    border-color: var(--color-border);
+  }
+  
+  .border-subtle-light {
+    border-color: var(--color-border-light);
+  }
+}

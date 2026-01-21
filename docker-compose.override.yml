@@ -1,0 +1,22 @@
+# Development overrides
+# This file is automatically used with `docker compose up`
+
+services:
+  # In development, only run the database via Docker
+  # Run API and Dashboard locally with `pnpm dev`
+  
+  postgres:
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+
+  # Comment out API and Dashboard for local development
+  # They are built and run locally during dev
+  api:
+    profiles:
+      - production
+  
+  dashboard:
+    profiles:
+      - production

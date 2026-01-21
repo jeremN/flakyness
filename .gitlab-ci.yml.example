@@ -1,0 +1,68 @@
+# Example GitLab CI Configuration for Flackyness Integration
+#
+# This shows how to run Playwright tests and upload results to Flackyness
+#
+# Required CI/CD Variables:
+#   - FLACKYNESS_API: Your Flackyness API URL (e.g., https://flackyness.example.com)
+#   - FLACKYNESS_TOKEN: Your project's API token
+
+stages:
+  - test
+
+variables:
+  # Flackyness configuration
+  FLACKYNESS_API: "https://flackyness.example.com"
+
+e2e-tests:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.40.0-jammy
+  
+  before_script:
+    - npm ci
+  
+  script:
+    # Run Playwright tests with JSON reporter
+    - npx playwright test --reporter=json --output-file=playwright-results.json
+  
+  after_script:
+    # Upload results to Flackyness (runs even if tests fail)
+    - |
+      if [ -f playwright-results.json ]; then
+        echo "Uploading test results to Flackyness..."
+        curl -X POST "${FLACKYNESS_API}/api/v1/reports" \
+          -H "Authorization: Bearer ${FLACKYNESS_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d @playwright-results.json \
+          --data-urlencode "project=${CI_PROJECT_NAME}" \
+          --data-urlencode "branch=${CI_COMMIT_REF_NAME}" \
+          --data-urlencode "commit=${CI_COMMIT_SHA}" \
+          --data-urlencode "pipeline=${CI_PIPELINE_ID}" \
+          --fail-with-body || echo "Warning: Failed to upload results"
+      else
+        echo "Warning: No test results file found"
+      fi
+  
+  artifacts:
+    when: always
+    paths:
+      - playwright-results.json
+      - playwright-report/
+    reports:
+      junit: playwright-results.xml  # Optional: For GitLab test reports
+    expire_in: 7 days
+  
+  # Retry on infrastructure failures
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# Optional: Scheduled job to run tests regularly and build history
+nightly-e2e:
+  extends: e2e-tests
+  only:
+    - schedules
+  variables:
+    # You might want more retries for scheduled runs
+    PLAYWRIGHT_RETRIES: "2"

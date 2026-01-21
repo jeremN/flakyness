@@ -1,0 +1,23 @@
+{
+  "name": "flackyness",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Flaky test tracking system for CI/CD",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test",
+    "db:generate": "pnpm --filter api db:generate",
+    "db:migrate": "pnpm --filter api db:migrate",
+    "db:studio": "pnpm --filter api db:studio",
+    "db:seed": "pnpm --filter api db:seed",
+    "simulate:ci": "pnpm --filter api simulate:ci",
+    "test:mvp": "./scripts/test-mvp.sh"
+  },
+  "engines": {
+    "node": ">=24",
+    "pnpm": "^10.20.0"
+  },
+  "packageManager": "pnpm@10.20.0"
+}

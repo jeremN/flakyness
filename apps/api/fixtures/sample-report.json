@@ -1,0 +1,200 @@
+{
+  "config": {
+    "configFile": "/project/playwright.config.ts",
+    "rootDir": "/project",
+    "fullyParallel": true,
+    "workers": 4,
+    "version": "1.40.0"
+  },
+  "suites": [
+    {
+      "title": "e2e/auth.spec.ts",
+      "file": "e2e/auth.spec.ts",
+      "suites": [
+        {
+          "title": "Login flow",
+          "specs": [
+            {
+              "title": "should login with valid credentials",
+              "ok": true,
+              "tags": [],
+              "location": {
+                "file": "e2e/auth.spec.ts",
+                "line": 5,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "status": "passed",
+                  "duration": 2500,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:00.000Z",
+                  "attachments": []
+                }
+              ]
+            },
+            {
+              "title": "should show error on invalid credentials",
+              "ok": true,
+              "tags": [],
+              "location": {
+                "file": "e2e/auth.spec.ts",
+                "line": 15,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "status": "passed",
+                  "duration": 1800,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:01.000Z",
+                  "attachments": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "e2e/dashboard.spec.ts",
+      "file": "e2e/dashboard.spec.ts",
+      "suites": [
+        {
+          "title": "Dashboard",
+          "specs": [
+            {
+              "title": "should load dashboard",
+              "ok": true,
+              "tags": [],
+              "location": {
+                "file": "e2e/dashboard.spec.ts",
+                "line": 5,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "status": "passed",
+                  "duration": 3200,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:00.500Z",
+                  "attachments": []
+                }
+              ]
+            },
+            {
+              "title": "should filter by date",
+              "ok": true,
+              "tags": [],
+              "location": {
+                "file": "e2e/dashboard.spec.ts",
+                "line": 20,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 3,
+                  "status": "failed",
+                  "duration": 2100,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:02.000Z",
+                  "error": {
+                    "message": "Timeout: locator.click: Timeout 5000ms exceeded",
+                    "stack": "Error: Timeout 5000ms exceeded\n    at e2e/dashboard.spec.ts:25:15"
+                  },
+                  "attachments": []
+                },
+                {
+                  "workerIndex": 3,
+                  "status": "passed",
+                  "duration": 2400,
+                  "retry": 1,
+                  "startTime": "2024-12-11T10:00:05.000Z",
+                  "attachments": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "e2e/checkout.spec.ts",
+      "file": "e2e/checkout.spec.ts",
+      "suites": [
+        {
+          "title": "Checkout",
+          "specs": [
+            {
+              "title": "should add item to cart",
+              "ok": true,
+              "tags": [],
+              "location": {
+                "file": "e2e/checkout.spec.ts",
+                "line": 5,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "status": "passed",
+                  "duration": 2800,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:03.000Z",
+                  "attachments": []
+                }
+              ]
+            },
+            {
+              "title": "should complete purchase",
+              "ok": false,
+              "tags": [],
+              "location": {
+                "file": "e2e/checkout.spec.ts",
+                "line": 15,
+                "column": 5
+              },
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "status": "failed",
+                  "duration": 5500,
+                  "retry": 0,
+                  "startTime": "2024-12-11T10:00:04.000Z",
+                  "error": {
+                    "message": "expect(received).toBeVisible()\n\nExpected: visible\nReceived: hidden",
+                    "stack": "Error: expect(received).toBeVisible()\n    at e2e/checkout.spec.ts:25:30"
+                  },
+                  "attachments": []
+                },
+                {
+                  "workerIndex": 1,
+                  "status": "failed",
+                  "duration": 5600,
+                  "retry": 1,
+                  "startTime": "2024-12-11T10:00:10.000Z",
+                  "error": {
+                    "message": "expect(received).toBeVisible()\n\nExpected: visible\nReceived: hidden",
+                    "stack": "Error: expect(received).toBeVisible()\n    at e2e/checkout.spec.ts:25:30"
+                  },
+                  "attachments": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "stats": {
+    "startTime": "2024-12-11T10:00:00.000Z",
+    "duration": 25900,
+    "expected": 4,
+    "unexpected": 1,
+    "flaky": 1,
+    "skipped": 0
+  }
+}

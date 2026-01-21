@@ -1,0 +1,86 @@
+# Flackyness - Full Stack Deployment
+# Usage: docker compose up -d
+
+services:
+  # ==========================================================================
+  # Database
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: flackyness-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: flackyness
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d flackyness"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flackyness
+
+  # ==========================================================================
+  # API (Hono Backend)
+  # ==========================================================================
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: flackyness-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://postgres:${DB_PASSWORD:-postgres}@postgres:5432/flackyness
+      API_PORT: 8080
+      API_HOST: 0.0.0.0
+      DASHBOARD_URL: http://localhost:3000
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - flackyness
+
+  # ==========================================================================
+  # Dashboard (SvelteKit Frontend)
+  # ==========================================================================
+  dashboard:
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+    container_name: flackyness-dashboard
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PUBLIC_API_URL: http://localhost:8080
+      PORT: 3000
+      HOST: 0.0.0.0
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - flackyness
+
+networks:
+  flackyness:
+    driver: bridge
+
+volumes:
+  postgres_data:

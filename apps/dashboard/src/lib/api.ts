@@ -75,3 +75,12 @@ export async function getTestHistory(
     `/api/v1/tests/${encodedName}/history?project=${projectId}`
   );
 }
+
+export async function getFlakeTrend(
+  projectId: string,
+  days: number = 7
+): Promise<{ days: string[]; rates: number[] }> {
+  return fetchJson<{ days: string[]; rates: number[] }>(
+    `/api/v1/projects/${projectId}/trend?days=${days}`
+  );
+}

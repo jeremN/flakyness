@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
@@ -20,7 +20,7 @@ export function generateToken(): string {
 
 /**
  * Bearer token authentication middleware for project tokens
- * 
+ *
  * Extracts the Bearer token from Authorization header,
  * hashes it, and looks up the corresponding project.
  * Sets `c.set('project', project)` on success.
@@ -28,7 +28,7 @@ export function generateToken(): string {
 export function projectAuth(): MiddlewareHandler {
   return async (c: Context, next) => {
     const authHeader = c.req.header('Authorization');
-    
+
     if (!authHeader) {
       throw new HTTPException(401, { message: 'Authorization header required' });
     }
@@ -51,29 +51,30 @@ export function projectAuth(): MiddlewareHandler {
 
     // Store project in context for use in route handlers
     c.set('project', project);
-    
+
     await next();
   };
 }
 
 /**
  * Admin authentication middleware
- * 
+ *
  * Validates the ADMIN_TOKEN from environment variables.
- * Use this to protect admin endpoints.
+ * Comparison is done by hashing both tokens so the comparison is always
+ * constant-time and doesn't leak the token length.
  */
 export function adminAuth(): MiddlewareHandler {
   return async (c: Context, next) => {
     const adminToken = process.env.ADMIN_TOKEN;
-    
+
     if (!adminToken) {
-      throw new HTTPException(500, { 
-        message: 'Admin functionality not configured. Set ADMIN_TOKEN environment variable.' 
+      throw new HTTPException(500, {
+        message: 'Admin functionality not configured. Set ADMIN_TOKEN environment variable.',
       });
     }
 
     const authHeader = c.req.header('Authorization');
-    
+
     if (!authHeader) {
       throw new HTTPException(401, { message: 'Authorization header required' });
     }
@@ -84,24 +85,18 @@ export function adminAuth(): MiddlewareHandler {
     }
 
     const token = parts[1];
-    
-    // Constant-time comparison to prevent timing attacks
-    if (token.length !== adminToken.length || !timingSafeEqual(token, adminToken)) {
+
+    // Hash both tokens before comparing — this ensures:
+    // 1. Both buffers are always the same length (32 bytes SHA-256)
+    // 2. No timing leak on token length
+    // 3. Uses Node.js native crypto.timingSafeEqual (constant-time)
+    const tokenHash = createHash('sha256').update(token).digest();
+    const adminTokenHash = createHash('sha256').update(adminToken).digest();
+
+    if (!timingSafeEqual(tokenHash, adminTokenHash)) {
       throw new HTTPException(401, { message: 'Invalid admin token' });
     }
-    
+
     await next();
   };
-}
-
-/**
- * Constant-time string comparison
- */
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
-    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return result === 0;
 }

@@ -72,36 +72,38 @@ app.route('/api/v1/projects', projectsRouter);
 app.route('/api/v1/tests', testsRouter);
 app.route('/api/v1/admin', adminRouter);
 
-// Start server
-const port = parseInt(process.env.API_PORT || '8080', 10);
-const host = process.env.API_HOST || '0.0.0.0';
+// Only start the HTTP server outside of tests (tests use app.request() directly)
+if (!process.env.VITEST) {
+  const port = parseInt(process.env.API_PORT || '8080', 10);
+  const host = process.env.API_HOST || '0.0.0.0';
 
-logger.info('Server starting', { host, port, env: process.env.NODE_ENV || 'development' });
+  logger.info('Server starting', { host, port, env: process.env.NODE_ENV || 'development' });
 
-const server: Server = serve({
-  fetch: app.fetch,
-  port,
-  hostname: host,
-});
-
-// Graceful shutdown
-function shutdown(signal: string) {
-  logger.info(`${signal} received, shutting down gracefully...`);
-  server.close(async () => {
-    logger.info('HTTP server closed');
-    await closeDb();
-    logger.info('Database connections closed');
-    process.exit(0);
+  const server: Server = serve({
+    fetch: app.fetch,
+    port,
+    hostname: host,
   });
 
-  // Force exit after 10 seconds
-  setTimeout(() => {
-    logger.error('Forced shutdown after timeout');
-    process.exit(1);
-  }, 10_000);
-}
+  // Graceful shutdown
+  function shutdown(signal: string) {
+    logger.info(`${signal} received, shutting down gracefully...`);
+    server.close(async () => {
+      logger.info('HTTP server closed');
+      await closeDb();
+      logger.info('Database connections closed');
+      process.exit(0);
+    });
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+    // Force exit after 10 seconds
+    setTimeout(() => {
+      logger.error('Forced shutdown after timeout');
+      process.exit(1);
+    }, 10_000);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
 export default app;

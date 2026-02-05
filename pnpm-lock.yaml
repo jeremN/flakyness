@@ -23,7 +23,7 @@ importers:
         specifier: ^0.36.0
         version: 0.36.4(postgres@3.4.7)
       hono:
-        specifier: ^4.6.0
+        specifier: ^4.9.7
         version: 4.10.8
       hono-rate-limiter:
         specifier: ^0.4.2

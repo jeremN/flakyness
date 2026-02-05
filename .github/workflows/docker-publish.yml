@@ -1,0 +1,64 @@
+name: Docker Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE: ${{ github.repository }}/api
+  DASHBOARD_IMAGE: ${{ github.repository }}/dashboard
+
+jobs:
+  publish:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/api
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.API_IMAGE }}:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
+      - name: Build & push Dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/dashboard
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.DASHBOARD_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.DASHBOARD_IMAGE }}:latest
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}

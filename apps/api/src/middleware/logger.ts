@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import type { Context, Next } from 'hono';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -68,9 +69,9 @@ export const logger = {
   error: (message: string, extra?: Partial<LogEntry>) => log('error', message, extra),
 };
 
-// Generate unique request ID
+// Generate unique request ID (cryptographically random, no collisions)
 function generateRequestId(): string {
-  return Math.random().toString(36).substring(2, 15);
+  return randomUUID();
 }
 
 // Hono middleware for request logging

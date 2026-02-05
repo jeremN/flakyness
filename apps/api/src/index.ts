@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
-import { serve } from '@hono/node-server';
+import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
+import { serve } from '@hono/node-server';
+import type { Server } from 'node:http';
 import 'dotenv/config';
 
 // Custom middleware
 import { requestLogger, logError, logger } from './middleware/logger';
+import { closeDb } from './db';
 
 // Routes
 import reports from './routes/reports';
@@ -24,31 +27,25 @@ app.use('*', cors({
 }));
 app.use('*', secureHeaders());
 
-// Body size limit - prevent memory exhaustion
-app.use('*', async (c, next) => {
-  const contentLength = c.req.header('content-length');
-  const maxSize = 10 * 1024 * 1024; // 10MB
-  
-  if (contentLength && parseInt(contentLength) > maxSize) {
-    throw new HTTPException(413, { 
-      message: 'Payload too large. Maximum size: 10MB' 
-    });
-  }
-  
-  await next();
-});
+// Body size limit - uses Hono's built-in stream-aware middleware (prevents chunked encoding bypass)
+app.use('*', bodyLimit({
+  maxSize: 10 * 1024 * 1024, // 10MB
+  onError: (c) => {
+    return c.json({ error: 'Payload too large. Maximum size: 10MB' }, 413);
+  },
+}));
 
 // Global error handler
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
-    logger.warn('HTTP exception', { 
-      status: err.status, 
+    logger.warn('HTTP exception', {
+      status: err.status,
       message: err.message,
       requestId: c.get('requestId'),
     });
     return c.json({ error: err.message }, err.status);
   }
-  
+
   logError(err, c);
   return c.json({ error: 'Internal server error' }, 500);
 });
@@ -81,11 +78,30 @@ const host = process.env.API_HOST || '0.0.0.0';
 
 logger.info('Server starting', { host, port, env: process.env.NODE_ENV || 'development' });
 
-serve({
+const server: Server = serve({
   fetch: app.fetch,
   port,
   hostname: host,
 });
 
-export default app;
+// Graceful shutdown
+function shutdown(signal: string) {
+  logger.info(`${signal} received, shutting down gracefully...`);
+  server.close(async () => {
+    logger.info('HTTP server closed');
+    await closeDb();
+    logger.info('Database connections closed');
+    process.exit(0);
+  });
 
+  // Force exit after 10 seconds
+  setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+export default app;

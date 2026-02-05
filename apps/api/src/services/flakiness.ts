@@ -157,9 +157,13 @@ export async function updateFlakyTests(
 
   const existingMap = new Map(existingFlaky.map(f => [f.testName, f]));
 
+  // Track which existing flaky tests were seen in the analysis
+  const seenTestNames = new Set<string>();
+
   for (const test of analysis) {
+    seenTestNames.add(test.testName);
     const existing = existingMap.get(test.testName);
-    
+
     if (test.isFlaky) {
       if (existing) {
         // Update existing flaky test
@@ -191,6 +195,18 @@ export async function updateFlakyTests(
       }
     } else if (existing && existing.status === 'active') {
       // Test is no longer flaky - mark as resolved
+      await db
+        .update(flakyTests)
+        .set({ status: 'resolved' })
+        .where(eq(flakyTests.id, existing.id));
+      resolved++;
+    }
+  }
+
+  // Resolve active flaky tests that no longer appear in analysis results
+  // (e.g., test was removed from the test suite or renamed)
+  for (const [testName, existing] of existingMap) {
+    if (existing.status === 'active' && !seenTestNames.has(testName)) {
       await db
         .update(flakyTests)
         .set({ status: 'resolved' })

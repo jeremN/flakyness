@@ -1,5 +1,11 @@
 import { rateLimiter } from 'hono-rate-limiter';
+import { createMiddleware } from 'hono/factory';
 import type { Context } from 'hono';
+
+const isTest = !!process.env.VITEST;
+
+// No-op middleware for test environment (rate limiting breaks test suites)
+const noopMiddleware = createMiddleware(async (_c, next) => next());
 
 /**
  * Extract the client IP address using a reliable strategy:
@@ -33,7 +39,7 @@ function getClientIp(c: Context): string {
  *
  * Limit: 60 requests per minute per project token
  */
-export const reportRateLimit = rateLimiter({
+export const reportRateLimit = isTest ? noopMiddleware : rateLimiter({
   windowMs: 60 * 1000, // 1 minute
   limit: 60,
   standardHeaders: 'draft-7',
@@ -54,11 +60,12 @@ export const reportRateLimit = rateLimiter({
 
 /**
  * Rate limiter for general API read endpoints.
+
  * Prevents dashboard API abuse and scraping.
  *
  * Limit: 100 requests per minute per IP
  */
-export const apiRateLimit = rateLimiter({
+export const apiRateLimit = isTest ? noopMiddleware : rateLimiter({
   windowMs: 60 * 1000,
   limit: 100,
   standardHeaders: 'draft-7',
@@ -80,7 +87,7 @@ export const apiRateLimit = rateLimiter({
  *
  * Limit: 5 requests per minute per IP
  */
-export const adminRateLimit = rateLimiter({
+export const adminRateLimit = isTest ? noopMiddleware : rateLimiter({
   windowMs: 60 * 1000,
   limit: 5,
   standardHeaders: 'draft-7',

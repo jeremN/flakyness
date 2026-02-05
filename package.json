@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
-    "lint": "pnpm -r run lint",
+    "lint": "oxlint --deny-warnings apps/",
     "test": "pnpm -r run test",
     "db:generate": "pnpm --filter api db:generate",
     "db:migrate": "pnpm --filter api db:migrate",
@@ -19,5 +19,8 @@
     "node": ">=24",
     "pnpm": "^10.20.0"
   },
-  "packageManager": "pnpm@10.20.0"
+  "packageManager": "pnpm@10.20.0",
+  "devDependencies": {
+    "oxlint": "^1.43.0"
+  }
 }

@@ -16,10 +16,24 @@ env:
 
 jobs:
   # ============================================================
-  # Lint & Type check
+  # Lint (oxlint)
   # ============================================================
   lint:
-    name: Lint & Type Check
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run oxlint
+        uses: oxc-project/oxlint-action@v0
+        with:
+          deny-warnings: true
+
+  # ============================================================
+  # Type check
+  # ============================================================
+  typecheck:
+    name: Type Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +48,6 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-
-      - name: Lint API
-        run: pnpm --filter api lint
-
-      - name: Lint Dashboard
-        run: pnpm --filter dashboard lint
 
       - name: Type check Dashboard (svelte-check)
         run: pnpm --filter dashboard check
@@ -82,7 +90,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Run database migrations
-        run: pnpm db:migrate
+        run: |
+          touch .env
+          pnpm db:migrate
 
       - name: Run API tests
         run: pnpm --filter api test
@@ -119,7 +129,7 @@ jobs:
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: [lint, test, build]
+    needs: [lint, typecheck, test, build]
     steps:
       - uses: actions/checkout@v4
 

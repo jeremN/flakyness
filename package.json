@@ -2,11 +2,13 @@
   "name": "flackyness",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "description": "Flaky test tracking system for CI/CD",
   "scripts": {
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build",
-    "lint": "pnpm -r run lint",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "pnpm -r run test",
     "db:generate": "pnpm --filter api db:generate",
     "db:migrate": "pnpm --filter api db:migrate",
@@ -14,6 +16,12 @@
     "db:seed": "pnpm --filter api db:seed",
     "simulate:ci": "pnpm --filter api simulate:ci",
     "test:mvp": "./scripts/test-mvp.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "globals": "^16.0.0",
+    "typescript-eslint": "^8.0.0"
   },
   "engines": {
     "node": ">=24",

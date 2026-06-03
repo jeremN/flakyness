@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
-import { eq, desc, and, gte } from 'drizzle-orm';
-import { db, projects, flakyTests, testRuns, testResults } from '../db';
+import { eq, desc, and } from 'drizzle-orm';
+import { db, projects, flakyTests, testRuns } from '../db';
 import { getProjectStats, analyzeFlakiness } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
 

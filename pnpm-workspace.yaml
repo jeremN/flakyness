@@ -1,3 +1,13 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# --- Supply-chain hardening (pnpm 11) ---
+# Delay using versions published less than 24h ago. A compromised release is
+# usually yanked within hours, so this avoids pulling it before it's caught.
+minimumReleaseAge: 1440
+
+# Block dependency install/build scripts by default; allow only audited ones.
+# (pnpm 11 replaced `onlyBuiltDependencies` with the `allowBuilds` map.)
+allowBuilds:
+  esbuild: true

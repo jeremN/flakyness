@@ -114,7 +114,7 @@ export const PlaywrightReportSchema = z.object({
     grep: z.any().optional(),
     grepInvert: z.any().optional(),
     maxFailures: z.number().optional(),
-    metadata: z.record(z.any()).optional(),
+    metadata: z.record(z.string(), z.any()).optional(),
     preserveOutput: z.string().optional(),
     projects: z.array(z.any()).optional(),
     reporter: z.array(z.any()).optional(),

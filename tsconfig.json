@@ -4,6 +4,9 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    // TS 6.0 errors on options slated for removal in 7.0 (e.g. baseUrl injected
+    // by tsup's d.ts builder). Acknowledge until those are migrated out.
+    "ignoreDeprecations": "6.0",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,

@@ -23,8 +23,8 @@ A self-hosted flaky test tracking system for CI/CD pipelines. Collect, analyze, 
 
 ### Prerequisites
 
-- Node.js 20+
-- pnpm 9+
+- Node.js 24+
+- pnpm 11+ (managed via Corepack — `corepack enable`)
 - Docker & Docker Compose
 
 ### Development Setup

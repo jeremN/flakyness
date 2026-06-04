@@ -2,8 +2,8 @@
 
 > **Purpose:** This document helps AI agents (and developers) quickly understand the Flackyness codebase to improve, fix, or add features effectively.
 
-**Last Updated:** December 11, 2024  
-**Current Status:** Production-ready (Phase 6 complete)  
+**Last Updated:** June 3, 2026  
+**Current Status:** Production-ready (Phase 6 complete); full stack updated to latest (pnpm 11, TS 6, Vite 8, Svelte 5.56, zod 4, Drizzle 0.45, Hono 4.12)  
 **Grade:** A- (92/100)
 
 ---
@@ -19,10 +19,19 @@
 4. **Tracks** test stability over time with ECharts
 
 ### Tech Stack
-- **Backend:** Hono (TypeScript) + Node.js
+- **Backend:** Hono (TypeScript) + Node.js 24
 - **Database:** PostgreSQL + Drizzle ORM
-- **Dashboard:** SvelteKit + Tailwind CSS + ECharts
+- **Dashboard:** SvelteKit + Tailwind CSS v4 (via `@tailwindcss/vite`) + ECharts
 - **Deployment:** Docker Compose
+
+### Toolchain (important)
+- **Package manager: pnpm 11** (pinned via `packageManager` in root `package.json`; use `corepack pnpm …`).
+- **Supply-chain hardening** in `pnpm-workspace.yaml`: `minimumReleaseAge: 1440` (don't install versions <24h old) and `allowBuilds: { esbuild: true }` (build scripts blocked by default — add new ones here after auditing).
+  - Consequence: a fresh-published "latest" can be temporarily un-installable; pin one release back until it ages out. That's why `@sveltejs/kit` may trail the absolute latest.
+- **TS 6**: root `tsconfig.json` sets `"ignoreDeprecations": "6.0"` to tolerate options removed in TS 7 (migrate those before upgrading to TS 7).
+- **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). `tailwind.config.js` is currently **not loaded** (no `@config` directive) — see Known Issues.
+- **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI runs it via `oxc-project/oxlint-action`.
+- **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → build → docker. Plus `docker-publish.yml`.
 
 ---
 
@@ -387,10 +396,18 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 - ✅ ~~Input validation~~ (Complete)
 
 ### Medium Priority
-- ⏳ **Admin API endpoints** (create/rotate tokens)
+- ✅ ~~Admin API endpoints (create/rotate tokens)~~ (Complete — `routes/admin.ts`)
 - ⏳ **Prometheus metrics** endpoint
-- ⏳ TypeScript strict mode
 - ⏳ E2E tests (Playwright)
+
+### Code review findings (June 4, 2026)
+Reviewed on top of `main`'s security-hardening pass (commit `d613f00`). **Already resolved on `main`:** UUID param validation (`z.string().uuid()`), admin-token `crypto.timingSafeEqual` compare, stream-aware body limit (`hono/body-limit`), graceful shutdown, oxlint + CI. **Still open:**
+- 🟠 **Unauthenticated read APIs** — `/projects/*`, `/tests/*` GETs are IP-rate-limited only (no token). Any reachable client can read every project's data. Confirm threat model or add read auth.
+- 🟠 **`/projects/:id/analysis` DoS vector** — `days`/`threshold` are unvalidated/unclamped and drive an in-memory full-scan aggregation (`analyzeFlakiness`). (`/trend` clamps `days`; `/analysis` does not.) Clamp `days`, validate `threshold`, and/or push aggregation to SQL `GROUP BY`.
+- 🟡 **Flaky-test write races / N+1** — `updateFlakyTests` runs fire-and-forget per ingest with no `(project_id, test_name)` unique constraint; concurrent ingests can dup rows. `admin.ts` delete loops row-by-row (use `inArray` or FK `onDelete: 'cascade'`).
+- 🟡 **`packages/shared` is dead code** — not imported by any app; types re-declared in `apps/dashboard/src/app.d` and the API schema. Wire it up or remove.
+- 🟡 **14 Svelte `state_referenced_locally` warnings** — `data` captured by initial value in page components; verify reactivity on navigation.
+- ⏳ TypeScript: root tsconfig has `strict: true` + `ignoreDeprecations: "6.0"` (TS 6 bridge — migrate the deprecated options out before TS 7); consider `noUncheckedIndexedAccess`.
 
 ### Low Priority
 - ⏳ Table partitioning (for >1M test results)
@@ -600,5 +617,5 @@ pnpm --filter dashboard build
 
 **Good luck! 🚀**
 
-*Last updated by AI Agent on December 11, 2024*
+*Last updated by AI Agent on June 3, 2026*
 *If you improve this project, please update this guide!*

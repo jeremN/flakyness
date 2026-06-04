@@ -4,7 +4,6 @@ import { secureHeaders } from 'hono/secure-headers';
 import { bodyLimit } from 'hono/body-limit';
 import { HTTPException } from 'hono/http-exception';
 import { serve } from '@hono/node-server';
-import type { Server } from 'node:http';
 import 'dotenv/config';
 
 // Custom middleware
@@ -79,7 +78,9 @@ if (!process.env.VITEST) {
 
   logger.info('Server starting', { host, port, env: process.env.NODE_ENV || 'development' });
 
-  const server: Server = serve({
+  // @hono/node-server v2 returns its own ServerType (http/http2 union); let it
+  // infer rather than forcing node:http's Server. It still exposes .close().
+  const server = serve({
     fetch: app.fetch,
     port,
     hostname: host,

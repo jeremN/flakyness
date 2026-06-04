@@ -17,7 +17,6 @@ COPY package.json pnpm-lock.yaml* ./
 COPY tsconfig.json ./
 COPY svelte.config.js ./
 COPY vite.config.ts ./
-COPY postcss.config.js ./
 COPY tailwind.config.js ./
 COPY src ./src
 

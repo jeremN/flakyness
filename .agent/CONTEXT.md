@@ -417,6 +417,12 @@ Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-to
 - ⏳ TypeScript: root tsconfig has `strict: true` + `ignoreDeprecations: "6.0"` (TS 6 bridge — migrate the deprecated options out before TS 7); consider `noUncheckedIndexedAccess`.
 - ⏳ `analyzeFlakiness` still aggregates in memory — fine at current scale; push to SQL `GROUP BY` if datasets grow large.
 
+**Ops / scaling notes:**
+- `main` is **branch-protected**: PRs + green CI (Lint, Type Check, Tests, Build, Docker Build) required to merge. `enforce_admins` is off, so the owner can bypass in emergencies — flip it on for strict enforcement.
+- Rate limiting (`hono-rate-limiter`) uses an **in-memory** store, so limits are per-instance. Move to a shared (Redis) store before running more than one API replica.
+- Read APIs (`/projects/*`, `/tests/*`) are unauthenticated by design (concept stage). For multi-tenant/SaaS: add an env-gated read token + per-project token scoping.
+- The Dependabot lockfile-sync workflow's commit/push path hasn't run live yet (needs an eligible npm PR that changes deps past cooldown) — sanity-check the first one.
+
 ### Low Priority
 - ⏳ Table partitioning (for >1M test results)
 - ⏳ Read replicas (for >100 concurrent users)

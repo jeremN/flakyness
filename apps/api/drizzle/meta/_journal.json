@@ -15,6 +15,13 @@
       "when": 1765467807727,
       "tag": "0001_gifted_the_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780576172577,
+      "tag": "0002_neat_dragon_lord",
+      "breakpoints": true
     }
   ]
 }

@@ -400,14 +400,22 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 - ⏳ **Prometheus metrics** endpoint
 - ⏳ E2E tests (Playwright)
 
-### Code review findings (June 4, 2026)
-Reviewed on top of `main`'s security-hardening pass (commit `d613f00`). **Already resolved on `main`:** UUID param validation (`z.string().uuid()`), admin-token `crypto.timingSafeEqual` compare, stream-aware body limit (`hono/body-limit`), graceful shutdown, oxlint + CI. **Still open:**
-- 🟠 **Unauthenticated read APIs** — `/projects/*`, `/tests/*` GETs are IP-rate-limited only (no token). Any reachable client can read every project's data. Confirm threat model or add read auth.
-- 🟠 **`/projects/:id/analysis` DoS vector** — `days`/`threshold` are unvalidated/unclamped and drive an in-memory full-scan aggregation (`analyzeFlakiness`). (`/trend` clamps `days`; `/analysis` does not.) Clamp `days`, validate `threshold`, and/or push aggregation to SQL `GROUP BY`.
-- 🟡 **Flaky-test write races / N+1** — `updateFlakyTests` runs fire-and-forget per ingest with no `(project_id, test_name)` unique constraint; concurrent ingests can dup rows. `admin.ts` delete loops row-by-row (use `inArray` or FK `onDelete: 'cascade'`).
-- 🟡 **`packages/shared` is dead code** — not imported by any app; types re-declared in `apps/dashboard/src/app.d` and the API schema. Wire it up or remove.
-- 🟡 **14 Svelte `state_referenced_locally` warnings** — `data` captured by initial value in page components; verify reactivity on navigation.
+### Code review findings — status (June 4, 2026)
+Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-token `crypto.timingSafeEqual`, stream-aware body limit (`hono/body-limit`), graceful shutdown, FK `onDelete: cascade`, oxlint + CI.
+
+**Resolved in branch `fix/review-findings`:**
+- ✅ `/projects/:id/analysis` DoS — `days` clamped to [1, 90], `threshold` validated to [0, 1].
+- ✅ Flaky-test write races — `(project_id, test_name)` unique index (migration `0002`) + `onConflictDoUpdate` upsert in `updateFlakyTests`.
+- ✅ N+1 delete — `admin.ts` deletes test results via a single `inArray`.
+- ✅ `packages/shared` dead code — removed.
+- ✅ 14 Svelte `state_referenced_locally` warnings — converted to `$derived` (svelte-check now 0/0).
+
+**Accepted by design (revisit if commercialised / multi-tenant):**
+- 🔵 **Unauthenticated read APIs** (`/projects/*`, `/tests/*`) — intentional for the current internal/self-hosted use (concept validation). If sold, add an env-gated read token that the dashboard's server-side loads pass.
+
+**Open / optional:**
 - ⏳ TypeScript: root tsconfig has `strict: true` + `ignoreDeprecations: "6.0"` (TS 6 bridge — migrate the deprecated options out before TS 7); consider `noUncheckedIndexedAccess`.
+- ⏳ `analyzeFlakiness` still aggregates in memory — fine at current scale; push to SQL `GROUP BY` if datasets grow large.
 
 ### Low Priority
 - ⏳ Table partitioning (for >1M test results)

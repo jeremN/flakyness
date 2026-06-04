@@ -32,14 +32,14 @@
     return `${(ms / 1000).toFixed(1)}s`;
   }
 
-  const statCards = [
+  const statCards = $derived([
     { label: 'Total Runs', value: data.testHistory.stats.totalRuns, color: 'purple' },
     { label: 'Passed', value: data.testHistory.stats.passed, color: 'green' },
     { label: 'Failed', value: data.testHistory.stats.failed, color: 'red' },
     { label: 'Flaky', value: data.testHistory.stats.flaky, color: 'orange' },
     { label: 'Skipped', value: data.testHistory.stats.skipped, color: 'gray' },
     { label: 'Avg Duration', value: formatDuration(data.testHistory.stats.avgDuration), color: 'blue' },
-  ];
+  ]);
 </script>
 
 <svelte:head>

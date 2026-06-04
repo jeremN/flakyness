@@ -20,7 +20,7 @@
   }
 
   // Chart configuration for flake rate trend - updated for light theme
-  const chartOptions: EChartsOption = data.trendData ? {
+  const chartOptions: EChartsOption = $derived(data.trendData ? {
     tooltip: {
       trigger: 'axis',
       backgroundColor: '#fff',
@@ -87,14 +87,14 @@
         data: data.trendData.rates,
       },
     ],
-  } : {};
+  } : {});
 
-  const statCards = data.stats ? [
+  const statCards = $derived(data.stats ? [
     { label: 'Active Flaky Tests', value: data.stats.activeFlakyTests, icon: '⚡', color: 'orange' },
     { label: 'Resolved This Week', value: data.stats.resolvedThisWeek, icon: '✓', color: 'green' },
     { label: 'Total Test Runs', value: data.stats.totalRuns, icon: '🧪', color: 'blue' },
     { label: 'Total Tests Tracked', value: data.stats.totalTests, icon: '📊', color: 'purple' },
-  ] : [];
+  ] : []);
 </script>
 
 <svelte:head>

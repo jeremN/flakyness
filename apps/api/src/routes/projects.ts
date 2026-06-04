@@ -160,8 +160,11 @@ projectsRouter.get('/:id/analysis', async (c) => {
     return c.json({ error: 'Invalid project ID format' }, 400);
   }
   const projectId = parsed.data;
-  const windowDays = parseInt(c.req.query('days') || '14', 10);
-  const threshold = parseFloat(c.req.query('threshold') || '0.05');
+  // Clamp/validate the window so an attacker can't force an unbounded
+  // in-memory aggregation (analyzeFlakiness loads matching rows into memory).
+  const windowDays = Math.min(Math.max(parseInt(c.req.query('days') || '14', 10) || 14, 1), 90);
+  const rawThreshold = parseFloat(c.req.query('threshold') || '0.05');
+  const threshold = Number.isFinite(rawThreshold) ? Math.min(Math.max(rawThreshold, 0), 1) : 0.05;
 
   const analysis = await analyzeFlakiness(projectId, {
     windowDays,

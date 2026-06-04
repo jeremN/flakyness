@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 // Projects being tracked
 export const projects = pgTable('projects', {
@@ -72,6 +72,10 @@ export const flakyTests = pgTable('flaky_tests', {
     .on(table.projectId, table.status),
   // Index for sorting by flake rate
   flakeRateIdx: index('flaky_tests_flake_rate_idx').on(table.flakeRate),
+  // One flaky-test row per (project, test) — enables atomic upsert and blocks
+  // duplicate rows from concurrent report ingestions.
+  projectTestUnique: uniqueIndex('flaky_tests_project_test_unique')
+    .on(table.projectId, table.testName),
 }));
 
 // Type exports for use in application

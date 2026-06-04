@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, sql, desc } from 'drizzle-orm';
+import { eq, sql, desc, inArray } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests } from '../db';
 import { adminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
@@ -184,9 +184,10 @@ adminRouter.delete('/projects/:id', async (c) => {
       .from(testRuns)
       .where(eq(testRuns.projectId, projectId));
 
-    // 2. Delete test results for those runs
-    for (const run of runs) {
-      await tx.delete(testResults).where(eq(testResults.testRunId, run.id));
+    // 2. Delete test results for those runs (single statement, not N+1)
+    const runIds = runs.map((r) => r.id);
+    if (runIds.length > 0) {
+      await tx.delete(testResults).where(inArray(testResults.testRunId, runIds));
     }
 
     // 3. Delete test runs

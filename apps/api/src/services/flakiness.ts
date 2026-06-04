@@ -165,22 +165,12 @@ export async function updateFlakyTests(
     const existing = existingMap.get(test.testName);
 
     if (test.isFlaky) {
-      if (existing) {
-        // Update existing flaky test
-        await db
-          .update(flakyTests)
-          .set({
-            lastSeen: test.lastSeen,
-            flakeCount: test.failCount + test.flakyCount,
-            totalRuns: test.totalRuns,
-            flakeRate: test.flakeRate.toFixed(4),
-            status: 'active',
-          })
-          .where(eq(flakyTests.id, existing.id));
-        updated++;
-      } else {
-        // Insert new flaky test
-        await db.insert(flakyTests).values({
+      // Atomic upsert keyed on the (project_id, test_name) unique index — avoids
+      // the read-then-write race that let concurrent ingests insert duplicates.
+      // firstDetected is only set on insert; the conflict path preserves it.
+      await db
+        .insert(flakyTests)
+        .values({
           projectId,
           testName: test.testName,
           testFile: test.testFile,
@@ -190,9 +180,19 @@ export async function updateFlakyTests(
           totalRuns: test.totalRuns,
           flakeRate: test.flakeRate.toFixed(4),
           status: 'active',
+        })
+        .onConflictDoUpdate({
+          target: [flakyTests.projectId, flakyTests.testName],
+          set: {
+            testFile: test.testFile,
+            lastSeen: test.lastSeen,
+            flakeCount: test.failCount + test.flakyCount,
+            totalRuns: test.totalRuns,
+            flakeRate: test.flakeRate.toFixed(4),
+            status: 'active',
+          },
         });
-        updated++;
-      }
+      updated++;
     } else if (existing && existing.status === 'active') {
       // Test is no longer flaky - mark as resolved
       await db

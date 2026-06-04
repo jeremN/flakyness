@@ -1,0 +1,56 @@
+name: Dependabot lockfile
+
+# Dependabot bumps package.json but does NOT regenerate pnpm-lock.yaml, so the
+# `--frozen-lockfile` installs in ci.yml fail on its npm PRs. This regenerates
+# the lockfile from the bumped manifests and pushes it back to the PR branch.
+#
+# Uses `pull_request` (NOT pull_request_target) so PR code never runs with
+# access to repository secrets. Dependabot PRs get a read-only GITHUB_TOKEN, so
+# pushing requires a fine-grained PAT stored as a *Dependabot* secret named
+# DEPENDABOT_LOCKFILE_PAT (Settings → Secrets and variables → Dependabot).
+# Required PAT scope: this repo only, Contents: Read and write.
+# Using a PAT also re-triggers CI on the pushed commit (GITHUB_TOKEN pushes
+# would not), so the npm PR's checks re-run against the synced lockfile.
+on:
+  pull_request:
+
+# The job pushes via the PAT; the workflow token itself stays read-only.
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-lockfile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync-lockfile:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.DEPENDABOT_LOCKFILE_PAT }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      # --lockfile-only resolves the bumped manifests and writes pnpm-lock.yaml
+      # without linking or running install scripts (also blocked by allowBuilds).
+      - run: pnpm install --lockfile-only --no-frozen-lockfile
+
+      - name: Commit lockfile if it changed
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "pnpm-lock.yaml already in sync."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add pnpm-lock.yaml
+            git commit -m "chore(deps): sync pnpm-lock.yaml"
+            git push
+          fi

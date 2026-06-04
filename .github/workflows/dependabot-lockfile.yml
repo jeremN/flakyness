@@ -32,7 +32,7 @@ jobs:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.DEPENDABOT_LOCKFILE_PAT }}
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v4
         with:

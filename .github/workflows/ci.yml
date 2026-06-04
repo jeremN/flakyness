@@ -28,10 +28,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run oxlint
-        uses: oxc-project/oxlint-action@v0
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
         with:
-          deny-warnings: true
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Run oxlint over the whole workspace (identical to `pnpm lint` locally).
+      # The oxlint-action's changed-files mode exits 1 with "No files found to
+      # lint" on config-only PRs (e.g. Dependabot bumps), so we invoke it directly.
+      - name: Lint (oxlint)
+        run: pnpm lint
 
   # ============================================================
   # Type check (API tsc + dashboard svelte-check)

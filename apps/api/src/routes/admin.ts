@@ -9,6 +9,8 @@ import { logger } from '../middleware/logger';
 
 const adminRouter = new Hono();
 
+const uuidSchema = z.string().uuid();
+
 // Apply admin auth and rate limiting to all routes
 adminRouter.use('*', adminAuth());
 adminRouter.use('*', adminRateLimit);
@@ -21,56 +23,49 @@ const createProjectSchema = z.object({
 
 /**
  * GET /api/v1/admin/projects
- * 
- * List all projects with stats
+ *
+ * List all projects with stats (single query with subqueries, no N+1)
  */
 adminRouter.get('/projects', async (c) => {
-  const allProjects = await db
+  const projectsWithStats = await db
     .select({
       id: projects.id,
       name: projects.name,
       gitlabProjectId: projects.gitlabProjectId,
       hasToken: sql<boolean>`${projects.tokenHash} IS NOT NULL`,
       createdAt: projects.createdAt,
+      totalRuns: sql<number>`coalesce((
+        select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
+      ), 0)`,
+      totalTests: sql<number>`coalesce((
+        select sum(test_runs.total_tests)::int from test_runs where test_runs.project_id = ${projects.id}
+      ), 0)`,
+      activeFlakyTests: sql<number>`coalesce((
+        select count(*)::int from flaky_tests where flaky_tests.project_id = ${projects.id} and flaky_tests.status = 'active'
+      ), 0)`,
     })
     .from(projects)
     .orderBy(desc(projects.createdAt));
 
-  // Get stats for each project
-  const projectsWithStats = await Promise.all(
-    allProjects.map(async (project) => {
-      const [runStats] = await db
-        .select({
-          totalRuns: sql<number>`count(*)::int`,
-          totalTests: sql<number>`coalesce(sum(${testRuns.totalTests}), 0)::int`,
-        })
-        .from(testRuns)
-        .where(eq(testRuns.projectId, project.id));
+  const result = projectsWithStats.map((p) => ({
+    id: p.id,
+    name: p.name,
+    gitlabProjectId: p.gitlabProjectId,
+    hasToken: p.hasToken,
+    createdAt: p.createdAt,
+    stats: {
+      totalRuns: p.totalRuns,
+      totalTests: p.totalTests,
+      activeFlakyTests: p.activeFlakyTests,
+    },
+  }));
 
-      const [flakyStats] = await db
-        .select({
-          activeFlakyTests: sql<number>`count(*)::int`,
-        })
-        .from(flakyTests)
-        .where(eq(flakyTests.projectId, project.id));
-
-      return {
-        ...project,
-        stats: {
-          totalRuns: runStats?.totalRuns || 0,
-          totalTests: runStats?.totalTests || 0,
-          activeFlakyTests: flakyStats?.activeFlakyTests || 0,
-        },
-      };
-    })
-  );
-
-  return c.json({ projects: projectsWithStats });
+  return c.json({ projects: result });
 });
 
 /**
  * POST /api/v1/admin/projects
- * 
+ *
  * Create a new project and generate an API token
  */
 adminRouter.post(
@@ -119,11 +114,15 @@ adminRouter.post(
 
 /**
  * POST /api/v1/admin/projects/:id/rotate-token
- * 
+ *
  * Rotate a project's API token
  */
 adminRouter.post('/projects/:id/rotate-token', async (c) => {
-  const projectId = c.req.param('id');
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
 
   // Check project exists
   const project = await db.query.projects.findFirst({
@@ -158,11 +157,15 @@ adminRouter.post('/projects/:id/rotate-token', async (c) => {
 
 /**
  * DELETE /api/v1/admin/projects/:id
- * 
- * Delete a project and all associated data
+ *
+ * Delete a project and all associated data inside a transaction
  */
 adminRouter.delete('/projects/:id', async (c) => {
-  const projectId = c.req.param('id');
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
 
   // Check project exists
   const project = await db.query.projects.findFirst({
@@ -173,30 +176,28 @@ adminRouter.delete('/projects/:id', async (c) => {
     return c.json({ error: 'Project not found' }, 404);
   }
 
-  // Delete in order (respecting foreign key constraints)
-  // 1. Get all test run IDs for this project
-  const runs = await db
-    .select({ id: testRuns.id })
-    .from(testRuns)
-    .where(eq(testRuns.projectId, projectId));
+  // Delete all associated data in a transaction
+  await db.transaction(async (tx) => {
+    // 1. Get all test run IDs for this project
+    const runs = await tx
+      .select({ id: testRuns.id })
+      .from(testRuns)
+      .where(eq(testRuns.projectId, projectId));
 
-  const runIds = runs.map((r) => r.id);
-
-  // 2. Delete test results for those runs
-  if (runIds.length > 0) {
-    for (const runId of runIds) {
-      await db.delete(testResults).where(eq(testResults.testRunId, runId));
+    // 2. Delete test results for those runs
+    for (const run of runs) {
+      await tx.delete(testResults).where(eq(testResults.testRunId, run.id));
     }
-  }
 
-  // 3. Delete test runs
-  await db.delete(testRuns).where(eq(testRuns.projectId, projectId));
+    // 3. Delete test runs
+    await tx.delete(testRuns).where(eq(testRuns.projectId, projectId));
 
-  // 4. Delete flaky tests
-  await db.delete(flakyTests).where(eq(flakyTests.projectId, projectId));
+    // 4. Delete flaky tests
+    await tx.delete(flakyTests).where(eq(flakyTests.projectId, projectId));
 
-  // 5. Delete project
-  await db.delete(projects).where(eq(projects.id, projectId));
+    // 5. Delete project
+    await tx.delete(projects).where(eq(projects.id, projectId));
+  });
 
   logger.info('Project deleted', { projectId, projectName: project.name });
 
@@ -208,7 +209,7 @@ adminRouter.delete('/projects/:id', async (c) => {
 
 /**
  * GET /api/v1/admin/health
- * 
+ *
  * System health metrics
  */
 adminRouter.get('/health', async (c) => {

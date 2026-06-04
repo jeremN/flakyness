@@ -8,6 +8,8 @@ import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests } from '../services/flakiness';
 import { logger } from '../middleware/logger';
 
+const BATCH_SIZE = 1000;
+
 const reports = new Hono<{
   Variables: {
     project: Project;
@@ -27,16 +29,16 @@ reports.use('*', reportRateLimit);
 
 /**
  * POST /api/v1/reports
- * 
+ *
  * Ingest a Playwright JSON report.
- * 
+ *
  * Query params:
  *   - branch: Git branch name (default: "main")
  *   - commit: Git commit SHA (required)
  *   - pipeline: CI pipeline ID (optional)
- * 
+ *
  * Body: Playwright JSON report
- * 
+ *
  * Returns: Created test run with summary
  */
 reports.post(
@@ -63,38 +65,44 @@ reports.post(
       return c.json({ error: `Failed to parse Playwright report: ${message}` }, 400);
     }
 
-    // Create test run record
-    const [testRun] = await db
-      .insert(testRuns)
-      .values({
-        projectId: project.id,
-        branch,
-        commitSha: commit,
-        pipelineId: pipeline || null,
-        startedAt: parsed.startedAt,
-        finishedAt: parsed.finishedAt,
-        totalTests: parsed.totalTests,
-        passed: parsed.passed,
-        failed: parsed.failed,
-        skipped: parsed.skipped,
-        flaky: parsed.flaky,
-      })
-      .returning();
+    // Insert test run and results in a single transaction for atomicity
+    const testRun = await db.transaction(async (tx) => {
+      const [run] = await tx
+        .insert(testRuns)
+        .values({
+          projectId: project.id,
+          branch,
+          commitSha: commit,
+          pipelineId: pipeline || null,
+          startedAt: parsed.startedAt,
+          finishedAt: parsed.finishedAt,
+          totalTests: parsed.totalTests,
+          passed: parsed.passed,
+          failed: parsed.failed,
+          skipped: parsed.skipped,
+          flaky: parsed.flaky,
+        })
+        .returning();
 
-    // Insert individual test results
-    if (parsed.results.length > 0) {
-      await db.insert(testResults).values(
-        parsed.results.map((result) => ({
-          testRunId: testRun.id,
+      // Insert test results in chunks to avoid exceeding PostgreSQL parameter limit (~65535)
+      if (parsed.results.length > 0) {
+        const rows = parsed.results.map((result) => ({
+          testRunId: run.id,
           testName: result.testName,
           testFile: result.testFile,
           status: result.status,
           durationMs: result.durationMs,
           retryCount: result.retryCount,
           errorMessage: result.errorMessage,
-        }))
-      );
-    }
+        }));
+
+        for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+          await tx.insert(testResults).values(rows.slice(i, i + BATCH_SIZE));
+        }
+      }
+
+      return run;
+    });
 
     // Trigger flakiness detection in background (don't await)
     updateFlakyTests(project.id).catch((err) => {
@@ -129,4 +137,3 @@ reports.post(
 );
 
 export default reports;
-

@@ -12,15 +12,15 @@ WORKDIR /app
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-# Copy package files from app
-COPY package.json ./
+# Copy package files and lockfile for reproducible installs
+COPY package.json pnpm-lock.yaml* ./
 COPY tsconfig.json ./
 COPY src ./src
 COPY drizzle ./drizzle
 COPY drizzle.config.ts ./
 
-# Install all dependencies (including dev for build)
-RUN pnpm install
+# Install all dependencies (including dev for build) — uses lockfile if present
+RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 # Build the application
 RUN pnpm run build
@@ -39,11 +39,11 @@ RUN addgroup --system --gid 1001 nodejs && \
 # Install pnpm for production install
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
-# Copy package file
-COPY package.json ./
+# Copy package files and lockfile
+COPY package.json pnpm-lock.yaml* ./
 
 # Install production dependencies only
-RUN pnpm install --prod
+RUN pnpm install --prod --frozen-lockfile 2>/dev/null || pnpm install --prod
 
 # Copy built output
 COPY --from=builder /app/dist ./dist

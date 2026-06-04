@@ -5,7 +5,7 @@ export const projects = pgTable('projects', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 255 }).unique().notNull(),
   gitlabProjectId: varchar('gitlab_project_id', { length: 100 }),
-  tokenHash: varchar('token_hash', { length: 64 }), // SHA-256 hash
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(), // SHA-256 hash
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   // Index for token hash lookup (authentication)
@@ -15,7 +15,7 @@ export const projects = pgTable('projects', {
 // Individual test runs (pipeline executions)
 export const testRuns = pgTable('test_runs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull(),
   branch: varchar('branch', { length: 255 }).notNull(),
   commitSha: varchar('commit_sha', { length: 40 }).notNull(),
   pipelineId: varchar('pipeline_id', { length: 100 }),
@@ -37,7 +37,7 @@ export const testRuns = pgTable('test_runs', {
 // Individual test results
 export const testResults = pgTable('test_results', {
   id: uuid('id').primaryKey().defaultRandom(),
-  testRunId: uuid('test_run_id').references(() => testRuns.id).notNull(),
+  testRunId: uuid('test_run_id').references(() => testRuns.id, { onDelete: 'cascade' }).notNull(),
   testName: varchar('test_name', { length: 500 }).notNull(),
   testFile: varchar('test_file', { length: 500 }),
   status: varchar('status', { length: 20 }).notNull(), // passed, failed, skipped, flaky
@@ -57,7 +57,7 @@ export const testResults = pgTable('test_results', {
 // Flaky test tracking (computed/cached)
 export const flakyTests = pgTable('flaky_tests', {
   id: uuid('id').primaryKey().defaultRandom(),
-  projectId: uuid('project_id').references(() => projects.id).notNull(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull(),
   testName: varchar('test_name', { length: 500 }).notNull(),
   testFile: varchar('test_file', { length: 500 }),
   firstDetected: timestamp('first_detected'),

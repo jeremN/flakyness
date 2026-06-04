@@ -276,6 +276,7 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
   const parsedResults: ParsedTestResult[] = [];
   let totalDuration = 0;
   let startedAt: Date | null = null;
+  let finishedAt: Date | null = null;
 
   // Extract all specs with their title paths
   const allSpecs = extractSpecs(report.suites);
@@ -290,12 +291,16 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
     const retryCount = Math.max(0, spec.results.length - 1);
     const errorMessage = extractErrorMessage(spec.results);
 
-    // Track earliest start time
+    // Track earliest start time and latest end time (handles parallel tests correctly)
     for (const result of spec.results) {
       if (result.startTime) {
         const resultStart = new Date(result.startTime);
         if (!startedAt || resultStart < startedAt) {
           startedAt = resultStart;
+        }
+        const resultEnd = new Date(resultStart.getTime() + (result.duration || 0));
+        if (!finishedAt || resultEnd > finishedAt) {
+          finishedAt = resultEnd;
         }
       }
     }
@@ -325,7 +330,7 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
     skipped,
     flaky,
     startedAt,
-    finishedAt: startedAt ? new Date(startedAt.getTime() + totalDuration) : null,
+    finishedAt,
     durationMs: totalDuration,
     results: parsedResults,
   };

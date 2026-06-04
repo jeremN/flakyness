@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 
 // These tests require the database and ADMIN_TOKEN to be configured
 const hasDatabase = !!process.env.DATABASE_URL;

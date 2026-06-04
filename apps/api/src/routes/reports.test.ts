@@ -9,7 +9,6 @@ const describeWithDb = hasDatabase && hasAdminToken ? describe : describe.skip;
 let app: typeof import('../index').default;
 let adminToken: string;
 let testProjectToken: string;
-let testProjectId: string;
 
 const sampleReport = JSON.parse(
   readFileSync(join(__dirname, '../../fixtures/sample-report.json'), 'utf-8')
@@ -32,7 +31,6 @@ beforeAll(async () => {
     });
     const body = await res.json();
     testProjectToken = body.token;
-    testProjectId = body.project.id;
   }
 });
 

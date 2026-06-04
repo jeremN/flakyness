@@ -30,6 +30,8 @@
   - Consequence: a fresh-published "latest" can be temporarily un-installable; pin one release back until it ages out. That's why `@sveltejs/kit` may trail the absolute latest.
 - **TS 6**: root `tsconfig.json` sets `"ignoreDeprecations": "6.0"` to tolerate options removed in TS 7 (migrate those before upgrading to TS 7).
 - **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). `tailwind.config.js` is currently **not loaded** (no `@config` directive) — see Known Issues.
+- **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI runs it via `oxc-project/oxlint-action`.
+- **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → build → docker. Plus `docker-publish.yml`.
 
 ---
 
@@ -398,17 +400,14 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 - ⏳ **Prometheus metrics** endpoint
 - ⏳ E2E tests (Playwright)
 
-### Code review findings (June 3, 2026)
-- 🔴 **`lint` is non-functional** — `lint` scripts call `eslint`, but ESLint isn't a dependency and there's no config. Add `eslint` + a flat config or remove the scripts.
-- 🔴 **No CI** — GitHub remote has no `.github/workflows`. Add a build/test/typecheck workflow (also validates Dependabot PRs).
-- 🟠 **Unauthenticated read APIs** — all `/projects`, `/tests` GET routes are IP-rate-limited only (no token). Any reachable client can read every project's data. Confirm this matches the threat model or add project/read auth.
-- 🟠 **`/projects/:id/analysis` DoS vector** — `days`/`threshold` query params are unvalidated/unclamped and drive an in-memory full-scan aggregation (`analyzeFlakiness`). Clamp `days`, validate `threshold`, and/or push aggregation into SQL `GROUP BY`.
-- 🟠 **No UUID validation on `:id`/`project` params** — malformed values reach Postgres and 500 instead of 400. Validate with zod.
-- 🟡 **Admin token compare** (`middleware/auth.ts`) hand-rolls constant-time compare and length-checks first (length leak). Prefer `crypto.timingSafeEqual` on hashed buffers.
+### Code review findings (June 4, 2026)
+Reviewed on top of `main`'s security-hardening pass (commit `d613f00`). **Already resolved on `main`:** UUID param validation (`z.string().uuid()`), admin-token `crypto.timingSafeEqual` compare, stream-aware body limit (`hono/body-limit`), graceful shutdown, oxlint + CI. **Still open:**
+- 🟠 **Unauthenticated read APIs** — `/projects/*`, `/tests/*` GETs are IP-rate-limited only (no token). Any reachable client can read every project's data. Confirm threat model or add read auth.
+- 🟠 **`/projects/:id/analysis` DoS vector** — `days`/`threshold` are unvalidated/unclamped and drive an in-memory full-scan aggregation (`analyzeFlakiness`). (`/trend` clamps `days`; `/analysis` does not.) Clamp `days`, validate `threshold`, and/or push aggregation to SQL `GROUP BY`.
 - 🟡 **Flaky-test write races / N+1** — `updateFlakyTests` runs fire-and-forget per ingest with no `(project_id, test_name)` unique constraint; concurrent ingests can dup rows. `admin.ts` delete loops row-by-row (use `inArray` or FK `onDelete: 'cascade'`).
-- 🟡 **`packages/shared` is dead code** — not imported by any app; its types are re-declared in `apps/dashboard/src/app.d` and the API schema. Either wire it up or remove it.
-- 🟡 **14 Svelte `state_referenced_locally` warnings** — `data` captured by initial value in `+page.svelte`/`tests/[testName]/+page.svelte`; may not react to navigation/prop updates. Verify reactivity.
-- ⏳ TypeScript strict mode (root tsconfig already has `strict: true`; consider `noUncheckedIndexedAccess`)
+- 🟡 **`packages/shared` is dead code** — not imported by any app; types re-declared in `apps/dashboard/src/app.d` and the API schema. Wire it up or remove.
+- 🟡 **14 Svelte `state_referenced_locally` warnings** — `data` captured by initial value in page components; verify reactivity on navigation.
+- ⏳ TypeScript: root tsconfig has `strict: true` + `ignoreDeprecations: "6.0"` (TS 6 bridge — migrate the deprecated options out before TS 7); consider `noUncheckedIndexedAccess`.
 
 ### Low Priority
 - ⏳ Table partitioning (for >1M test results)

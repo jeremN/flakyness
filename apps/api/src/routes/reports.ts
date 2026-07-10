@@ -18,9 +18,9 @@ const reports = new Hono<{
 
 // Query params schema
 const reportQuerySchema = z.object({
-  branch: z.string().min(1).default('main'),
+  branch: z.string().min(1).max(255).default('main'),
   commit: z.string().min(1).max(40),
-  pipeline: z.string().optional(),
+  pipeline: z.string().max(100).optional(),
 });
 
 // Apply auth and rate limiting to all routes

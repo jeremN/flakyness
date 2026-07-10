@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import * as echarts from 'echarts/core';
   import { LineChart } from 'echarts/charts';
   import { GridComponent, TooltipComponent } from 'echarts/components';
@@ -103,11 +103,10 @@
   onMount(() => {
     initChart();
     window.addEventListener('resize', handleResize);
-  });
-
-  onDestroy(() => {
-    window.removeEventListener('resize', handleResize);
-    chart?.dispose();
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      chart?.dispose();
+    };
   });
 
   // Re-render when options change

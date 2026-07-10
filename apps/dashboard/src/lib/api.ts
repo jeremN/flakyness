@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/public';
+import { error, isHttpError } from '@sveltejs/kit';
 import type { Project, ProjectStats, FlakyTest, TestRun, TestHistory } from '../app.d';
 
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
@@ -17,23 +18,21 @@ export class APIError extends Error {
 async function fetchJson<T>(path: string): Promise<T> {
   try {
     const response = await fetch(`${API_URL}${path}`);
-    
+
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => 'Unknown error');
-      throw new APIError(
-        response.status,
-        `API request failed: ${response.statusText}. ${errorBody}`,
-        path
+      throw error(
+        response.status >= 500 ? 502 : response.status,
+        `API request failed (${response.status}) for ${path}`
       );
     }
-    
+
     return response.json();
-  } catch (error) {
-    if (error instanceof APIError) {
-      throw error;
+  } catch (err) {
+    if (isHttpError(err)) {
+      throw err;
     }
     // Network errors, etc.
-    throw new APIError(0, `Failed to connect to API: ${error instanceof Error ? error.message : 'Unknown error'}`, path);
+    throw error(503, `Cannot reach the Flackyness API (${API_URL}). Is it running?`);
   }
 }
 

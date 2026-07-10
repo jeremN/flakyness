@@ -240,8 +240,8 @@ projectsRouter.get('/:id/trend', async (c) => {
   const rates: number[] = [];
 
   for (const [day, data] of dailyMap) {
-    const date = new Date(day);
-    trendDays.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+    const date = new Date(`${day}T00:00:00Z`);
+    trendDays.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
     rates.push(data.total > 0 ? Math.round((data.flaky / data.total) * 1000) / 10 : 0);
   }
 

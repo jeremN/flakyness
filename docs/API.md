@@ -92,13 +92,14 @@ GET /api/v1/projects/:id/stats
 #### Get Project Flaky Tests
 
 ```http
-GET /api/v1/projects/:id/flaky-tests?status=active
+GET /api/v1/projects/:id/flaky-tests?status=active&limit=50
 ```
 
 **Query Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `status` | string | `active` | Filter by status: `active`, `resolved`, `ignored`, or `all` |
+| `limit` | number | `50` | Number of flaky tests to return, clamped to `[1, 100]` |
 
 **Response:**
 ```json

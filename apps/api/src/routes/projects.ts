@@ -85,6 +85,10 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
 
   const statusParsed = flakyStatusSchema.safeParse(c.req.query('status'));
   const status = statusParsed.success ? statusParsed.data : 'active';
+  const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
+
+  // Clamp limit between 1 and 100
+  const limit = Math.min(Math.max(requestedLimit, 1), 100);
 
   const flakyTestsList = await db
     .select({
@@ -105,7 +109,8 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
         status !== 'all' ? eq(flakyTests.status, status) : undefined
       )
     )
-    .orderBy(desc(flakyTests.flakeRate));
+    .orderBy(desc(flakyTests.flakeRate))
+    .limit(limit);
 
   return c.json({ flakyTests: flakyTestsList });
 });

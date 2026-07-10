@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { db, flakyTests } from '../db';
+import { updateFlakyTests } from '../services/flakiness';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -131,6 +133,166 @@ describeWithDb('Tests API Integration Tests', () => {
     it('should return 400 for a malformed flaky test id', async () => {
       const res = await app.request('/api/v1/tests/flaky/not-a-uuid');
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PATCH /api/v1/tests/flaky/:id', () => {
+    let flakyId: string;
+
+    beforeAll(async () => {
+      // Seed a flaky_tests row directly — the PATCH route only cares about
+      // an existing row, not how it got flagged flaky.
+      const [row] = await db
+        .insert(flakyTests)
+        .values({
+          projectId: testProjectId,
+          testName: 'patch-route-flaky-test',
+          testFile: 'patch.spec.ts',
+          status: 'active',
+          flakeCount: 2,
+          totalRuns: 10,
+          flakeRate: '0.2000',
+        })
+        .returning({ id: flakyTests.id });
+      flakyId = row.id;
+    });
+
+    it('should require authentication', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should reject an invalid admin token', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer not-the-admin-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should mute a flaky test (status -> ignored) and persist it', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.flakyTest.id).toBe(flakyId);
+      expect(body.flakyTest.status).toBe('ignored');
+
+      // Re-fetch to confirm the write was persisted, not just echoed back.
+      const getRes = await app.request(`/api/v1/tests/flaky/${flakyId}`);
+      expect(getRes.status).toBe(200);
+      const getBody = await getRes.json();
+      expect(getBody.flakyTest.status).toBe('ignored');
+    });
+
+    it('should unmute a flaky test (status -> active)', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.flakyTest.status).toBe('active');
+    });
+
+    it('should reject status "resolved" (system-managed, not operator-settable)', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'resolved' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject an unrecognized status value', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'bogus' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject a non-JSON body', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: 'not json',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should return 404 for a valid body but unknown flaky test id', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${randomUUID()}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('should return 400 for a malformed id, even with a valid body', async () => {
+      const res = await app.request('/api/v1/tests/flaky/not-a-uuid', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should keep an ignored test ignored across a reconcile pass', async () => {
+      // Mute it again (previous test left it 'active').
+      const muteRes = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(muteRes.status).toBe(200);
+
+      // Reconcile shouldn't silently un-mute it, whether or not the test
+      // still shows up in fresh flakiness analysis.
+      await updateFlakyTests(testProjectId);
+
+      const getRes = await app.request(`/api/v1/tests/flaky/${flakyId}`);
+      expect(getRes.status).toBe(200);
+      const getBody = await getRes.json();
+      expect(getBody.flakyTest.status).toBe('ignored');
     });
   });
 });

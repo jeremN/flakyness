@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import { enhance } from '$app/forms';
 
   interface Props {
     data: PageData;
@@ -54,13 +55,19 @@
   >
     Active
   </a>
-  <a 
+  <a
     href={getFilterHref('resolved')}
     class="pill-btn {data.status === 'resolved' ? 'pill-btn-primary' : 'pill-btn-ghost'}"
   >
     Resolved
   </a>
-  <a 
+  <a
+    href={getFilterHref('ignored')}
+    class="pill-btn {data.status === 'ignored' ? 'pill-btn-primary' : 'pill-btn-ghost'}"
+  >
+    Ignored
+  </a>
+  <a
     href={getFilterHref('all')}
     class="pill-btn {data.status === 'all' ? 'pill-btn-primary' : 'pill-btn-ghost'}"
   >
@@ -92,6 +99,9 @@
           <th class="py-4 px-4 font-medium">First Detected</th>
           <th class="py-4 px-4 font-medium">Last Seen</th>
           <th class="py-4 px-4 font-medium">Status</th>
+          {#if data.canMute}
+            <th class="py-4 px-4 font-medium">Actions</th>
+          {/if}
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-100">
@@ -135,6 +145,27 @@
                 {test.status}
               </span>
             </td>
+            {#if data.canMute}
+              <td class="py-4 px-4">
+                {#if test.status === 'active'}
+                  <form method="POST" action="?/setStatus" use:enhance>
+                    <input type="hidden" name="id" value={test.id} />
+                    <input type="hidden" name="status" value="ignored" />
+                    <button type="submit" class="pill-btn pill-btn-ghost !py-1 !px-3 text-xs">
+                      Mute
+                    </button>
+                  </form>
+                {:else if test.status === 'ignored'}
+                  <form method="POST" action="?/setStatus" use:enhance>
+                    <input type="hidden" name="id" value={test.id} />
+                    <input type="hidden" name="status" value="active" />
+                    <button type="submit" class="pill-btn pill-btn-ghost !py-1 !px-3 text-xs">
+                      Unmute
+                    </button>
+                  </form>
+                {/if}
+              </td>
+            {/if}
           </tr>
         {/each}
       </tbody>

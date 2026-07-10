@@ -349,6 +349,43 @@ Returns a single flaky-test row by its UUID. Responds `404` if no flaky test wit
 }
 ```
 
+#### Mute / Unmute a Flaky Test
+
+```http
+PATCH /api/v1/tests/flaky/:id
+```
+
+Requires the admin Bearer token (see [Admin Endpoints](#admin-endpoints)), not a project token — this is a management action, not a per-project write.
+
+**Body:**
+```json
+{
+  "status": "ignored"
+}
+```
+
+Only `"ignored"` (mute) and `"active"` (unmute) are accepted. `"resolved"` is system-managed and rejected with `400`. Reconcile passes (triggered on every report ingest) never overwrite an `"ignored"` status back to `"active"` or `"resolved"` — an operator must explicitly unmute.
+
+**Response:**
+```json
+{
+  "flakyTest": {
+    "id": "uuid",
+    "projectId": "uuid",
+    "testName": "user login should work",
+    "testFile": "tests/auth.spec.ts",
+    "firstDetected": "2024-12-01T00:00:00.000Z",
+    "lastSeen": "2024-12-11T00:00:00.000Z",
+    "flakeCount": 15,
+    "totalRuns": 50,
+    "flakeRate": "0.30",
+    "status": "ignored"
+  }
+}
+```
+
+Responds `400` for a malformed ID or an invalid `status` value, `404` if no flaky test with that ID exists.
+
 ---
 
 ## Admin Endpoints

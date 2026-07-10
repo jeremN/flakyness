@@ -159,13 +159,19 @@ GET /api/v1/projects/:id/runs?limit=20
 GET /api/v1/projects/:id/analysis?days=14&threshold=0.05
 ```
 
-Computes flakiness directly from stored test results (not cached).
+Computes flakiness directly from stored test results (not cached). Responds
+`404` if the project doesn't exist.
 
 **Query Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `days` | number | `14` | Analysis window in days, clamped to `[1, 90]` |
-| `threshold` | number | `0.05` | Flake-rate threshold (0–1) above which a test is considered flaky, clamped to `[0, 1]` |
+| `days` | number | project's `windowDays` override, else `14` | Analysis window in days, clamped to `[1, 90]` |
+| `threshold` | number | project's `flakeThreshold` override, else `0.05` | Flake-rate threshold (0–1) above which a test is considered flaky, clamped to `[0, 1]` |
+
+An explicit `days` or `threshold` query param always overrides the project's
+stored config (see [Update Project Flakiness Config](#update-project-flakiness-config)).
+`minRuns` is not query-overridable here; it always comes from the project's
+resolved config (default `3`).
 
 **Response:**
 ```json
@@ -377,6 +383,9 @@ GET /api/v1/admin/projects
       "gitlabProjectId": "123",
       "hasToken": true,
       "createdAt": "2024-12-01T00:00:00.000Z",
+      "flakeThreshold": null,
+      "windowDays": null,
+      "minRuns": null,
       "stats": {
         "totalRuns": 150,
         "totalTests": 5000,
@@ -386,6 +395,10 @@ GET /api/v1/admin/projects
   ]
 }
 ```
+
+`flakeThreshold`, `windowDays`, and `minRuns` are per-project flakiness detection
+overrides — see [Update Project Flakiness Config](#update-project-flakiness-config).
+`null` means the project uses the built-in default for that field.
 
 ### Create Project
 
@@ -431,6 +444,60 @@ POST /api/v1/admin/projects/:id/rotate-token
   "warning": "Save this token securely. The old token is now invalid."
 }
 ```
+
+### Update Project Flakiness Config
+
+```http
+PATCH /api/v1/admin/projects/:id
+```
+
+Update a project's per-project flakiness detection overrides. Fields omitted
+from the body are left unchanged; sending a field as `null` explicitly clears
+it back to the built-in default. At least one field is required.
+
+**Body (all fields optional, but at least one required):**
+```json
+{
+  "flakeThreshold": 0.1,
+  "windowDays": 30,
+  "minRuns": 5
+}
+```
+
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `flakeThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is considered flaky. `null` resets to the default (`0.05`). |
+| `windowDays` | integer \| null | `[1, 90]` | Analysis window in days used by background flakiness reconciliation. `null` resets to the default (`14`). |
+| `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
+
+**Response (200):**
+```json
+{
+  "project": {
+    "id": "uuid",
+    "name": "my-project",
+    "gitlabProjectId": "123",
+    "createdAt": "2024-12-01T00:00:00.000Z",
+    "flakeThreshold": 0.1,
+    "windowDays": 30,
+    "minRuns": 5
+  }
+}
+```
+
+Returns `400` if the body fails validation (out-of-range values or an empty
+body) and `404` if the project doesn't exist.
+
+> **Tuning flakiness detection:** Flakiness is normally governed by three
+> defaults — `windowDays: 14`, `flakeThreshold: 0.05`, `minRuns: 3`. This
+> endpoint overrides them per project. Changes take effect on the **next
+> report ingest** (the flaky-tests table is only recomputed then), and MAY
+> reclassify tests already tracked for the project: tightening a threshold
+> can resolve tests that no longer qualify as flaky, while loosening it can
+> activate tests that newly cross the bar. This is expected, not a bug.
+> `GET /api/v1/projects/:id/analysis` picks up overrides immediately (it's
+> computed live), but explicit `days`/`threshold` query params on that
+> endpoint still take precedence over the stored project config.
 
 ### Delete Project
 

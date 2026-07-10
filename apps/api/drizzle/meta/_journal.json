@@ -22,6 +22,13 @@
       "when": 1780576172577,
       "tag": "0002_neat_dragon_lord",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783698415894,
+      "tag": "0003_tidy_karma",
+      "breakpoints": true
     }
   ]
 }

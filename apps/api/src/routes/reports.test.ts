@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -8,6 +8,7 @@ const describeWithDb = hasDatabase && hasAdminToken ? describe : describe.skip;
 
 let app: typeof import('../index').default;
 let adminToken: string;
+let testProjectId: string;
 let testProjectToken: string;
 
 const sampleReport = JSON.parse(
@@ -19,7 +20,7 @@ beforeAll(async () => {
     const module = await import('../index');
     app = module.default;
     adminToken = process.env.ADMIN_TOKEN!;
-    
+
     // Create a test project for reports testing
     const res = await app.request('/api/v1/admin/projects', {
       method: 'POST',
@@ -30,7 +31,19 @@ beforeAll(async () => {
       body: JSON.stringify({ name: `reports-test-${Date.now()}` }),
     });
     const body = await res.json();
+    testProjectId = body.project.id;
     testProjectToken = body.token;
+  }
+});
+
+afterAll(async () => {
+  if (hasDatabase && hasAdminToken && testProjectId) {
+    const res = await app.request(`/api/v1/admin/projects/${testProjectId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    // Assert so cleanup failures are visible instead of silently leaking rows
+    expect(res.status).toBe(200);
   }
 });
 

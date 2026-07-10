@@ -45,6 +45,25 @@ export interface TestRun {
   createdAt: string;
 }
 
+export interface TestFlakiness {
+  testName: string;
+  testFile: string;
+  totalRuns: number;
+  passCount: number;
+  failCount: number;
+  flakyCount: number;
+  flakeRate: number;
+  isFlaky: boolean;
+  lastSeen: string;
+}
+
+export interface AnalysisResponse {
+  windowDays: number;
+  threshold: number;
+  flakyTests: TestFlakiness[];
+  allTests: TestFlakiness[];
+}
+
 export interface TestHistory {
   testName: string;
   flakyInfo: FlakyTest | null;

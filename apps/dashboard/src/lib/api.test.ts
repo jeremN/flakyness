@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getProjects, getFlakyTests, getProjectRuns, getTestHistory } from './api';
+import { getProjects, getFlakyTests, getProjectRuns, getTestHistory, getAnalysis } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -90,5 +90,35 @@ describe('lib/api', () => {
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('loads%20100%25%20of%20items');
+  });
+
+  it('getAnalysis builds the URL with the given days and threshold, and defaults', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(
+        JSON.stringify({ windowDays: 14, threshold: 0.05, flakyTests: [], allTests: [] }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getAnalysis('p1', 30, 0.1);
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain('/projects/p1/analysis?days=30&threshold=0.1');
+  });
+
+  it('getAnalysis defaults to 14 days and 0.05 threshold', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(
+        JSON.stringify({ windowDays: 14, threshold: 0.05, flakyTests: [], allTests: [] }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getAnalysis('p1');
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain('/projects/p1/analysis?days=14&threshold=0.05');
   });
 });

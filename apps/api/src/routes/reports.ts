@@ -5,7 +5,7 @@ import { parsePlaywrightReport } from '../parsers/playwright';
 import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
-import { updateFlakyTests } from '../services/flakiness';
+import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
 import { logger } from '../middleware/logger';
 
 const BATCH_SIZE = 1000;
@@ -105,7 +105,7 @@ reports.post(
     });
 
     // Trigger flakiness detection in background (don't await)
-    updateFlakyTests(project.id).catch((err) => {
+    updateFlakyTests(project.id, resolveProjectConfig(project)).catch((err) => {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       logger.error('Flakiness detection failed', {
         projectId: project.id,

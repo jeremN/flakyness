@@ -14,6 +14,66 @@ beforeAll(async () => {
   }
 });
 
+/** Poll `predicate` until it resolves true, or give up after `timeoutMs`. */
+async function waitFor(
+  predicate: () => Promise<boolean>,
+  { timeoutMs = 5000, intervalMs = 100 }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
+/**
+ * Build a minimal Playwright JSON report with two tests in a single ingest:
+ * - "control test (always flaky)": fails on all 3 executions (100% flake
+ *   rate) — flaky under any valid threshold, used as a completion signal for
+ *   the fire-and-forget updateFlakyTests() call triggered by ingest.
+ * - "mildly flaky test": 1 flaky execution out of 3 (~33% flake rate) — well
+ *   above the DEFAULT_CONFIG threshold (5%) but below a 0.9 override.
+ */
+function buildFlakinessReport() {
+  const startTime = new Date().toISOString();
+  const execution = (status: 'passed' | 'failed') => ({
+    results: [{ workerIndex: 0, status, duration: 10, retry: 0, startTime }],
+  });
+  const flakyExecution = () => ({
+    results: [
+      { workerIndex: 0, status: 'failed' as const, duration: 10, retry: 0, startTime },
+      { workerIndex: 0, status: 'passed' as const, duration: 10, retry: 1, startTime },
+    ],
+  });
+
+  return {
+    config: { version: '1.40.0' },
+    suites: [
+      {
+        title: 'flakiness-config.spec.ts',
+        file: 'flakiness-config.spec.ts',
+        specs: [
+          {
+            title: 'control test (always flaky)',
+            ok: false,
+            tags: [],
+            location: { file: 'flakiness-config.spec.ts', line: 5, column: 5 },
+            tests: [execution('failed'), execution('failed'), execution('failed')],
+          },
+          {
+            title: 'mildly flaky test',
+            ok: true,
+            tags: [],
+            location: { file: 'flakiness-config.spec.ts', line: 15, column: 5 },
+            tests: [execution('passed'), flakyExecution(), execution('passed')],
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describeAdmin('Admin API Integration Tests', () => {
   const adminToken = process.env.ADMIN_TOKEN!;
   
@@ -225,6 +285,245 @@ describeAdmin('Admin API Integration Tests', () => {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PATCH /api/v1/admin/projects/:id', () => {
+    async function createProject(label: string): Promise<string> {
+      const res = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: `patch-test-${label}-${Date.now()}` }),
+      });
+      const body = await res.json();
+      return body.project.id as string;
+    }
+
+    it('sets flakiness overrides, readable back via PATCH response and GET /projects', async () => {
+      const projectId = await createProject('happy-path');
+
+      const patchRes = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flakeThreshold: 0.2, windowDays: 30, minRuns: 5 }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      const patchBody = await patchRes.json();
+      expect(patchBody.project.flakeThreshold).toBe(0.2);
+      expect(patchBody.project.windowDays).toBe(30);
+      expect(patchBody.project.minRuns).toBe(5);
+
+      const listRes = await app.request('/api/v1/admin/projects', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const listBody = await listRes.json();
+      const found = listBody.projects.find((p: any) => p.id === projectId);
+      expect(found).toBeDefined();
+      expect(found.flakeThreshold).toBe(0.2);
+      expect(found.windowDays).toBe(30);
+      expect(found.minRuns).toBe(5);
+      expect(found.tokenHash).toBeUndefined();
+    });
+
+    it('clears an override back to default with an explicit null', async () => {
+      const projectId = await createProject('clear-null');
+
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flakeThreshold: 0.3 }),
+      });
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flakeThreshold: null }),
+      });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.project.flakeThreshold).toBeNull();
+    });
+
+    it('leaves fields omitted from the body unchanged', async () => {
+      const projectId = await createProject('partial-update');
+
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ windowDays: 21, minRuns: 8 }),
+      });
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ minRuns: 12 }),
+      });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.project.windowDays).toBe(21);
+      expect(body.project.minRuns).toBe(12);
+    });
+
+    it('rejects an out-of-range flakeThreshold', async () => {
+      const projectId = await createProject('bad-threshold');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flakeThreshold: 1.5 }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an out-of-range windowDays', async () => {
+      const projectId = await createProject('bad-window');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ windowDays: 0 }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an empty body', async () => {
+      const projectId = await createProject('empty-body');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for a non-existent project', async () => {
+      const res = await app.request('/api/v1/admin/projects/00000000-0000-0000-0000-000000000000', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ minRuns: 5 }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects requests without an auth header', async () => {
+      const projectId = await createProject('no-auth');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ minRuns: 5 }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects requests with an invalid admin token', async () => {
+      const projectId = await createProject('bad-auth');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer invalid-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ minRuns: 5 }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  // End-to-end: a project-level flakeThreshold override changes what the
+  // fire-and-forget reconciliation triggered by report ingest considers
+  // flaky. Reclassification-on-next-ingest is documented, accepted behavior
+  // (see docs/API.md), not a bug — this test locks in that the override is
+  // actually threaded through, not just stored.
+  describe('Per-project flakiness config threading (end-to-end)', () => {
+    it('an overridden flakeThreshold suppresses reconciliation for tests below it', async () => {
+      const projectName = `flaky-config-e2e-${Date.now()}`;
+      const createRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: projectName }),
+      });
+      const { project, token } = await createRes.json();
+
+      const patchRes = await app.request(`/api/v1/admin/projects/${project.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ flakeThreshold: 0.9 }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      const ingestRes = await app.request(`/api/v1/reports?branch=main&commit=${'c'.repeat(40)}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildFlakinessReport()),
+      });
+      expect(ingestRes.status).toBe(201);
+
+      // updateFlakyTests() runs fire-and-forget after the ingest response is
+      // sent. The control test is flaky under any valid threshold and is
+      // upserted in the same transaction as the mildly-flaky test, so its
+      // arrival signals the background job has committed.
+      const controlWentActive = await waitFor(async () => {
+        const res = await app.request(`/api/v1/projects/${project.id}/flaky-tests?status=all`);
+        const body = await res.json();
+        const control = body.flakyTests.find((t: { testName: string }) =>
+          t.testName.includes('control test')
+        );
+        return control?.status === 'active';
+      });
+      expect(controlWentActive).toBe(true);
+
+      const finalRes = await app.request(`/api/v1/projects/${project.id}/flaky-tests?status=all`);
+      const finalBody = await finalRes.json();
+      const mildlyFlaky = finalBody.flakyTests.find((t: { testName: string }) =>
+        t.testName.includes('mildly flaky test')
+      );
+      expect(mildlyFlaky).toBeUndefined();
+
+      const deleteRes = await app.request(`/api/v1/admin/projects/${project.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      expect(deleteRes.status).toBe(200);
     });
   });
 });

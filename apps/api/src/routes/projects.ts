@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, desc, and, gte } from 'drizzle-orm';
 import { db, projects, flakyTests, testRuns } from '../db';
-import { getProjectStats, analyzeFlakiness } from '../services/flakiness';
+import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
 
 const projectsRouter = new Hono();
@@ -145,15 +145,36 @@ projectsRouter.get('/:id/analysis', async (c) => {
     return c.json({ error: 'Invalid project ID format' }, 400);
   }
   const projectId = parsed.data;
+
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId),
+  });
+  if (!project) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
+  // Project-level overrides (NULL = unset) replace the hardcoded defaults;
+  // explicit query params still take precedence over both.
+  const resolvedConfig = resolveProjectConfig(project);
+
   // Clamp/validate the window so an attacker can't force an unbounded
   // in-memory aggregation (analyzeFlakiness loads matching rows into memory).
-  const windowDays = Math.min(Math.max(parseInt(c.req.query('days') || '14', 10) || 14, 1), 90);
-  const rawThreshold = parseFloat(c.req.query('threshold') || '0.05');
-  const threshold = Number.isFinite(rawThreshold) ? Math.min(Math.max(rawThreshold, 0), 1) : 0.05;
+  const windowDays = Math.min(
+    Math.max(
+      parseInt(c.req.query('days') || String(resolvedConfig.windowDays), 10) || resolvedConfig.windowDays,
+      1
+    ),
+    90
+  );
+  const rawThreshold = parseFloat(c.req.query('threshold') || String(resolvedConfig.flakeThreshold));
+  const threshold = Number.isFinite(rawThreshold)
+    ? Math.min(Math.max(rawThreshold, 0), 1)
+    : resolvedConfig.flakeThreshold;
 
   const analysis = await analyzeFlakiness(projectId, {
     windowDays,
     flakeThreshold: threshold,
+    minRuns: resolvedConfig.minRuns,
   });
 
   return c.json({

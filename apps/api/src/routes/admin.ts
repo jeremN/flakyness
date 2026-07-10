@@ -21,6 +21,14 @@ const createProjectSchema = z.object({
   gitlabProjectId: z.string().max(100).optional(),
 });
 
+const projectConfigPatchSchema = z
+  .object({
+    flakeThreshold: z.number().min(0).max(1).nullable().optional(),
+    windowDays: z.number().int().min(1).max(90).nullable().optional(),
+    minRuns: z.number().int().min(1).max(100).nullable().optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
+
 /**
  * GET /api/v1/admin/projects
  *
@@ -34,6 +42,9 @@ adminRouter.get('/projects', async (c) => {
       gitlabProjectId: projects.gitlabProjectId,
       hasToken: sql<boolean>`${projects.tokenHash} IS NOT NULL`,
       createdAt: projects.createdAt,
+      flakeThreshold: projects.flakeThreshold,
+      windowDays: projects.windowDays,
+      minRuns: projects.minRuns,
       totalRuns: sql<number>`coalesce((
         select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
       ), 0)`,
@@ -53,6 +64,9 @@ adminRouter.get('/projects', async (c) => {
     gitlabProjectId: p.gitlabProjectId,
     hasToken: p.hasToken,
     createdAt: p.createdAt,
+    flakeThreshold: p.flakeThreshold !== null ? Number(p.flakeThreshold) : null,
+    windowDays: p.windowDays,
+    minRuns: p.minRuns,
     stats: {
       totalRuns: p.totalRuns,
       totalTests: p.totalTests,
@@ -154,6 +168,71 @@ adminRouter.post('/projects/:id/rotate-token', async (c) => {
     warning: 'Save this token securely. The old token is now invalid.',
   });
 });
+
+/**
+ * PATCH /api/v1/admin/projects/:id
+ *
+ * Update a project's per-project flakiness detection overrides
+ * (flakeThreshold, windowDays, minRuns). Any field omitted from the body is
+ * left unchanged; sending a field as `null` explicitly clears it back to the
+ * flakiness service's DEFAULT_CONFIG value.
+ */
+adminRouter.patch(
+  '/projects/:id',
+  zValidator('json', projectConfigPatchSchema),
+  async (c) => {
+    const parsed = uuidSchema.safeParse(c.req.param('id'));
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+    const projectId = parsed.data;
+    const data = c.req.valid('json');
+
+    // Build the .set() object only from keys present in the parsed body, so
+    // an omitted field leaves the stored value untouched while an explicit
+    // `null` clears it back to the default.
+    const updates: Partial<typeof projects.$inferInsert> = {};
+    if ('flakeThreshold' in data) {
+      updates.flakeThreshold =
+        data.flakeThreshold === null || data.flakeThreshold === undefined
+          ? null
+          : data.flakeThreshold.toFixed(4);
+    }
+    if ('windowDays' in data) {
+      updates.windowDays = data.windowDays ?? null;
+    }
+    if ('minRuns' in data) {
+      updates.minRuns = data.minRuns ?? null;
+    }
+
+    const [project] = await db
+      .update(projects)
+      .set(updates)
+      .where(eq(projects.id, projectId))
+      .returning({
+        id: projects.id,
+        name: projects.name,
+        gitlabProjectId: projects.gitlabProjectId,
+        createdAt: projects.createdAt,
+        flakeThreshold: projects.flakeThreshold,
+        windowDays: projects.windowDays,
+        minRuns: projects.minRuns,
+      });
+
+    if (!project) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
+
+    logger.info('Project flakiness config updated', { projectId, projectName: project.name });
+
+    return c.json({
+      project: {
+        ...project,
+        flakeThreshold: project.flakeThreshold !== null ? Number(project.flakeThreshold) : null,
+      },
+    });
+  }
+);
 
 /**
  * DELETE /api/v1/admin/projects/:id

@@ -16,6 +16,25 @@ const DEFAULT_CONFIG: FlakinessConfig = {
   minRuns: 3,
 };
 
+/** Shape of the projects row fields relevant to config resolution. */
+export interface ProjectFlakinessOverrides {
+  flakeThreshold: string | null; // drizzle decimal maps to string
+  windowDays: number | null;
+  minRuns: number | null;
+}
+
+/**
+ * Merge a project's stored overrides (NULL = unset) over DEFAULT_CONFIG.
+ */
+export function resolveProjectConfig(project: ProjectFlakinessOverrides): FlakinessConfig {
+  return {
+    windowDays: project.windowDays ?? DEFAULT_CONFIG.windowDays,
+    flakeThreshold:
+      project.flakeThreshold !== null ? Number(project.flakeThreshold) : DEFAULT_CONFIG.flakeThreshold,
+    minRuns: project.minRuns ?? DEFAULT_CONFIG.minRuns,
+  };
+}
+
 export interface TestFlakiness {
   testName: string;
   testFile: string;

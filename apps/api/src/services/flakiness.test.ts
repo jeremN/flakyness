@@ -1,6 +1,13 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
-import { computeFlakiness, updateFlakyTests, type ResultRow, type FlakinessConfig } from './flakiness';
+import {
+  computeFlakiness,
+  updateFlakyTests,
+  resolveProjectConfig,
+  type ResultRow,
+  type FlakinessConfig,
+  type ProjectFlakinessOverrides,
+} from './flakiness';
 import { db, projects, testRuns, testResults, flakyTests } from '../db';
 
 describe('Flakiness Detection', () => {
@@ -186,6 +193,38 @@ describe('Flakiness Detection', () => {
       const result = computeFlakiness(results, { ...defaultConfig, minRuns: 1 });
 
       expect(result[0].lastSeen).toEqual(newest);
+    });
+  });
+
+  describe('resolveProjectConfig', () => {
+    const allNull: ProjectFlakinessOverrides = {
+      flakeThreshold: null,
+      windowDays: null,
+      minRuns: null,
+    };
+
+    it('falls back to DEFAULT_CONFIG when all overrides are null', () => {
+      expect(resolveProjectConfig(allNull)).toEqual(defaultConfig);
+    });
+
+    it('converts a decimal-string flakeThreshold to a number exactly once', () => {
+      const result = resolveProjectConfig({ ...allNull, flakeThreshold: '0.2000' });
+      expect(result.flakeThreshold).toBe(0.2);
+      expect(typeof result.flakeThreshold).toBe('number');
+    });
+
+    it('applies a partial override, leaving unset fields at their default', () => {
+      const result = resolveProjectConfig({ ...allNull, windowDays: 30 });
+      expect(result).toEqual({ ...defaultConfig, windowDays: 30 });
+    });
+
+    it('applies overrides for all three fields simultaneously', () => {
+      const result = resolveProjectConfig({
+        flakeThreshold: '0.9000',
+        windowDays: 7,
+        minRuns: 10,
+      });
+      expect(result).toEqual({ flakeThreshold: 0.9, windowDays: 7, minRuns: 10 });
     });
   });
 });
@@ -464,5 +503,25 @@ describeWithDb('updateFlakyTests', () => {
       const row = await getFlakyRow(projectId, testName);
       expect(row!.status).toBe('resolved');
     }
+  });
+
+  it('honors a per-call flakeThreshold override (project-config threading)', async () => {
+    const projectId = await seedProject('threshold-override');
+    // 10% failure rate: 9 passed, 1 failed out of 10 runs.
+    await seedRun(projectId, [
+      ...repeat(9, 'test-a', 'passed'),
+      ...repeat(1, 'test-a', 'failed'),
+    ]);
+
+    // A stricter (higher) threshold than the 10% flake rate: not flaky.
+    const lenient = await updateFlakyTests(projectId, { flakeThreshold: 0.5 });
+    expect(lenient).toEqual({ updated: 0, resolved: 0 });
+    expect(await getFlakyRow(projectId, 'test-a')).toBeUndefined();
+
+    // A looser (lower) threshold than the 10% flake rate: flaky.
+    const strict = await updateFlakyTests(projectId, { flakeThreshold: 0.05 });
+    expect(strict).toEqual({ updated: 1, resolved: 0 });
+    const row = await getFlakyRow(projectId, 'test-a');
+    expect(row!.status).toBe('active');
   });
 });

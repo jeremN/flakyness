@@ -7,6 +7,10 @@ export const projects = pgTable('projects', {
   gitlabProjectId: varchar('gitlab_project_id', { length: 100 }),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(), // SHA-256 hash
   createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Per-project flakiness overrides; NULL means "use DEFAULT_CONFIG".
+  flakeThreshold: decimal('flake_threshold', { precision: 5, scale: 4 }),
+  windowDays: integer('window_days'),
+  minRuns: integer('min_runs'),
 }, (table) => ({
   // Index for token hash lookup (authentication)
   tokenHashIdx: index('projects_token_hash_idx').on(table.tokenHash),

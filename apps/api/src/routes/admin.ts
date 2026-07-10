@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, sql, desc, inArray } from 'drizzle-orm';
+import { eq, sql, desc } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests } from '../db';
 import { adminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
@@ -176,29 +176,10 @@ adminRouter.delete('/projects/:id', async (c) => {
     return c.json({ error: 'Project not found' }, 404);
   }
 
-  // Delete all associated data in a transaction
-  await db.transaction(async (tx) => {
-    // 1. Get all test run IDs for this project
-    const runs = await tx
-      .select({ id: testRuns.id })
-      .from(testRuns)
-      .where(eq(testRuns.projectId, projectId));
-
-    // 2. Delete test results for those runs (single statement, not N+1)
-    const runIds = runs.map((r) => r.id);
-    if (runIds.length > 0) {
-      await tx.delete(testResults).where(inArray(testResults.testRunId, runIds));
-    }
-
-    // 3. Delete test runs
-    await tx.delete(testRuns).where(eq(testRuns.projectId, projectId));
-
-    // 4. Delete flaky tests
-    await tx.delete(flakyTests).where(eq(flakyTests.projectId, projectId));
-
-    // 5. Delete project
-    await tx.delete(projects).where(eq(projects.id, projectId));
-  });
+  // Deleting the project cascades to test_runs, test_results, and
+  // flaky_tests via the FK ON DELETE CASCADE constraints declared in the
+  // schema — no need to manually delete children first.
+  await db.delete(projects).where(eq(projects.id, projectId));
 
   logger.info('Project deleted', { projectId, projectName: project.name });
 

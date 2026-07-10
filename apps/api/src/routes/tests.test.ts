@@ -107,6 +107,19 @@ describeWithDb('Tests API Integration Tests', () => {
       expect(body.history).toEqual([]);
       expect(body.stats.totalRuns).toBe(0);
     });
+
+    it('should handle a test name containing a percent sign without double-decoding', async () => {
+      // Regression test: the route must not re-decode an already-decoded
+      // param, or a name like "loads 100% of items" throws URIError.
+      const encodedName = encodeURIComponent('loads 100% of items');
+      const res = await app.request(
+        `/api/v1/tests/${encodedName}/history?project=${testProjectId}`
+      );
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.testName).toBe('loads 100% of items');
+    });
   });
 
   describe('GET /api/v1/tests/flaky/:id', () => {

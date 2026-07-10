@@ -48,10 +48,11 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
 
 export async function getFlakyTests(
   projectId: string,
-  status: string = 'active'
+  status: string = 'active',
+  limit: number = 100
 ): Promise<FlakyTest[]> {
   const data = await fetchJson<{ flakyTests: FlakyTest[] }>(
-    `/api/v1/projects/${projectId}/flaky-tests?status=${status}`
+    `/api/v1/projects/${projectId}/flaky-tests?status=${status}&limit=${limit}`
   );
   return data.flakyTests;
 }

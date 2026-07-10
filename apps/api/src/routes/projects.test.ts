@@ -63,13 +63,9 @@ describeWithDb('Projects API Integration Tests', () => {
   });
 
   describe('GET /api/v1/projects/:id', () => {
-    it('should return project details', async () => {
+    it('should return 404 — the bare route was removed as a duplicate of /stats', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}`);
-      expect(res.status).toBe(200);
-
-      const body = await res.json();
-      expect(body.project).toBeDefined();
-      expect(body.project.id).toBe(testProjectId);
+      expect(res.status).toBe(404);
     });
 
     it('should return 404 for non-existent project', async () => {

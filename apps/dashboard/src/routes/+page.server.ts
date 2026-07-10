@@ -12,7 +12,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 
   const [stats, flakyTests, recentRuns, trendData] = await Promise.all([
     getProjectStats(projectId),
-    getFlakyTests(projectId, 'active'),
+    getFlakyTests(projectId, 'active', 5),
     getProjectRuns(projectId, 5),
     getFlakeTrend(projectId, 7),
   ]);

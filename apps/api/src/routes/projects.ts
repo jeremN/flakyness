@@ -32,26 +32,6 @@ projectsRouter.get('/', async (c) => {
 });
 
 /**
- * GET /api/v1/projects/:id
- *
- * Get project details with stats
- */
-projectsRouter.get('/:id', async (c) => {
-  const parsed = uuidSchema.safeParse(c.req.param('id'));
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid project ID format' }, 400);
-  }
-
-  const stats = await getProjectStats(parsed.data);
-
-  if (!stats) {
-    return c.json({ error: 'Project not found' }, 404);
-  }
-
-  return c.json(stats);
-});
-
-/**
  * GET /api/v1/projects/:id/stats
  *
  * Get project statistics
@@ -85,6 +65,10 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
 
   const statusParsed = flakyStatusSchema.safeParse(c.req.query('status'));
   const status = statusParsed.success ? statusParsed.data : 'active';
+  const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
+
+  // Clamp limit between 1 and 100
+  const limit = Math.min(Math.max(requestedLimit, 1), 100);
 
   const flakyTestsList = await db
     .select({
@@ -105,7 +89,8 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
         status !== 'all' ? eq(flakyTests.status, status) : undefined
       )
     )
-    .orderBy(desc(flakyTests.flakeRate));
+    .orderBy(desc(flakyTests.flakeRate))
+    .limit(limit);
 
   return c.json({ flakyTests: flakyTestsList });
 });
@@ -235,8 +220,8 @@ projectsRouter.get('/:id/trend', async (c) => {
   const rates: number[] = [];
 
   for (const [day, data] of dailyMap) {
-    const date = new Date(day);
-    trendDays.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+    const date = new Date(`${day}T00:00:00Z`);
+    trendDays.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
     rates.push(data.total > 0 ? Math.round((data.flaky / data.total) * 1000) / 10 : 0);
   }
 

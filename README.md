@@ -168,7 +168,10 @@ See [docs/API.md](docs/API.md) for full API documentation.
 | `GET` | `/api/v1/projects/:id/stats` | - | Project statistics |
 | `GET` | `/api/v1/projects/:id/flaky-tests` | - | Flaky tests list |
 | `GET` | `/api/v1/projects/:id/runs` | - | Test runs list |
+| `GET` | `/api/v1/projects/:id/analysis` | - | Real-time flakiness analysis |
+| `GET` | `/api/v1/projects/:id/trend` | - | Flake rate trend data |
 | `GET` | `/api/v1/tests/:name/history` | - | Test history |
+| `GET` | `/api/v1/tests/flaky/:id` | - | Flaky test by ID |
 
 ### Admin API
 

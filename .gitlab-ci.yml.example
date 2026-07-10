@@ -30,13 +30,12 @@ e2e-tests:
       if [ -f playwright-results.json ]; then
         echo "Uploading test results to Flackyness..."
         curl -X POST "${FLACKYNESS_API}/api/v1/reports" \
+          --url-query "branch=${CI_COMMIT_REF_NAME}" \
+          --url-query "commit=${CI_COMMIT_SHA}" \
+          --url-query "pipeline=${CI_PIPELINE_ID}" \
           -H "Authorization: Bearer ${FLACKYNESS_TOKEN}" \
           -H "Content-Type: application/json" \
           -d @playwright-results.json \
-          --data-urlencode "project=${CI_PROJECT_NAME}" \
-          --data-urlencode "branch=${CI_COMMIT_REF_NAME}" \
-          --data-urlencode "commit=${CI_COMMIT_SHA}" \
-          --data-urlencode "pipeline=${CI_PIPELINE_ID}" \
           --fail-with-body || echo "Warning: Failed to upload results"
       else
         echo "Warning: No test results file found"

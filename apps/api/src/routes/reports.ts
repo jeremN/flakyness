@@ -6,6 +6,7 @@ import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
+import { sendFlakyTransitionWebhook, type FlakyTransitionPayload } from '../services/notifications';
 import { logger } from '../middleware/logger';
 
 const BATCH_SIZE = 1000;
@@ -106,17 +107,42 @@ reports.post(
       return run;
     });
 
-    // Trigger flakiness detection in background (don't await)
-    updateFlakyTests(project.id, resolveProjectConfig(project)).catch((err) => {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      logger.error('Flakiness detection failed', {
-        projectId: project.id,
-        error: {
-          name: err instanceof Error ? err.name : 'Error',
-          message: errorMessage,
-        },
+    // Trigger flakiness detection in background (don't await). If it surfaces
+    // a newly-flaky or newly-resolved test and the project has a webhook
+    // configured, deliver one best-effort notification for this ingest.
+    updateFlakyTests(project.id, resolveProjectConfig(project))
+      .then(async ({ newlyFlaky, newlyResolved }) => {
+        if (!project.webhookUrl || (newlyFlaky.length === 0 && newlyResolved.length === 0)) {
+          return;
+        }
+
+        const payload: FlakyTransitionPayload = {
+          event: 'flaky_tests_changed',
+          project: { id: project.id, name: project.name },
+          newlyFlaky,
+          newlyResolved,
+          run: { branch: testRun.branch, commitSha: testRun.commitSha },
+          dashboardUrl: null,
+        };
+
+        const delivered = await sendFlakyTransitionWebhook(project.webhookUrl, payload);
+        if (!delivered) {
+          logger.error('Flaky transition webhook delivery failed', {
+            projectId: project.id,
+            projectName: project.name,
+          });
+        }
+      })
+      .catch((err) => {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        logger.error('Flakiness detection failed', {
+          projectId: project.id,
+          error: {
+            name: err instanceof Error ? err.name : 'Error',
+            message: errorMessage,
+          },
+        });
       });
-    });
 
     return c.json({
       success: true,

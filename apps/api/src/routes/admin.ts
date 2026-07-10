@@ -26,6 +26,29 @@ const projectConfigPatchSchema = z
     flakeThreshold: z.number().min(0).max(1).nullable().optional(),
     windowDays: z.number().int().min(1).max(90).nullable().optional(),
     minRuns: z.number().int().min(1).max(100).nullable().optional(),
+    // Admin-set outbound webhook for flaky-test transition notifications.
+    // Same trust level as the operator's shell — no IP deny-list in v1
+    // (see docs/API.md). Protocol restricted to http(s) to reject obviously
+    // wrong values (e.g. ftp://) at the API boundary.
+    webhookUrl: z
+      .string()
+      .url()
+      .max(2048)
+      .refine(
+        (u) => {
+          // Zod v4 runs all chained checks regardless of earlier failures,
+          // so this can see a string that already failed .url() — guard
+          // the URL constructor instead of letting it throw uncaught.
+          try {
+            return /^https?:$/.test(new URL(u).protocol);
+          } catch {
+            return false;
+          }
+        },
+        { message: 'webhookUrl must use http or https' }
+      )
+      .nullable()
+      .optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
 
@@ -45,6 +68,7 @@ adminRouter.get('/projects', async (c) => {
       flakeThreshold: projects.flakeThreshold,
       windowDays: projects.windowDays,
       minRuns: projects.minRuns,
+      webhookUrl: projects.webhookUrl,
       totalRuns: sql<number>`coalesce((
         select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
       ), 0)`,
@@ -67,6 +91,7 @@ adminRouter.get('/projects', async (c) => {
     flakeThreshold: p.flakeThreshold !== null ? Number(p.flakeThreshold) : null,
     windowDays: p.windowDays,
     minRuns: p.minRuns,
+    webhookUrl: p.webhookUrl,
     stats: {
       totalRuns: p.totalRuns,
       totalTests: p.totalTests,
@@ -204,6 +229,9 @@ adminRouter.patch(
     if ('minRuns' in data) {
       updates.minRuns = data.minRuns ?? null;
     }
+    if ('webhookUrl' in data) {
+      updates.webhookUrl = data.webhookUrl ?? null;
+    }
 
     const [project] = await db
       .update(projects)
@@ -217,6 +245,7 @@ adminRouter.patch(
         flakeThreshold: projects.flakeThreshold,
         windowDays: projects.windowDays,
         minRuns: projects.minRuns,
+        webhookUrl: projects.webhookUrl,
       });
 
     if (!project) {

@@ -300,7 +300,7 @@ describeWithDb('updateFlakyTests', () => {
 
     const result = await updateFlakyTests(projectId);
 
-    expect(result).toEqual({ updated: 1, resolved: 0 });
+    expect(result).toEqual({ updated: 1, resolved: 0, newlyFlaky: ['test-a'], newlyResolved: [] });
 
     const row = await getFlakyRow(projectId, 'test-a');
     expect(row).toBeDefined();
@@ -329,7 +329,9 @@ describeWithDb('updateFlakyTests', () => {
     ]);
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 1, resolved: 0 });
+    // Still flaky on this second call (prior status 'active') — not a
+    // transition, so it must NOT appear in newlyFlaky.
+    expect(result).toEqual({ updated: 1, resolved: 0, newlyFlaky: [], newlyResolved: [] });
 
     const second = await getFlakyRow(projectId, 'test-a');
     expect(second!.firstDetected!.toISOString()).toBe(first!.firstDetected!.toISOString());
@@ -355,6 +357,8 @@ describeWithDb('updateFlakyTests', () => {
     const result = await updateFlakyTests(projectId);
     expect(result.resolved).toBe(1);
     expect(result.updated).toBe(0);
+    expect(result.newlyResolved).toEqual(['test-a']);
+    expect(result.newlyFlaky).toEqual([]);
 
     const resolved = await getFlakyRow(projectId, 'test-a');
     expect(resolved!.status).toBe('resolved');
@@ -377,7 +381,7 @@ describeWithDb('updateFlakyTests', () => {
     await seedRun(projectId, repeat(3, 'test-b', 'passed'));
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 0, resolved: 1 });
+    expect(result).toEqual({ updated: 0, resolved: 1, newlyFlaky: [], newlyResolved: ['test-a'] });
 
     const resolved = await getFlakyRow(projectId, 'test-a');
     expect(resolved!.status).toBe('resolved');
@@ -402,7 +406,9 @@ describeWithDb('updateFlakyTests', () => {
     ]);
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 1, resolved: 0 });
+    // Ignored is a mute, not a transition: the test keeps meeting the
+    // threshold but must not appear in newlyFlaky (or newlyResolved).
+    expect(result).toEqual({ updated: 1, resolved: 0, newlyFlaky: [], newlyResolved: [] });
 
     const row = await getFlakyRow(projectId, 'test-a');
     expect(row!.status).toBe('ignored');
@@ -430,7 +436,7 @@ describeWithDb('updateFlakyTests', () => {
     await seedRun(projectId, repeat(3, 'test-b', 'passed'));
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 0, resolved: 0 });
+    expect(result).toEqual({ updated: 0, resolved: 0, newlyFlaky: [], newlyResolved: [] });
 
     const row = await getFlakyRow(projectId, 'test-a');
     expect(row!.status).toBe('ignored');
@@ -447,7 +453,10 @@ describeWithDb('updateFlakyTests', () => {
     }
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 25, resolved: 0 });
+    expect(result.updated).toBe(25);
+    expect(result.resolved).toBe(0);
+    expect(new Set(result.newlyFlaky)).toEqual(new Set(testNames));
+    expect(result.newlyResolved).toEqual([]);
 
     for (const testName of testNames) {
       const row = await getFlakyRow(projectId, testName);
@@ -477,7 +486,12 @@ describeWithDb('updateFlakyTests', () => {
     ]);
 
     const firstResult = await updateFlakyTests(projectId);
-    expect(firstResult).toEqual({ updated: 6, resolved: 0 });
+    expect(firstResult.updated).toBe(6);
+    expect(firstResult.resolved).toBe(0);
+    expect(new Set(firstResult.newlyFlaky)).toEqual(
+      new Set(['flaky-1', 'flaky-2', 'flaky-3', 'clean-later-1', 'clean-later-2', 'vanish-later'])
+    );
+    expect(firstResult.newlyResolved).toEqual([]);
 
     // Clean up two tests (lots of passing runs), and remove one entirely.
     await seedRun(projectId, [
@@ -493,7 +507,14 @@ describeWithDb('updateFlakyTests', () => {
     await db.delete(testResults).where(eq(testResults.testRunId, runId));
 
     const result = await updateFlakyTests(projectId);
-    expect(result).toEqual({ updated: 3, resolved: 3 });
+    expect(result.updated).toBe(3);
+    expect(result.resolved).toBe(3);
+    // The three flaky-* tests were already active from the first call, so
+    // this reconciliation isn't a transition for them.
+    expect(result.newlyFlaky).toEqual([]);
+    expect(new Set(result.newlyResolved)).toEqual(
+      new Set(['clean-later-1', 'clean-later-2', 'vanish-later'])
+    );
 
     for (const testName of ['flaky-1', 'flaky-2', 'flaky-3']) {
       const row = await getFlakyRow(projectId, testName);
@@ -515,13 +536,42 @@ describeWithDb('updateFlakyTests', () => {
 
     // A stricter (higher) threshold than the 10% flake rate: not flaky.
     const lenient = await updateFlakyTests(projectId, { flakeThreshold: 0.5 });
-    expect(lenient).toEqual({ updated: 0, resolved: 0 });
+    expect(lenient).toEqual({ updated: 0, resolved: 0, newlyFlaky: [], newlyResolved: [] });
     expect(await getFlakyRow(projectId, 'test-a')).toBeUndefined();
 
     // A looser (lower) threshold than the 10% flake rate: flaky.
     const strict = await updateFlakyTests(projectId, { flakeThreshold: 0.05 });
-    expect(strict).toEqual({ updated: 1, resolved: 0 });
+    expect(strict).toEqual({ updated: 1, resolved: 0, newlyFlaky: ['test-a'], newlyResolved: [] });
     const row = await getFlakyRow(projectId, 'test-a');
     expect(row!.status).toBe('active');
+  });
+
+  it('flags a test as newly flaky again after a resolved→flaky re-activation', async () => {
+    const projectId = await seedProject('resolved-reactivation');
+
+    // First call: test-a is flaky (1/4 = 25%) → active, and a transition.
+    await seedRun(projectId, [
+      ...repeat(3, 'test-a', 'passed'),
+      ...repeat(1, 'test-a', 'failed'),
+    ]);
+    const first = await updateFlakyTests(projectId);
+    expect(first.newlyFlaky).toEqual(['test-a']);
+
+    // Second call: enough clean passes push it below threshold (1/24 ≈ 4.2%
+    // < 5%) → resolved.
+    await seedRun(projectId, repeat(20, 'test-a', 'passed'));
+    const second = await updateFlakyTests(projectId);
+    expect(second.newlyResolved).toEqual(['test-a']);
+    const resolved = await getFlakyRow(projectId, 'test-a');
+    expect(resolved!.status).toBe('resolved');
+
+    // Third call: more failures push it back above threshold (4/27 ≈ 14.8%)
+    // — a resolved→flaky re-activation, which must be reported as newly
+    // flaky (not silently treated as "already tracked").
+    await seedRun(projectId, repeat(3, 'test-a', 'failed'));
+    const third = await updateFlakyTests(projectId);
+    expect(third).toEqual({ updated: 1, resolved: 0, newlyFlaky: ['test-a'], newlyResolved: [] });
+    const reactivated = await getFlakyRow(projectId, 'test-a');
+    expect(reactivated!.status).toBe('active');
   });
 });

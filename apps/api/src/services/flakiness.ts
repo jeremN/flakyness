@@ -1,4 +1,4 @@
-import { eq, and, gte, sql, desc } from 'drizzle-orm';
+import { eq, and, gte, sql, desc, inArray } from 'drizzle-orm';
 import { db, testResults, testRuns, flakyTests, projects } from '../db';
 
 export interface FlakinessConfig {
@@ -160,6 +160,19 @@ export async function analyzeFlakiness(
   return computeFlakiness(results, { windowDays, flakeThreshold, minRuns });
 }
 
+// Postgres bind-param limit forces chunking multi-row statements; matches
+// BATCH_SIZE in apps/api/src/routes/reports.ts.
+const BATCH_SIZE = 1000;
+
+/** Split an array into consecutive chunks of at most `size` elements. */
+function chunks<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    out.push(arr.slice(i, i + size));
+  }
+  return out;
+}
+
 /**
  * Update the flaky_tests table based on current analysis.
  * This should be called after ingesting a new report.
@@ -169,76 +182,71 @@ export async function updateFlakyTests(
   config: Partial<FlakinessConfig> = {}
 ): Promise<{ updated: number; resolved: number }> {
   const analysis = await analyzeFlakiness(projectId, config);
-  
-  let updated = 0;
-  let resolved = 0;
 
   // Get existing flaky tests for this project
   const existingFlaky = await db.query.flakyTests.findMany({
     where: eq(flakyTests.projectId, projectId),
   });
 
-  const existingMap = new Map(existingFlaky.map(f => [f.testName, f]));
+  // Rows to upsert: every currently-flaky test.
+  const flakyRows = analysis
+    .filter(test => test.isFlaky)
+    .map(test => ({
+      projectId,
+      testName: test.testName,
+      testFile: test.testFile,
+      firstDetected: new Date(),
+      lastSeen: test.lastSeen,
+      flakeCount: test.failCount + test.flakyCount,
+      totalRuns: test.totalRuns,
+      flakeRate: test.flakeRate.toFixed(4),
+      status: 'active',
+    }));
 
-  // Track which existing flaky tests were seen in the analysis
-  const seenTestNames = new Set<string>();
+  // Ids to resolve: active rows that are (a) analyzed but no longer flaky, or
+  // (b) absent from the analysis entirely. Built from a Map lookup (not
+  // analysis.find() inside a filter) to stay O(n) on large projects.
+  const isFlakyByName = new Map(analysis.map(test => [test.testName, test.isFlaky]));
+  const resolveIds = existingFlaky
+    .filter(existing => existing.status === 'active')
+    .filter(existing => !(isFlakyByName.get(existing.testName) ?? false))
+    .map(existing => existing.id);
 
-  for (const test of analysis) {
-    seenTestNames.add(test.testName);
-    const existing = existingMap.get(test.testName);
+  if (flakyRows.length > 0 || resolveIds.length > 0) {
+    await db.transaction(async (tx) => {
+      for (const chunk of chunks(flakyRows, BATCH_SIZE)) {
+        // Atomic upsert keyed on the (project_id, test_name) unique index —
+        // avoids the read-then-write race that let concurrent ingests insert
+        // duplicates. firstDetected is only set on insert; the conflict path
+        // never overwrites it. status preserves 'ignored' across refreshes —
+        // an operator-muted test doesn't get silently un-muted by the next
+        // ingest — and otherwise (re)activates the row.
+        await tx
+          .insert(flakyTests)
+          .values(chunk)
+          .onConflictDoUpdate({
+            target: [flakyTests.projectId, flakyTests.testName],
+            set: {
+              testFile: sql`excluded.test_file`,
+              lastSeen: sql`excluded.last_seen`,
+              flakeCount: sql`excluded.flake_count`,
+              totalRuns: sql`excluded.total_runs`,
+              flakeRate: sql`excluded.flake_rate`,
+              status: sql`CASE WHEN ${flakyTests.status} = 'ignored' THEN 'ignored' ELSE 'active' END`,
+            },
+          });
+      }
 
-    if (test.isFlaky) {
-      // Atomic upsert keyed on the (project_id, test_name) unique index — avoids
-      // the read-then-write race that let concurrent ingests insert duplicates.
-      // firstDetected is only set on insert; the conflict path preserves it.
-      await db
-        .insert(flakyTests)
-        .values({
-          projectId,
-          testName: test.testName,
-          testFile: test.testFile,
-          firstDetected: new Date(),
-          lastSeen: test.lastSeen,
-          flakeCount: test.failCount + test.flakyCount,
-          totalRuns: test.totalRuns,
-          flakeRate: test.flakeRate.toFixed(4),
-          status: 'active',
-        })
-        .onConflictDoUpdate({
-          target: [flakyTests.projectId, flakyTests.testName],
-          set: {
-            testFile: test.testFile,
-            lastSeen: test.lastSeen,
-            flakeCount: test.failCount + test.flakyCount,
-            totalRuns: test.totalRuns,
-            flakeRate: test.flakeRate.toFixed(4),
-            status: 'active',
-          },
-        });
-      updated++;
-    } else if (existing && existing.status === 'active') {
-      // Test is no longer flaky - mark as resolved
-      await db
-        .update(flakyTests)
-        .set({ status: 'resolved' })
-        .where(eq(flakyTests.id, existing.id));
-      resolved++;
-    }
+      for (const chunk of chunks(resolveIds, BATCH_SIZE)) {
+        await tx
+          .update(flakyTests)
+          .set({ status: 'resolved' })
+          .where(inArray(flakyTests.id, chunk));
+      }
+    });
   }
 
-  // Resolve active flaky tests that no longer appear in analysis results
-  // (e.g., test was removed from the test suite or renamed)
-  for (const [testName, existing] of existingMap) {
-    if (existing.status === 'active' && !seenTestNames.has(testName)) {
-      await db
-        .update(flakyTests)
-        .set({ status: 'resolved' })
-        .where(eq(flakyTests.id, existing.id));
-      resolved++;
-    }
-  }
-
-  return { updated, resolved };
+  return { updated: flakyRows.length, resolved: resolveIds.length };
 }
 
 /**

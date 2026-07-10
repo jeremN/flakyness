@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { parsePlaywrightReport } from '../parsers/playwright';
+import { parsePlaywrightReport, type ParsedReport } from '../parsers/playwright';
+import { parseJUnitReport } from '../parsers/junit';
 import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
@@ -31,14 +32,16 @@ reports.use('*', reportRateLimit);
 /**
  * POST /api/v1/reports
  *
- * Ingest a Playwright JSON report.
+ * Ingest a Playwright JSON report or a JUnit XML report. The format is
+ * detected from the body content (not Content-Type): a body that starts
+ * with '<' is parsed as JUnit XML, everything else as Playwright JSON.
  *
  * Query params:
  *   - branch: Git branch name (default: "main")
  *   - commit: Git commit SHA (required)
  *   - pipeline: CI pipeline ID (optional)
  *
- * Body: Playwright JSON report
+ * Body: Playwright JSON report, or a JUnit XML report
  *
  * Returns: Created test run with summary
  */
@@ -49,21 +52,34 @@ reports.post(
     const project = c.get('project');
     const { branch, commit, pipeline } = c.req.valid('query');
 
-    // Parse request body as JSON
-    let rawReport: unknown;
-    try {
-      rawReport = await c.req.json();
-    } catch {
-      return c.json({ error: 'Invalid JSON body' }, 400);
-    }
+    // Read the body once as text, then dispatch by content — not Content-Type,
+    // since CI uploaders can send an inaccurate header. A body that (after
+    // leading whitespace) starts with '<' is treated as a JUnit XML report;
+    // anything else takes the existing Playwright JSON path.
+    const bodyText = await c.req.text();
+    let parsed: ParsedReport;
 
-    // Parse the Playwright report
-    let parsed;
-    try {
-      parsed = parsePlaywrightReport(rawReport);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return c.json({ error: `Failed to parse Playwright report: ${message}` }, 400);
+    if (bodyText.trimStart().startsWith('<')) {
+      try {
+        parsed = parseJUnitReport(bodyText);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return c.json({ error: `Failed to parse JUnit report: ${message}` }, 400);
+      }
+    } else {
+      let rawReport: unknown;
+      try {
+        rawReport = JSON.parse(bodyText);
+      } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+      }
+
+      try {
+        parsed = parsePlaywrightReport(rawReport);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        return c.json({ error: `Failed to parse Playwright report: ${message}` }, 400);
+      }
     }
 
     // Insert test run and results in a single transaction for atomicity

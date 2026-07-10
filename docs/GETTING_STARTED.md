@@ -153,6 +153,40 @@ e2e-tests:
 
 Push a commit to trigger the pipeline. After it completes, Flackyness will have your test results!
 
+### JUnit XML instead of Playwright?
+
+Flackyness also accepts JUnit XML reports (jest-junit, pytest, Go, Maven
+Surefire, Cypress, …) on the same endpoint — the format is auto-detected
+from the body, so no extra query param or header is needed:
+
+```yaml
+test:
+  stage: test
+  script:
+    - pytest --junitxml=report.xml
+  after_script:
+    - |
+      if [ -f report.xml ]; then
+        curl -X POST "${FLACKYNESS_API}/api/v1/reports?branch=${CI_COMMIT_REF_NAME}&commit=${CI_COMMIT_SHA}&pipeline=${CI_PIPELINE_ID}" \
+          -H "Authorization: Bearer ${FLACKYNESS_TOKEN}" \
+          -H "Content-Type: application/xml" \
+          --data-binary @report.xml \
+          --fail --silent --show-error
+        echo "Report uploaded to Flackyness"
+      fi
+  artifacts:
+    paths:
+      - report.xml
+    when: always
+    expire_in: 7 days
+```
+
+Note `--data-binary` (not `-d`) — it sends the file byte-for-byte, which
+matters for XML. See [Upload a Test Report](API.md#upload-a-test-report-playwright-json-or-junit-xml)
+for the JUnit field mapping and status rules (JUnit has no retry
+semantics, so flakiness is detected across report uploads rather than
+within a single one).
+
 ---
 
 ## View Results in Dashboard

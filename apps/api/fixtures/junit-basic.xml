@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="4" failures="1" errors="0" skipped="1" time="2.345">
+  <testsuite name="auth.spec.ts" tests="3" failures="1" errors="0" skipped="1" time="1.845" timestamp="2026-07-01T00:00:00Z">
+    <testcase classname="auth.spec.ts" name="should login with valid credentials" time="0.523"/>
+    <testcase classname="auth.spec.ts" name="should reject invalid credentials" time="0.812">
+      <failure message="expect(received).toBe(expected)">Error: expect(received).toBe(expected)
+    at Object.&lt;anonymous&gt; (auth.spec.ts:42:10)</failure>
+    </testcase>
+    <testcase classname="auth.spec.ts" name="should redirect after logout" time="0.510">
+      <skipped/>
+    </testcase>
+  </testsuite>
+  <testsuite name="checkout.spec.ts" tests="1" failures="0" errors="0" skipped="0" timestamp="2026-07-01T00:00:02Z">
+    <testcase classname="checkout.spec.ts" name="should complete purchase"/>
+  </testsuite>
+</testsuites>

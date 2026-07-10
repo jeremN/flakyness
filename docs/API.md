@@ -321,6 +321,8 @@ GET /api/v1/tests/:name/history?project=project-id
       "durationMs": 1234,
       "retryCount": 1,
       "errorMessage": null,
+      "tags": ["@smoke"],
+      "annotations": [{ "type": "issue", "description": "JIRA-999" }],
       "createdAt": "2024-12-11T12:00:00.000Z",
       "branch": "main",
       "commitSha": "abc123"
@@ -328,6 +330,10 @@ GET /api/v1/tests/:name/history?project=project-id
   ]
 }
 ```
+
+`tags` (`string[] | null`) and `annotations` (`{ type: string; description?: string }[] | null`) come from the
+Playwright report's test case (and, for annotations, its per-project entries) and are `null` when the report
+carried none.
 
 #### Get Flaky Test by ID
 

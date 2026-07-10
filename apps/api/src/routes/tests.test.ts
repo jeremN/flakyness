@@ -82,6 +82,9 @@ describeWithDb('Tests API Integration Tests', () => {
       expect(body.history.length).toBeGreaterThanOrEqual(1);
       expect(body.history[0].branch).toBe('main');
       expect(body.history[0].commitSha).toBe('abc123');
+      // sample-report.json's test cases carry no tags/annotations -> NULL columns.
+      expect(body.history[0].tags).toBeNull();
+      expect(body.history[0].annotations).toBeNull();
     });
 
     it('should require project parameter', async () => {

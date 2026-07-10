@@ -116,6 +116,11 @@
             <span class="badge {getStatusBadgeClass(run.status)} uppercase">
               {run.status}
             </span>
+            {#if run.tags && run.tags.length > 0}
+              {#each run.tags as tag}
+                <span class="badge badge-purple ml-1">{tag}</span>
+              {/each}
+            {/if}
           </td>
           <td class="py-4 px-4 font-mono text-sm font-medium">{run.branch}</td>
           <td class="py-4 px-4 font-mono text-muted text-sm">{run.commitSha.slice(0, 7)}</td>
@@ -127,6 +132,17 @@
           <tr class="bg-red-50">
             <td colspan="6" class="py-3 px-4">
               <pre class="text-red-600 text-xs font-mono whitespace-pre-wrap">{run.errorMessage}</pre>
+            </td>
+          </tr>
+        {/if}
+        {#if run.annotations && run.annotations.length > 0}
+          <tr class="bg-gray-50">
+            <td colspan="6" class="py-2 px-4">
+              <div class="flex flex-col gap-1 text-xs text-muted">
+                {#each run.annotations as annotation}
+                  <span><span class="font-medium">{annotation.type}</span>{annotation.description ? `: ${annotation.description}` : ''}</span>
+                {/each}
+              </div>
             </td>
           </tr>
         {/if}

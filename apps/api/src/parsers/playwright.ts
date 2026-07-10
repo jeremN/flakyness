@@ -166,6 +166,8 @@ export interface ParsedTestResult {
   durationMs: number;
   retryCount: number;
   errorMessage: string | null;
+  tags: string[];
+  annotations: { type: string; description?: string }[];
 }
 
 export interface ParsedReport {
@@ -283,6 +285,7 @@ function calculateDuration(results: TestResult[]): number {
 interface Execution {
   results: TestResult[];
   projectName?: string;
+  annotations?: { type: string; description?: string }[];
 }
 
 /**
@@ -299,7 +302,7 @@ function getExecutions(spec: TestCase): Execution[] {
     const executions: Execution[] = [];
     for (const test of spec.tests) {
       if (test.results && test.results.length > 0) {
-        executions.push({ results: test.results, projectName: test.projectName });
+        executions.push({ results: test.results, projectName: test.projectName, annotations: test.annotations });
       }
     }
     return executions;
@@ -312,6 +315,28 @@ function getExecutions(spec: TestCase): Execution[] {
 
 /** Truncate a string to at most `n` characters. */
 const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
+
+const MAX_TAGS = 20;
+const MAX_ANNOTATIONS = 20;
+
+/**
+ * Merge case-level (spec) and entry-level (execution/attempt) annotations,
+ * preserving order (case-level first) and deduping by `type + ' ' + description`.
+ */
+function mergeAnnotations(
+  caseAnnotations: { type: string; description?: string }[] = [],
+  entryAnnotations: { type: string; description?: string }[] = []
+): { type: string; description?: string }[] {
+  const seen = new Set<string>();
+  const merged: { type: string; description?: string }[] = [];
+  for (const annotation of [...caseAnnotations, ...entryAnnotations]) {
+    const key = `${annotation.type} ${annotation.description ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(annotation);
+  }
+  return merged;
+}
 
 /**
  * Parse a Playwright JSON report into our internal format
@@ -348,6 +373,8 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
     const durationMs = calculateDuration(results);
     const retryCount = Math.max(0, results.length - 1);
     const errorMessage = extractErrorMessage(results);
+    const tags = (spec.tags ?? []).slice(0, MAX_TAGS);
+    const annotations = mergeAnnotations(spec.annotations, execution.annotations).slice(0, MAX_ANNOTATIONS);
 
     // Track earliest start time and latest end time (handles parallel tests correctly)
     for (const result of results) {
@@ -376,6 +403,8 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
       durationMs,
       retryCount,
       errorMessage: errorMessage ? clamp(errorMessage, 10_000) : null,
+      tags,
+      annotations,
     });
   }
 

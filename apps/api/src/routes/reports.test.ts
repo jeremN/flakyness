@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { eq } from 'drizzle-orm';
+import { db, testResults } from '../db';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -13,6 +15,10 @@ let testProjectToken: string;
 
 const sampleReport = JSON.parse(
   readFileSync(join(__dirname, '../../fixtures/sample-report.json'), 'utf-8')
+);
+
+const taggedReport = JSON.parse(
+  readFileSync(join(__dirname, '../../fixtures/real-report-with-tags.json'), 'utf-8')
 );
 
 beforeAll(async () => {
@@ -179,6 +185,39 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(summary.passed).toBe(4);
       expect(summary.failed).toBe(1);
       expect(summary.flaky).toBe(1);
+    });
+  });
+
+  describe('Tags and annotations persistence', () => {
+    it('round-trips tags/annotations as jsonb arrays and stores NULL when absent', async () => {
+      const res = await app.request('/api/v1/reports?branch=main&commit=tags123', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testProjectToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(taggedReport),
+      });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      const runId = body.testRun.id;
+
+      const rows = await db
+        .select({
+          testName: testResults.testName,
+          tags: testResults.tags,
+          annotations: testResults.annotations,
+        })
+        .from(testResults)
+        .where(eq(testResults.testRunId, runId));
+
+      const tagged = rows.find((r) => r.testName.includes('login with valid credentials'));
+      expect(tagged?.tags).toEqual(['@smoke']);
+      expect(tagged?.annotations).toEqual([{ type: 'issue', description: 'JIRA-999' }]);
+
+      const untagged = rows.find((r) => r.testName.includes('retry after transient failure'));
+      expect(untagged?.tags).toBeNull();
+      expect(untagged?.annotations).toBeNull();
     });
   });
 });

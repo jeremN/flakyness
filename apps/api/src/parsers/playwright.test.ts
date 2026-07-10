@@ -292,4 +292,132 @@ describe('Playwright Parser', () => {
       expect(() => parsePlaywrightReport(report)).toThrow(z.ZodError);
     });
   });
+
+  describe('tags and annotations', () => {
+    it('carries tags through from the test case', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'tags.spec.ts',
+            file: 'tags.spec.ts',
+            specs: [
+              {
+                title: 'tagged test',
+                ok: true,
+                tags: ['@smoke', '@quarantine'],
+                file: 'tags.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 100, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].tags).toEqual(['@smoke', '@quarantine']);
+    });
+
+    it('merges case-level and entry-level annotations, case-level first, deduping exact matches', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'annotations.spec.ts',
+            file: 'annotations.spec.ts',
+            specs: [
+              {
+                title: 'annotated test',
+                ok: true,
+                tags: [],
+                file: 'annotations.spec.ts',
+                annotations: [
+                  { type: 'issue', description: 'JIRA-123' },
+                  { type: 'slow' },
+                ],
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    annotations: [
+                      { type: 'slow' }, // duplicate of the case-level entry -> deduped
+                      { type: 'issue', description: 'JIRA-456' }, // same type, different description -> kept
+                    ],
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 100, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].annotations).toEqual([
+        { type: 'issue', description: 'JIRA-123' },
+        { type: 'slow' },
+        { type: 'issue', description: 'JIRA-456' },
+      ]);
+    });
+
+    it('truncates tags and annotations to at most 20 entries', () => {
+      const manyTags = Array.from({ length: 25 }, (_, i) => `tag-${i}`);
+      const manyAnnotations = Array.from({ length: 25 }, (_, i) => ({ type: `type-${i}` }));
+
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'many.spec.ts',
+            file: 'many.spec.ts',
+            specs: [
+              {
+                title: 'over-capped test',
+                ok: true,
+                tags: manyTags,
+                file: 'many.spec.ts',
+                annotations: manyAnnotations,
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 100, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].tags).toHaveLength(20);
+      expect(parsed.results[0].annotations).toHaveLength(20);
+    });
+
+    it('defaults to empty tags and annotations arrays when absent from the source report', () => {
+      const parsed = parsePlaywrightReport(sampleReport);
+
+      expect(parsed.results.length).toBeGreaterThan(0);
+      for (const result of parsed.results) {
+        expect(result.tags).toEqual([]);
+        expect(result.annotations).toEqual([]);
+      }
+    });
+  });
 });

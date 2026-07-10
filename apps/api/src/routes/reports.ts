@@ -94,6 +94,8 @@ reports.post(
           durationMs: result.durationMs,
           retryCount: result.retryCount,
           errorMessage: result.errorMessage,
+          tags: result.tags.length > 0 ? result.tags : null,
+          annotations: result.annotations.length > 0 ? result.annotations : null,
         }));
 
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {

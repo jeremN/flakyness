@@ -81,6 +81,8 @@ export interface TestHistory {
     durationMs: number;
     retryCount: number;
     errorMessage: string | null;
+    tags: string[] | null;
+    annotations: { type: string; description?: string }[] | null;
     createdAt: string;
     branch: string;
     commitSha: string;

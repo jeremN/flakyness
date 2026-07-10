@@ -344,7 +344,7 @@ describeWithDb('updateFlakyTests', () => {
     expect(resolved!.status).toBe('resolved');
   });
 
-  it('reactivates a row manually set to ignored when the test is still flaky', async () => {
+  it('preserves ignored status while refreshing stats when the test is still flaky', async () => {
     const projectId = await seedProject('ignored');
     await seedRun(projectId, [
       ...repeat(2, 'test-a', 'passed'),
@@ -357,11 +357,112 @@ describeWithDb('updateFlakyTests', () => {
       .set({ status: 'ignored' })
       .where(eq(flakyTests.projectId, projectId));
 
+    // New data arrives; the test is still flaky.
+    await seedRun(projectId, [
+      ...repeat(1, 'test-a', 'failed'),
+    ]);
+
     const result = await updateFlakyTests(projectId);
     expect(result).toEqual({ updated: 1, resolved: 0 });
 
     const row = await getFlakyRow(projectId, 'test-a');
-    // current behavior; plan 006 changes this to preserve 'ignored'
-    expect(row!.status).toBe('active');
+    expect(row!.status).toBe('ignored');
+    expect(row!.flakeCount).toBe(3);
+    expect(row!.totalRuns).toBe(5);
+    expect(row!.flakeRate).toBe('0.6000');
+  });
+
+  it('leaves an ignored row ignored (not resolved) when its test disappears from analysis', async () => {
+    const projectId = await seedProject('ignored-disappeared');
+    const runId = await seedRun(projectId, [
+      ...repeat(2, 'test-a', 'passed'),
+      ...repeat(2, 'test-a', 'failed'),
+    ]);
+
+    await updateFlakyTests(projectId);
+    await db
+      .update(flakyTests)
+      .set({ status: 'ignored' })
+      .where(and(eq(flakyTests.projectId, projectId), eq(flakyTests.testName, 'test-a')));
+
+    // Simulate the test being removed from the suite: its results vanish,
+    // while another (stable) test keeps the analysis non-empty.
+    await db.delete(testResults).where(eq(testResults.testRunId, runId));
+    await seedRun(projectId, repeat(3, 'test-b', 'passed'));
+
+    const result = await updateFlakyTests(projectId);
+    expect(result).toEqual({ updated: 0, resolved: 0 });
+
+    const row = await getFlakyRow(projectId, 'test-a');
+    expect(row!.status).toBe('ignored');
+  });
+
+  it('batches upserts for a large number of flaky tests in a single call', async () => {
+    const projectId = await seedProject('batch-upsert');
+    const testNames = Array.from({ length: 25 }, (_, i) => `batch-test-${i}`);
+    for (const testName of testNames) {
+      await seedRun(projectId, [
+        ...repeat(2, testName, 'passed'),
+        ...repeat(2, testName, 'failed'),
+      ]);
+    }
+
+    const result = await updateFlakyTests(projectId);
+    expect(result).toEqual({ updated: 25, resolved: 0 });
+
+    for (const testName of testNames) {
+      const row = await getFlakyRow(projectId, testName);
+      expect(row).toBeDefined();
+      expect(row!.status).toBe('active');
+    }
+  });
+
+  it('reconciles a mix of flaky, cleaned-up, and disappeared tests in one call', async () => {
+    const projectId = await seedProject('mixed-reconcile');
+    const runId = await seedRun(projectId, [
+      // 3 flaky tests
+      ...repeat(2, 'flaky-1', 'passed'),
+      ...repeat(2, 'flaky-1', 'failed'),
+      ...repeat(2, 'flaky-2', 'passed'),
+      ...repeat(2, 'flaky-2', 'failed'),
+      ...repeat(2, 'flaky-3', 'passed'),
+      ...repeat(2, 'flaky-3', 'failed'),
+      // 2 tests that will later become clean
+      ...repeat(2, 'clean-later-1', 'passed'),
+      ...repeat(2, 'clean-later-1', 'failed'),
+      ...repeat(2, 'clean-later-2', 'passed'),
+      ...repeat(2, 'clean-later-2', 'failed'),
+      // 1 test that will later disappear entirely
+      ...repeat(2, 'vanish-later', 'passed'),
+      ...repeat(2, 'vanish-later', 'failed'),
+    ]);
+
+    const firstResult = await updateFlakyTests(projectId);
+    expect(firstResult).toEqual({ updated: 6, resolved: 0 });
+
+    // Clean up two tests (lots of passing runs), and remove one entirely.
+    await seedRun(projectId, [
+      ...repeat(20, 'clean-later-1', 'passed'),
+      ...repeat(20, 'clean-later-2', 'passed'),
+      ...repeat(2, 'flaky-1', 'passed'),
+      ...repeat(2, 'flaky-1', 'failed'),
+      ...repeat(2, 'flaky-2', 'passed'),
+      ...repeat(2, 'flaky-2', 'failed'),
+      ...repeat(2, 'flaky-3', 'passed'),
+      ...repeat(2, 'flaky-3', 'failed'),
+    ]);
+    await db.delete(testResults).where(eq(testResults.testRunId, runId));
+
+    const result = await updateFlakyTests(projectId);
+    expect(result).toEqual({ updated: 3, resolved: 3 });
+
+    for (const testName of ['flaky-1', 'flaky-2', 'flaky-3']) {
+      const row = await getFlakyRow(projectId, testName);
+      expect(row!.status).toBe('active');
+    }
+    for (const testName of ['clean-later-1', 'clean-later-2', 'vanish-later']) {
+      const row = await getFlakyRow(projectId, testName);
+      expect(row!.status).toBe('resolved');
+    }
   });
 });

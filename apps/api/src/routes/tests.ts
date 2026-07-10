@@ -17,7 +17,7 @@ testsRouter.use('*', apiRateLimit);
  * Get run history for a specific test (by test name, URL encoded)
  */
 testsRouter.get('/:testName/history', async (c) => {
-  const testName = decodeURIComponent(c.req.param('testName'));
+  const testName = c.req.param('testName');
   const projectId = c.req.query('project');
   const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
 

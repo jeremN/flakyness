@@ -3,7 +3,7 @@ import { getTestHistory } from '$lib/api';
 import { error } from '@sveltejs/kit';
 
 export const load: PageServerLoad = async ({ params, url }) => {
-  const testName = decodeURIComponent(params.testName);
+  const testName = params.testName;
   const projectId = url.searchParams.get('project');
 
   if (!projectId) {

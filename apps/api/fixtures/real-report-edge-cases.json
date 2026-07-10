@@ -1,0 +1,151 @@
+{
+  "config": {
+    "version": "1.48.0"
+  },
+  "suites": [
+    {
+      "title": "empty.spec.ts",
+      "file": "empty.spec.ts",
+      "specs": []
+    },
+    {
+      "title": "notests.spec.ts",
+      "file": "notests.spec.ts",
+      "specs": [
+        {
+          "title": "spec with no tests entries",
+          "ok": true,
+          "tags": [],
+          "tests": [],
+          "id": "notests-id",
+          "file": "notests.spec.ts",
+          "line": 5,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "emptyresults.spec.ts",
+      "file": "emptyresults.spec.ts",
+      "specs": [
+        {
+          "title": "spec whose test entry has empty results",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [],
+              "status": "skipped"
+            }
+          ],
+          "id": "emptyresults-id",
+          "file": "emptyresults.spec.ts",
+          "line": 5,
+          "column": 5
+        }
+      ]
+    },
+    {
+      "title": "nolocation.spec.ts",
+      "file": "nolocation.spec.ts",
+      "specs": [
+        {
+          "title": "spec without location field",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "status": "passed",
+                  "duration": 1000,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-07-01T11:00:00.000Z",
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "nolocation-id"
+        }
+      ]
+    },
+    {
+      "title": "deep.spec.ts",
+      "file": "deep.spec.ts",
+      "suites": [
+        {
+          "title": "Level 1",
+          "suites": [
+            {
+              "title": "Level 2",
+              "suites": [
+                {
+                  "title": "Level 3",
+                  "specs": [
+                    {
+                      "title": "deeply nested test",
+                      "ok": true,
+                      "tags": [],
+                      "tests": [
+                        {
+                          "timeout": 30000,
+                          "annotations": [],
+                          "expectedStatus": "passed",
+                          "projectId": "chromium",
+                          "projectName": "chromium",
+                          "results": [
+                            {
+                              "workerIndex": 0,
+                              "status": "passed",
+                              "duration": 500,
+                              "errors": [],
+                              "stdout": [],
+                              "stderr": [],
+                              "retry": 0,
+                              "startTime": "2026-07-01T12:00:00.000Z",
+                              "attachments": []
+                            }
+                          ],
+                          "status": "expected"
+                        }
+                      ],
+                      "id": "deep-id",
+                      "file": "deep.spec.ts",
+                      "line": 8,
+                      "column": 7
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-07-01T11:00:00.000Z",
+    "duration": 1500,
+    "expected": 2,
+    "unexpected": 0,
+    "flaky": 0,
+    "skipped": 0
+  }
+}

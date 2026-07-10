@@ -17,7 +17,7 @@ interface TestCaseType {
   title: string;
   ok: boolean;
   tags?: string[];
-  tests?: TestCaseType[];
+  tests?: z.infer<typeof TestEntrySchema>[];
   id?: string;
   file?: string;
   line?: number;
@@ -40,7 +40,7 @@ interface SuiteType {
 }
 
 const TestStepSchema: z.ZodType<TestStep> = z.object({
-  title: z.string(),
+  title: z.string().max(1000),
   category: z.string().optional(),
   startTime: z.string().optional(),
   duration: z.number().optional(),
@@ -49,10 +49,10 @@ const TestStepSchema: z.ZodType<TestStep> = z.object({
 });
 
 const TestErrorSchema = z.object({
-  message: z.string().optional(),
-  stack: z.string().optional(),
-  value: z.string().optional(),
-  snippet: z.string().optional(),
+  message: z.string().max(10_000).optional(),
+  stack: z.string().max(10_000).optional(),
+  value: z.string().max(10_000).optional(),
+  snippet: z.string().max(10_000).optional(),
 });
 
 const TestResultSchema = z.object({
@@ -69,11 +69,28 @@ const TestResultSchema = z.object({
   steps: z.array(TestStepSchema).optional(),
 });
 
+// Real `spec.tests[]` entry shape: one entry per Playwright project (browser)
+// running the spec. Deliberately permissive (all fields optional) since
+// Playwright adds fields across versions and we only rely on `results` and
+// `projectName`.
+const TestEntrySchema = z.object({
+  timeout: z.number().optional(),
+  annotations: z.array(z.object({
+    type: z.string().max(200),
+    description: z.string().max(2000).optional(),
+  })).optional(),
+  expectedStatus: z.string().optional(),
+  projectId: z.string().max(200).optional(),
+  projectName: z.string().max(200).optional(),
+  results: z.array(TestResultSchema).optional(),
+  status: z.string().optional(),
+});
+
 const TestCaseSchema: z.ZodType<TestCaseType> = z.object({
-  title: z.string(),
+  title: z.string().max(1000),
   ok: z.boolean(),
   tags: z.array(z.string()).optional(),
-  tests: z.lazy(() => z.array(TestCaseSchema)).optional(),
+  tests: z.array(TestEntrySchema).optional(),
   id: z.string().optional(),
   file: z.string().optional(),
   line: z.number().optional(),
@@ -94,7 +111,7 @@ const TestCaseSchema: z.ZodType<TestCaseType> = z.object({
 });
 
 const SuiteSchema: z.ZodType<SuiteType> = z.object({
-  title: z.string(),
+  title: z.string().max(1000),
   file: z.string().optional(),
   column: z.number().optional(),
   line: z.number().optional(),
@@ -249,12 +266,9 @@ function determineStatus(results: TestResult[]): 'passed' | 'failed' | 'skipped'
  */
 function extractErrorMessage(results: TestResult[]): string | null {
   for (const result of results) {
-    if (result.error?.message) {
-      return result.error.message;
-    }
-    if (result.errors && result.errors.length > 0) {
-      return result.errors[0].message || null;
-    }
+    if (result.error?.message) return result.error.message;
+    const withMessage = result.errors?.find((e) => e.message);
+    if (withMessage?.message) return withMessage.message;
   }
   return null;
 }
@@ -265,6 +279,39 @@ function extractErrorMessage(results: TestResult[]): string | null {
 function calculateDuration(results: TestResult[]): number {
   return results.reduce((sum, r) => sum + (r.duration || 0), 0);
 }
+
+interface Execution {
+  results: TestResult[];
+  projectName?: string;
+}
+
+/**
+ * Build the list of executions for a spec.
+ *
+ * The real Playwright JSON reporter nests attempts under
+ * `spec.tests[].results[]` — one `tests[]` entry per Playwright project
+ * (browser) running the spec, one `results[]` entry per attempt/retry.
+ * The simplified/legacy shape (used by some hand-written fixtures) puts
+ * attempts directly on `spec.results[]`. Support both.
+ */
+function getExecutions(spec: TestCase): Execution[] {
+  if (spec.tests && spec.tests.length > 0) {
+    const executions: Execution[] = [];
+    for (const test of spec.tests) {
+      if (test.results && test.results.length > 0) {
+        executions.push({ results: test.results, projectName: test.projectName });
+      }
+    }
+    return executions;
+  }
+  if (spec.results && spec.results.length > 0) {
+    return [{ results: spec.results, projectName: undefined }];
+  }
+  return [];
+}
+
+/** Truncate a string to at most `n` characters. */
+const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 
 /**
  * Parse a Playwright JSON report into our internal format
@@ -278,21 +325,32 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
   let startedAt: Date | null = null;
   let finishedAt: Date | null = null;
 
-  // Extract all specs with their title paths
+  // Extract all specs with their title paths, then flatten to one entry per
+  // execution (one execution per Playwright project running the spec).
   const allSpecs = extractSpecs(report.suites);
+  const entries = allSpecs.flatMap(({ spec, file, titlePath }) =>
+    getExecutions(spec).map((execution) => ({ spec, file, titlePath, execution }))
+  );
 
-  for (const { spec, file, titlePath } of allSpecs) {
-    if (!spec.results || spec.results.length === 0) {
-      continue;
-    }
+  // Only disambiguate test names by project when the report actually mixes
+  // projects — keeps names stable for the common single-project case.
+  const distinctProjectNames = new Set(
+    entries
+      .map(({ execution }) => execution.projectName)
+      .filter((name): name is string => Boolean(name))
+  );
+  const suffixNames = distinctProjectNames.size >= 2;
 
-    const status = determineStatus(spec.results);
-    const durationMs = calculateDuration(spec.results);
-    const retryCount = Math.max(0, spec.results.length - 1);
-    const errorMessage = extractErrorMessage(spec.results);
+  for (const { spec, file, titlePath, execution } of entries) {
+    const { results, projectName } = execution;
+
+    const status = determineStatus(results);
+    const durationMs = calculateDuration(results);
+    const retryCount = Math.max(0, results.length - 1);
+    const errorMessage = extractErrorMessage(results);
 
     // Track earliest start time and latest end time (handles parallel tests correctly)
-    for (const result of spec.results) {
+    for (const result of results) {
       if (result.startTime) {
         const resultStart = new Date(result.startTime);
         if (!startedAt || resultStart < startedAt) {
@@ -307,13 +365,17 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
 
     totalDuration += durationMs;
 
+    const baseName = buildTestName(titlePath, spec.title);
+    const testName = suffixNames && projectName ? `${baseName} [${projectName}]` : baseName;
+    const testFile = spec.location?.file || file || spec.file || '';
+
     parsedResults.push({
-      testName: buildTestName(titlePath, spec.title),
-      testFile: spec.location?.file || file || spec.file || '',
+      testName: clamp(testName, 500),
+      testFile: clamp(testFile, 500),
       status,
       durationMs,
       retryCount,
-      errorMessage,
+      errorMessage: errorMessage ? clamp(errorMessage, 10_000) : null,
     });
   }
 

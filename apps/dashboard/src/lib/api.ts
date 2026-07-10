@@ -1,6 +1,13 @@
 import { env } from '$env/dynamic/public';
 import { error, isHttpError } from '@sveltejs/kit';
-import type { Project, ProjectStats, FlakyTest, TestRun, TestHistory } from '../app.d';
+import type {
+  Project,
+  ProjectStats,
+  FlakyTest,
+  TestRun,
+  TestHistory,
+  AnalysisResponse,
+} from '../app.d';
 
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -82,5 +89,15 @@ export async function getFlakeTrend(
 ): Promise<{ days: string[]; rates: number[] }> {
   return fetchJson<{ days: string[]; rates: number[] }>(
     `/api/v1/projects/${projectId}/trend?days=${days}`
+  );
+}
+
+export async function getAnalysis(
+  projectId: string,
+  days: number = 14,
+  threshold: number = 0.05
+): Promise<AnalysisResponse> {
+  return fetchJson<AnalysisResponse>(
+    `/api/v1/projects/${projectId}/analysis?days=${days}&threshold=${threshold}`
   );
 }

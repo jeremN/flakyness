@@ -15,6 +15,7 @@
     { href: '/', label: 'Overview', icon: '📊', color: 'purple' },
     { href: '/flaky', label: 'Flaky Tests', icon: '⚡', color: 'orange' },
     { href: '/runs', label: 'Test Runs', icon: '🧪', color: 'blue' },
+    { href: '/analysis', label: 'Analysis', icon: '🔬', color: 'purple' },
   ];
 
   function handleProjectChange(event: Event) {

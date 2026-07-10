@@ -2,6 +2,7 @@
   import type { PageData } from './$types';
   import Chart from '$lib/components/Chart.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
+  import { invalidateAll } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
 
   interface Props {
@@ -141,7 +142,7 @@
   {:else if data.partialFailure}
     <div class="card p-6 mb-8">
       <h2 class="text-sm font-semibold text-muted uppercase tracking-wider mb-4">Flake Rate Trend (7 Days)</h2>
-      <ErrorState message="Couldn't load the flake-rate trend." />
+      <ErrorState message="Couldn't load the flake-rate trend." onRetry={() => invalidateAll()} />
     </div>
   {/if}
 

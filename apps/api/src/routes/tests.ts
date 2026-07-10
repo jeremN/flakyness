@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, desc, and } from 'drizzle-orm';
 import { db, testResults, testRuns, flakyTests } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
+import { adminAuth } from '../middleware/auth';
 
 const testsRouter = new Hono();
 
@@ -108,6 +109,46 @@ testsRouter.get('/flaky/:id', async (c) => {
     .from(flakyTests)
     .where(eq(flakyTests.id, parsed.data))
     .limit(1);
+
+  if (!flakyTest) {
+    return c.json({ error: 'Flaky test not found' }, 404);
+  }
+
+  return c.json({ flakyTest });
+});
+
+const flakyStatusPatchSchema = z.object({
+  status: z.enum(['ignored', 'active']),
+});
+
+/**
+ * PATCH /api/v1/tests/flaky/:id
+ *
+ * Set a flaky test's status to 'ignored' (mute) or 'active' (unmute).
+ * 'resolved' is system-managed and not accepted here.
+ */
+testsRouter.patch('/flaky/:id', adminAuth(), async (c) => {
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid flaky test ID format' }, 400);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const parsedBody = flakyStatusPatchSchema.safeParse(body);
+  if (!parsedBody.success) {
+    return c.json({ error: "status must be 'ignored' or 'active'" }, 400);
+  }
+
+  const [flakyTest] = await db
+    .update(flakyTests)
+    .set({ status: parsedBody.data.status })
+    .where(eq(flakyTests.id, parsed.data))
+    .returning();
 
   if (!flakyTest) {
     return c.json({ error: 'Flaky test not found' }, 404);

@@ -32,26 +32,6 @@ projectsRouter.get('/', async (c) => {
 });
 
 /**
- * GET /api/v1/projects/:id
- *
- * Get project details with stats
- */
-projectsRouter.get('/:id', async (c) => {
-  const parsed = uuidSchema.safeParse(c.req.param('id'));
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid project ID format' }, 400);
-  }
-
-  const stats = await getProjectStats(parsed.data);
-
-  if (!stats) {
-    return c.json({ error: 'Project not found' }, 404);
-  }
-
-  return c.json(stats);
-});
-
-/**
  * GET /api/v1/projects/:id/stats
  *
  * Get project statistics

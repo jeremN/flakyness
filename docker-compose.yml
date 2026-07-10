@@ -28,8 +28,8 @@ services:
   # ==========================================================================
   api:
     build:
-      context: ./apps/api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/api/Dockerfile
     container_name: flackyness-api
     restart: unless-stopped
     depends_on:
@@ -57,8 +57,8 @@ services:
   # ==========================================================================
   dashboard:
     build:
-      context: ./apps/dashboard
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
     container_name: flackyness-dashboard
     restart: unless-stopped
     depends_on:

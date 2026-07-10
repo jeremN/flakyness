@@ -38,7 +38,8 @@ jobs:
       - name: Build & push API image
         uses: docker/build-push-action@v7
         with:
-          context: ./apps/api
+          context: .
+          file: ./apps/api/Dockerfile
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${{ steps.meta.outputs.version }}
@@ -52,7 +53,8 @@ jobs:
       - name: Build & push Dashboard image
         uses: docker/build-push-action@v7
         with:
-          context: ./apps/dashboard
+          context: .
+          file: ./apps/dashboard/Dockerfile
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.DASHBOARD_IMAGE }}:${{ steps.meta.outputs.version }}

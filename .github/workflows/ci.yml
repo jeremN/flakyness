@@ -112,6 +112,9 @@ jobs:
       - name: Run API tests
         run: pnpm --filter api test
 
+      - name: Run Dashboard tests
+        run: pnpm --filter dashboard test
+
   # ============================================================
   # Build
   # ============================================================

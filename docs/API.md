@@ -429,6 +429,7 @@ GET /api/v1/admin/projects
       "flakeThreshold": null,
       "windowDays": null,
       "minRuns": null,
+      "webhookUrl": null,
       "stats": {
         "totalRuns": 150,
         "totalTests": 5000,
@@ -442,6 +443,10 @@ GET /api/v1/admin/projects
 `flakeThreshold`, `windowDays`, and `minRuns` are per-project flakiness detection
 overrides — see [Update Project Flakiness Config](#update-project-flakiness-config).
 `null` means the project uses the built-in default for that field.
+
+`webhookUrl` is an optional outbound notification URL — see
+[Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` means
+no webhook is configured.
 
 ### Create Project
 
@@ -494,16 +499,19 @@ POST /api/v1/admin/projects/:id/rotate-token
 PATCH /api/v1/admin/projects/:id
 ```
 
-Update a project's per-project flakiness detection overrides. Fields omitted
-from the body are left unchanged; sending a field as `null` explicitly clears
-it back to the built-in default. At least one field is required.
+Update a project's per-project flakiness detection overrides and/or its
+transition-notification webhook. Fields omitted from the body are left
+unchanged; sending a field as `null` explicitly clears it back to the
+built-in default (or, for `webhookUrl`, disables the webhook). At least one
+field is required.
 
 **Body (all fields optional, but at least one required):**
 ```json
 {
   "flakeThreshold": 0.1,
   "windowDays": 30,
-  "minRuns": 5
+  "minRuns": 5,
+  "webhookUrl": "https://example.com/hooks/flackyness"
 }
 ```
 
@@ -512,6 +520,7 @@ it back to the built-in default. At least one field is required.
 | `flakeThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is considered flaky. `null` resets to the default (`0.05`). |
 | `windowDays` | integer \| null | `[1, 90]` | Analysis window in days used by background flakiness reconciliation. `null` resets to the default (`14`). |
 | `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
+| `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` disables the webhook. |
 
 **Response (200):**
 ```json
@@ -523,13 +532,14 @@ it back to the built-in default. At least one field is required.
     "createdAt": "2024-12-01T00:00:00.000Z",
     "flakeThreshold": 0.1,
     "windowDays": 30,
-    "minRuns": 5
+    "minRuns": 5,
+    "webhookUrl": "https://example.com/hooks/flackyness"
   }
 }
 ```
 
-Returns `400` if the body fails validation (out-of-range values or an empty
-body) and `404` if the project doesn't exist.
+Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
+`webhookUrl`, or an empty body) and `404` if the project doesn't exist.
 
 > **Tuning flakiness detection:** Flakiness is normally governed by three
 > defaults — `windowDays: 14`, `flakeThreshold: 0.05`, `minRuns: 3`. This
@@ -541,6 +551,65 @@ body) and `404` if the project doesn't exist.
 > `GET /api/v1/projects/:id/analysis` picks up overrides immediately (it's
 > computed live), but explicit `days`/`threshold` query params on that
 > endpoint still take precedence over the stored project config.
+
+### Flaky-Test Transition Webhooks
+
+Set `webhookUrl` via [Update Project Flakiness Config](#update-project-flakiness-config)
+to get a notification whenever a report ingest causes a test to newly become
+flaky or a previously-flaky test to resolve.
+
+**Example — set a webhook:**
+```http
+PATCH /api/v1/admin/projects/:id
+Authorization: Bearer your-admin-token
+Content-Type: application/json
+
+{ "webhookUrl": "https://example.com/hooks/flackyness" }
+```
+
+**Trigger:** the background reconciliation that already runs after every
+`POST /api/v1/reports` ingest (see [Upload Playwright Report](#upload-playwright-report)).
+If that reconciliation finds at least one newly-flaky or newly-resolved test
+**and** the project has a `webhookUrl` configured, the API sends **one** POST
+request per ingest:
+
+```http
+POST <webhookUrl>
+Content-Type: application/json
+```
+```json
+{
+  "event": "flaky_tests_changed",
+  "project": { "id": "uuid", "name": "my-project" },
+  "newlyFlaky": ["login test flakes on retry"],
+  "newlyResolved": ["checkout test"],
+  "run": { "branch": "main", "commitSha": "abc123..." },
+  "dashboardUrl": null
+}
+```
+
+`newlyFlaky` and `newlyResolved` are test names (`newlyFlaky` may be empty if
+only resolutions happened, and vice versa — the webhook only fires when at
+least one of the two is non-empty). A test that was previously `ignored`
+(muted) does **not** count as a transition even if it still meets the flake
+threshold — an operator-muted test stays silent. `dashboardUrl` is reserved
+for a future release and is always `null` in v1.
+
+**Delivery semantics (v1):**
+- One best-effort POST per ingest; a 5-second timeout.
+- **No retries.** A non-2xx response or network failure is logged
+  server-side and otherwise dropped.
+- **No payload signing / shared secret.** Anything that can read the
+  response body of your webhook endpoint can also forge a payload if it
+  knows the URL — do not treat the payload as authenticated.
+- Delivery failures never block or delay the `201` response for the report
+  ingest that triggered them; the webhook send happens after ingest, in the
+  same fire-and-forget background step as flakiness reconciliation.
+- `webhookUrl` is set only through the admin-token-protected PATCH route —
+  the same trust level as the operator's shell. There is **no IP deny-list**
+  in v1 (no protection against pointing the webhook at an internal/private
+  address); this is a deliberate tradeoff for a single-operator deployment,
+  not an oversight.
 
 ### Delete Project
 

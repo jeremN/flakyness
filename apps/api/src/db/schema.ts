@@ -11,6 +11,10 @@ export const projects = pgTable('projects', {
   flakeThreshold: decimal('flake_threshold', { precision: 5, scale: 4 }),
   windowDays: integer('window_days'),
   minRuns: integer('min_runs'),
+  // Admin-set outbound webhook for flaky-test transition notifications; NULL
+  // means "no webhook configured". Set only via the admin-token PATCH route
+  // (same trust level as the operator's shell) — no SSRF deny-list in v1.
+  webhookUrl: varchar('webhook_url', { length: 2048 }),
 }, (table) => ({
   // Index for token hash lookup (authentication)
   tokenHashIdx: index('projects_token_hash_idx').on(table.tokenHash),

@@ -199,7 +199,7 @@ function chunks<T>(arr: T[], size: number): T[][] {
 export async function updateFlakyTests(
   projectId: string,
   config: Partial<FlakinessConfig> = {}
-): Promise<{ updated: number; resolved: number }> {
+): Promise<{ updated: number; resolved: number; newlyFlaky: string[]; newlyResolved: string[] }> {
   const analysis = await analyzeFlakiness(projectId, config);
 
   // Get existing flaky tests for this project
@@ -230,6 +230,26 @@ export async function updateFlakyTests(
     .filter(existing => existing.status === 'active')
     .filter(existing => !(isFlakyByName.get(existing.testName) ?? false))
     .map(existing => existing.id);
+
+  // Transition detection: computed from the same `existingFlaky` /
+  // `flakyRows` / `resolveIds` snapshot the transaction below writes, so it
+  // takes zero extra queries. A test is "newly flaky" if it wasn't tracked
+  // before, or was previously 'resolved' (re-activation) — but NOT if it was
+  // previously 'ignored' (an operator-muted test stays silent even while it
+  // keeps meeting the threshold) or already 'active' (no transition).
+  // Concurrent ingests for the same project may double-report a transition;
+  // accepted, since reconciliation is already last-writer-wins.
+  const priorStatusByName = new Map(existingFlaky.map(e => [e.testName, e.status]));
+  const newlyFlaky = flakyRows
+    .filter(row => {
+      const prior = priorStatusByName.get(row.testName);
+      return prior === undefined || prior === 'resolved';
+    })
+    .map(row => row.testName);
+  const resolveIdSet = new Set(resolveIds);
+  const newlyResolved = existingFlaky
+    .filter(e => resolveIdSet.has(e.id))
+    .map(e => e.testName);
 
   if (flakyRows.length > 0 || resolveIds.length > 0) {
     await db.transaction(async (tx) => {
@@ -265,7 +285,7 @@ export async function updateFlakyTests(
     });
   }
 
-  return { updated: flakyRows.length, resolved: resolveIds.length };
+  return { updated: flakyRows.length, resolved: resolveIds.length, newlyFlaky, newlyResolved };
 }
 
 /**

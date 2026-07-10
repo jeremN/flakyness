@@ -241,7 +241,21 @@ server {
 ## Next Steps
 
 - **Rotate tokens regularly** using `POST /api/v1/admin/projects/:id/rotate-token`
-- **Set up alerts** (coming soon) for new flaky tests
+- **Set up alerts** for new flaky tests with a webhook — point `webhookUrl` at
+  your chat tool's incoming-webhook endpoint (or any HTTP receiver) and
+  Flackyness POSTs a JSON payload whenever a report ingest finds a test that
+  just became flaky or just resolved:
+
+  ```bash
+  curl -X PATCH http://localhost:8080/api/v1/admin/projects/<project-id> \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"webhookUrl": "https://your-endpoint.example.com/hooks/flackyness"}'
+  ```
+
+  See [Flaky-Test Transition Webhooks](API.md#flaky-test-transition-webhooks)
+  for the payload schema and delivery semantics (no retries, no signing —
+  v1 assumes a trusted, admin-set URL).
 - **Monitor health** via `GET /api/v1/admin/health`
 
 ## Troubleshooting

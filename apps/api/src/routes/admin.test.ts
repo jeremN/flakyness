@@ -385,6 +385,82 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(body.project.minRuns).toBe(12);
     });
 
+    it('sets webhookUrl, readable back via PATCH response and GET /projects', async () => {
+      const projectId = await createProject('webhook-set');
+
+      const patchRes = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookUrl: 'https://example.com/hooks/flackyness' }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      const patchBody = await patchRes.json();
+      expect(patchBody.project.webhookUrl).toBe('https://example.com/hooks/flackyness');
+
+      const listRes = await app.request('/api/v1/admin/projects', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const listBody = await listRes.json();
+      const found = listBody.projects.find((p: any) => p.id === projectId);
+      expect(found.webhookUrl).toBe('https://example.com/hooks/flackyness');
+    });
+
+    it('clears webhookUrl back to null with an explicit null', async () => {
+      const projectId = await createProject('webhook-clear');
+
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookUrl: 'https://example.com/hooks/flackyness' }),
+      });
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookUrl: null }),
+      });
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.project.webhookUrl).toBeNull();
+    });
+
+    it('rejects a non-http(s) webhookUrl (e.g. ftp://)', async () => {
+      const projectId = await createProject('webhook-bad-protocol');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookUrl: 'ftp://example.com/hooks/flackyness' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a malformed webhookUrl (not a URL at all)', async () => {
+      const projectId = await createProject('webhook-not-url');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookUrl: 'not-a-url' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
     it('rejects an out-of-range flakeThreshold', async () => {
       const projectId = await createProject('bad-threshold');
       const res = await app.request(`/api/v1/admin/projects/${projectId}`, {

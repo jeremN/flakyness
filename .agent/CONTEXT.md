@@ -29,7 +29,7 @@
 - **Supply-chain hardening** in `pnpm-workspace.yaml`: `minimumReleaseAge: 1440` (don't install versions <24h old) and `allowBuilds: { esbuild: true }` (build scripts blocked by default — add new ones here after auditing).
   - Consequence: a fresh-published "latest" can be temporarily un-installable; pin one release back until it ages out. That's why `@sveltejs/kit` may trail the absolute latest.
 - **TS 6**: root `tsconfig.json` sets `"ignoreDeprecations": "6.0"` to tolerate options removed in TS 7 (migrate those before upgrading to TS 7).
-- **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). `tailwind.config.js` is currently **not loaded** (no `@config` directive) — see Known Issues.
+- **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). No `tailwind.config.js` file exists (it was dead — never loaded, no `@config` directive — removed in Plan 009).
 - **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI runs it via `oxc-project/oxlint-action`.
 - **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → build → docker. Plus `docker-publish.yml`.
 

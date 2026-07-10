@@ -152,6 +152,77 @@ GET /api/v1/projects/:id/runs?limit=20
 }
 ```
 
+#### Get Real-Time Flakiness Analysis
+
+```http
+GET /api/v1/projects/:id/analysis?days=14&threshold=0.05
+```
+
+Computes flakiness directly from stored test results (not cached).
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | number | `14` | Analysis window in days, clamped to `[1, 90]` |
+| `threshold` | number | `0.05` | Flake-rate threshold (0–1) above which a test is considered flaky, clamped to `[0, 1]` |
+
+**Response:**
+```json
+{
+  "windowDays": 14,
+  "threshold": 0.05,
+  "flakyTests": [
+    {
+      "testName": "user login should work",
+      "testFile": "tests/auth.spec.ts",
+      "totalRuns": 20,
+      "passCount": 15,
+      "failCount": 2,
+      "flakyCount": 3,
+      "flakeRate": 0.15,
+      "isFlaky": true,
+      "lastSeen": "2024-12-11T12:00:00.000Z"
+    }
+  ],
+  "allTests": [
+    {
+      "testName": "user login should work",
+      "testFile": "tests/auth.spec.ts",
+      "totalRuns": 20,
+      "passCount": 15,
+      "failCount": 2,
+      "flakyCount": 3,
+      "flakeRate": 0.15,
+      "isFlaky": true,
+      "lastSeen": "2024-12-11T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+#### Get Flake Rate Trend
+
+```http
+GET /api/v1/projects/:id/trend?days=7
+```
+
+Daily flake rate aggregation for the requested window.
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `days` | number | `7` | Trend window in days, clamped to `[1, 90]` |
+
+**Response:**
+```json
+{
+  "days": ["Jul 4", "Jul 5", "Jul 6", "Jul 7", "Jul 8", "Jul 9", "Jul 10"],
+  "rates": [1.2, 0.0, 2.5, 1.8, 0.0, 3.1, 1.2]
+}
+```
+
+`rates` are flake percentages (0–100) per day, computed as `(flaky + failed) / total * 100`.
+
 ---
 
 ### Reports
@@ -159,8 +230,10 @@ GET /api/v1/projects/:id/runs?limit=20
 #### Upload Playwright Report
 
 ```http
-POST /api/v1/reports?project=my-project&branch=main&commit=abc123&pipeline=12345
+POST /api/v1/reports?branch=main&commit=abc123&pipeline=12345
 ```
+
+The target project is identified by the Bearer token — there is no `project` parameter.
 
 **Headers:**
 ```http
@@ -171,20 +244,30 @@ Content-Type: application/json
 **Query Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `project` | string | Yes | Project name or ID |
-| `branch` | string | Yes | Git branch name |
-| `commit` | string | Yes | Git commit SHA |
-| `pipeline` | string | No | CI pipeline ID |
+| `branch` | string | No | Git branch name; defaults to `main`; max 255 chars |
+| `commit` | string | Yes | Git commit SHA, max 40 chars |
+| `pipeline` | string | No | CI pipeline ID; max 100 chars |
 
 **Body:** Raw Playwright JSON report (from `--reporter=json`)
 
-**Response:**
+**Response (201):**
 ```json
 {
   "success": true,
-  "runId": "uuid",
-  "testsProcessed": 100,
-  "flakyDetected": 3
+  "testRun": {
+    "id": "uuid",
+    "project": "my-project",
+    "branch": "main",
+    "commit": "abc123",
+    "pipeline": "12345",
+    "summary": {
+      "total": 100,
+      "passed": 95,
+      "failed": 2,
+      "flaky": 3,
+      "skipped": 0
+    }
+  }
 }
 ```
 
@@ -236,6 +319,32 @@ GET /api/v1/tests/:name/history?project=project-id
       "commitSha": "abc123"
     }
   ]
+}
+```
+
+#### Get Flaky Test by ID
+
+```http
+GET /api/v1/tests/flaky/:id
+```
+
+Returns a single flaky-test row by its UUID. Responds `404` if no flaky test with that ID exists.
+
+**Response:**
+```json
+{
+  "flakyTest": {
+    "id": "uuid",
+    "projectId": "uuid",
+    "testName": "user login should work",
+    "testFile": "tests/auth.spec.ts",
+    "firstDetected": "2024-12-01T00:00:00.000Z",
+    "lastSeen": "2024-12-11T00:00:00.000Z",
+    "flakeCount": 15,
+    "totalRuns": 50,
+    "flakeRate": "0.30",
+    "status": "active"
+  }
 }
 ```
 
@@ -409,13 +518,12 @@ npx playwright test --reporter=json --output-file=results.json
 
 # Upload results
 curl -X POST "https://flackyness.example.com/api/v1/reports" \
+  --url-query "branch=main" \
+  --url-query "commit=$(git rev-parse HEAD)" \
+  --url-query "pipeline=$CI_PIPELINE_ID" \
   -H "Authorization: Bearer $FLACKYNESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d @results.json \
-  --data-urlencode "project=my-project" \
-  --data-urlencode "branch=main" \
-  --data-urlencode "commit=$(git rev-parse HEAD)" \
-  --data-urlencode "pipeline=$CI_PIPELINE_ID"
+  -d @results.json
 ```
 
 ## Example: Create Project (Admin)

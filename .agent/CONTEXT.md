@@ -533,9 +533,7 @@ open http://localhost:5173
 | [.gitlab-ci.yml.example](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/.gitlab-ci.yml.example) | CI integration example |
 
 ### Key Brain Artifacts
-- `code_review.md` - Comprehensive security/performance review
-- `phase6_plan.md` - Phase 6 implementation details
-- `walkthrough.md` - Phase 6 completion summary
+Historical review artifacts lived outside the repo and are no longer available.
 
 ---
 

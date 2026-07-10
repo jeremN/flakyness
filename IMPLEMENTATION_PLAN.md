@@ -1,3 +1,8 @@
+> **Status note (2026-07-10):** This is the original build plan, kept for
+> history. It is NOT the current roadmap and its checkboxes are not
+> maintained. Current status and open items live in `.agent/CONTEXT.md`
+> (see "Known Issues & TODOs") and `plans/README.md`.
+
 # Flaky Test Tracking System for CI/CD
 
 A self-hosted solution to collect, analyze, and visualize flaky E2E test data from Playwright test runs in GitLab CI pipelines.

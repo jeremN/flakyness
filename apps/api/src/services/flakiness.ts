@@ -28,41 +28,28 @@ export interface TestFlakiness {
   lastSeen: Date;
 }
 
+export interface ResultRow {
+  testName: string;
+  testFile: string | null;
+  status: string;
+  createdAt: Date;
+}
+
 /**
- * Analyze test results for a project and detect flaky tests.
- * 
+ * Pure in-memory aggregation: group raw test result rows by test name and
+ * compute flakiness stats for each. No I/O.
+ *
  * A test is considered flaky if:
  * 1. It has been run at least `minRuns` times
  * 2. It has a flake rate above `flakeThreshold`
- * 
+ *
  * Flake rate = (failed + flaky runs) / total runs
  */
-export async function analyzeFlakiness(
-  projectId: string,
-  config: Partial<FlakinessConfig> = {}
-): Promise<TestFlakiness[]> {
-  const { windowDays, flakeThreshold, minRuns } = { ...DEFAULT_CONFIG, ...config };
-  
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - windowDays);
-
-  // Get all test results for this project within the time window
-  const results = await db
-    .select({
-      testName: testResults.testName,
-      testFile: testResults.testFile,
-      status: testResults.status,
-      createdAt: testResults.createdAt,
-    })
-    .from(testResults)
-    .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
-    .where(
-      and(
-        eq(testRuns.projectId, projectId),
-        gte(testResults.createdAt, cutoffDate)
-      )
-    )
-    .orderBy(desc(testResults.createdAt));
+export function computeFlakiness(
+  results: ResultRow[],
+  config: FlakinessConfig
+): TestFlakiness[] {
+  const { flakeThreshold, minRuns } = config;
 
   // Group by test name and calculate stats
   const testStats = new Map<string, {
@@ -108,7 +95,7 @@ export async function analyzeFlakiness(
 
   for (const [testName, stats] of testStats) {
     const totalRuns = stats.passCount + stats.failCount + stats.flakyCount;
-    
+
     // Skip tests with insufficient runs
     if (totalRuns < minRuns) {
       continue;
@@ -135,6 +122,42 @@ export async function analyzeFlakiness(
   flakiness.sort((a, b) => b.flakeRate - a.flakeRate);
 
   return flakiness;
+}
+
+/**
+ * Analyze test results for a project and detect flaky tests.
+ *
+ * Runs the DB query for the time window, then delegates the pure
+ * aggregation to `computeFlakiness`.
+ */
+export async function analyzeFlakiness(
+  projectId: string,
+  config: Partial<FlakinessConfig> = {}
+): Promise<TestFlakiness[]> {
+  const { windowDays, flakeThreshold, minRuns } = { ...DEFAULT_CONFIG, ...config };
+
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - windowDays);
+
+  // Get all test results for this project within the time window
+  const results = await db
+    .select({
+      testName: testResults.testName,
+      testFile: testResults.testFile,
+      status: testResults.status,
+      createdAt: testResults.createdAt,
+    })
+    .from(testResults)
+    .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+    .where(
+      and(
+        eq(testRuns.projectId, projectId),
+        gte(testResults.createdAt, cutoffDate)
+      )
+    )
+    .orderBy(desc(testResults.createdAt));
+
+  return computeFlakiness(results, { windowDays, flakeThreshold, minRuns });
 }
 
 /**

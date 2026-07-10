@@ -44,6 +44,8 @@ testsRouter.get('/:testName/history', async (c) => {
       durationMs: testResults.durationMs,
       retryCount: testResults.retryCount,
       errorMessage: testResults.errorMessage,
+      tags: testResults.tags,
+      annotations: testResults.annotations,
       createdAt: testResults.createdAt,
       runId: testRuns.id,
       branch: testRuns.branch,

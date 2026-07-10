@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
 
 // Projects being tracked
 export const projects = pgTable('projects', {
@@ -49,6 +49,9 @@ export const testResults = pgTable('test_results', {
   retryCount: integer('retry_count').default(0),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Playwright metadata, persisted as-is; NULL when the report has none.
+  tags: jsonb('tags').$type<string[]>(),
+  annotations: jsonb('annotations').$type<{ type: string; description?: string }[]>(),
 }, (table) => ({
   // Index for FK lookups (joining with test runs)
   testRunIdIdx: index('test_results_test_run_id_idx').on(table.testRunId),

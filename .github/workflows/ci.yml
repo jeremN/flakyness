@@ -152,7 +152,8 @@ jobs:
       - name: Build API image
         uses: docker/build-push-action@v7
         with:
-          context: ./apps/api
+          context: .
+          file: ./apps/api/Dockerfile
           push: false
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
@@ -160,7 +161,8 @@ jobs:
       - name: Build Dashboard image
         uses: docker/build-push-action@v7
         with:
-          context: ./apps/dashboard
+          context: .
+          file: ./apps/dashboard/Dockerfile
           push: false
           cache-from: type=gha,scope=dashboard
           cache-to: type=gha,mode=max,scope=dashboard

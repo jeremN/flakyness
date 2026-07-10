@@ -51,14 +51,17 @@ describe('routes/+layout.server load', () => {
     const event = { url: new URL('http://x/') } as any;
     const result = await load(event);
 
-    expect(result).toEqual({ projects: [], selectedProject: null });
+    expect(result).toEqual({ projects: [], selectedProject: null, apiError: null });
   });
 
-  it('characterization: propagates a rejection from getProjects (no error handling today)', async () => {
+  it('falls back to an empty dashboard shape when getProjects rejects', async () => {
     mockedGetProjects.mockRejectedValue(new Error('api down'));
 
     const event = { url: new URL('http://x/') } as any;
+    const result = await load(event);
 
-    await expect(load(event)).rejects.toThrow('api down');
+    expect(result.projects).toEqual([]);
+    expect(result.selectedProject).toBeNull();
+    expect(typeof result.apiError).toBe('string');
   });
 });

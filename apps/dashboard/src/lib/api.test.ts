@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { APIError, getProjects, getFlakyTests, getProjectRuns, getTestHistory } from './api';
+import { getProjects, getFlakyTests, getProjectRuns, getTestHistory } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -21,40 +21,44 @@ describe('lib/api', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects');
   });
 
-  it('rejects with an APIError on a non-OK response', async () => {
+  it('throws a kit HttpError with the upstream status on a non-OK response', async () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 404, statusText: 'Not Found' }));
     vi.stubGlobal('fetch', fetchMock);
-
-    await expect(getProjects()).rejects.toMatchObject({
-      statusCode: 404,
-      endpoint: '/api/v1/projects',
-    });
 
     try {
       await getProjects();
       throw new Error('expected getProjects to reject');
-    } catch (error) {
-      expect(error).toBeInstanceOf(APIError);
-      expect((error as APIError).message).toContain('boom');
+    } catch (err) {
+      expect((err as { status: number }).status).toBe(404);
+      expect((err as { body: { message: string } }).body.message).toContain('/api/v1/projects');
     }
   });
 
-  it('rejects with an APIError on a network failure', async () => {
+  it('maps a 5xx upstream response to a 502 HttpError', async () => {
+    const fetchMock = vi.fn(async () => new Response('boom', { status: 500, statusText: 'Internal Server Error' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await getProjects();
+      throw new Error('expected getProjects to reject');
+    } catch (err) {
+      expect((err as { status: number }).status).toBe(502);
+      expect((err as { body: { message: string } }).body.message).toContain('/api/v1/projects');
+    }
+  });
+
+  it('throws a 503 HttpError on a network failure', async () => {
     const fetchMock = vi.fn(async () => {
       throw new TypeError('fetch failed');
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(getProjects()).rejects.toMatchObject({
-      statusCode: 0,
-    });
-
     try {
       await getProjects();
       throw new Error('expected getProjects to reject');
-    } catch (error) {
-      expect(error).toBeInstanceOf(APIError);
-      expect((error as APIError).message.startsWith('Failed to connect to API')).toBe(true);
+    } catch (err) {
+      expect((err as { status: number }).status).toBe(503);
+      expect((err as { body: { message: string } }).body.message).toContain('http://localhost:8080');
     }
   });
 

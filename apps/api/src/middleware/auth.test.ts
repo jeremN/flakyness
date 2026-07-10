@@ -1,14 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { createHash, randomBytes } from 'crypto';
-
-// Re-implement the functions here to test without db import
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-function generateToken(): string {
-  return `flackyness_${randomBytes(24).toString('hex')}`;
-}
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { Hono } from 'hono';
+import { hashToken, generateToken, adminAuth, projectAuth } from '../middleware/auth';
 
 describe('Auth Utilities', () => {
   describe('hashToken', () => {
@@ -16,20 +8,20 @@ describe('Auth Utilities', () => {
       const token = 'test-token-12345';
       const hash1 = hashToken(token);
       const hash2 = hashToken(token);
-      
+
       expect(hash1).toBe(hash2);
     });
 
     it('should produce different hashes for different tokens', () => {
       const hash1 = hashToken('token-a');
       const hash2 = hashToken('token-b');
-      
+
       expect(hash1).not.toBe(hash2);
     });
 
     it('should produce 64-character hex string (SHA-256)', () => {
       const hash = hashToken('any-token');
-      
+
       expect(hash).toHaveLength(64);
       expect(hash).toMatch(/^[a-f0-9]{64}$/);
     });
@@ -48,32 +40,142 @@ describe('Auth Utilities', () => {
   describe('generateToken', () => {
     it('should generate token with flackyness prefix', () => {
       const token = generateToken();
-      
+
       expect(token).toMatch(/^flackyness_/);
     });
 
     it('should generate unique tokens', () => {
       const tokens = new Set<string>();
-      
+
       for (let i = 0; i < 100; i++) {
         tokens.add(generateToken());
       }
-      
+
       expect(tokens.size).toBe(100);
     });
 
     it('should generate tokens of consistent length', () => {
       const token = generateToken();
-      
-      // flackyness_ (10 chars) + 48 hex chars (24 bytes) = 58, but prefix includes underscore
+
+      // flackyness_ (11 chars incl. underscore) + 48 hex chars (24 bytes)
       expect(token.length).toBeGreaterThanOrEqual(58);
     });
 
     it('should generate tokens that can be hashed', () => {
       const token = generateToken();
       const hash = hashToken(token);
-      
+
       expect(hash).toHaveLength(64);
     });
+  });
+});
+
+describe('adminAuth middleware', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function makeApp() {
+    const app = new Hono();
+    app.use('/admin/*', adminAuth());
+    app.get('/admin/ping', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('should return 401 when no Authorization header is provided', async () => {
+    vi.stubEnv('ADMIN_TOKEN', 'right-token');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping');
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 401 for a non-Bearer authorization scheme', async () => {
+    vi.stubEnv('ADMIN_TOKEN', 'right-token');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping', {
+      headers: { Authorization: 'Basic x' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 401 for a malformed Bearer header without a token', async () => {
+    vi.stubEnv('ADMIN_TOKEN', 'right-token');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping', {
+      headers: { Authorization: 'Bearer' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 401 for a wrong token', async () => {
+    vi.stubEnv('ADMIN_TOKEN', 'right-token');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping', {
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 200 for the correct token', async () => {
+    vi.stubEnv('ADMIN_TOKEN', 'right-token');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping', {
+      headers: { Authorization: 'Bearer right-token' },
+    });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
+
+  it('should return 500 when ADMIN_TOKEN is not configured', async () => {
+    vi.stubEnv('ADMIN_TOKEN', '');
+    const app = makeApp();
+
+    const res = await app.request('/admin/ping', {
+      headers: { Authorization: 'Bearer any-token' },
+    });
+    expect(res.status).toBe(500);
+  });
+});
+
+describe('projectAuth middleware', () => {
+  // Only the pre-DB paths are covered here (they throw before any DB call);
+  // the token-lookup path is covered by the route integration suites.
+  function makeApp() {
+    const app = new Hono();
+    app.use('/api/*', projectAuth());
+    app.get('/api/ping', (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('should return 401 when no Authorization header is provided', async () => {
+    const app = makeApp();
+
+    const res = await app.request('/api/ping');
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 401 for a non-Bearer authorization scheme', async () => {
+    const app = makeApp();
+
+    const res = await app.request('/api/ping', {
+      headers: { Authorization: 'Basic x' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('should return 401 for a malformed Bearer header without a token', async () => {
+    const app = makeApp();
+
+    const res = await app.request('/api/ping', {
+      headers: { Authorization: 'Bearer' },
+    });
+    expect(res.status).toBe(401);
   });
 });

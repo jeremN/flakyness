@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="pytest" errors="0" failures="1" skipped="0" tests="2" time="1.234" timestamp="2026-07-01T00:00:00Z">
+  <testcase classname="tests.test_login" name="test_valid_login" time="0.734"/>
+  <testcase classname="tests.test_login" name="test_invalid_login" time="0.500">
+    <failure message="AssertionError: assert 200 == 401">assert 200 == 401</failure>
+  </testcase>
+</testsuite>

@@ -234,7 +234,7 @@ Daily flake rate aggregation for the requested window.
 
 ### Reports
 
-#### Upload Playwright Report
+#### Upload a Test Report (Playwright JSON or JUnit XML)
 
 ```http
 POST /api/v1/reports?branch=main&commit=abc123&pipeline=12345
@@ -255,7 +255,53 @@ Content-Type: application/json
 | `commit` | string | Yes | Git commit SHA, max 40 chars |
 | `pipeline` | string | No | CI pipeline ID; max 100 chars |
 
-**Body:** Raw Playwright JSON report (from `--reporter=json`)
+**Body:** Raw Playwright JSON report (from `--reporter=json`), or a JUnit XML report.
+
+##### Format detection
+
+The format is detected from the **body content**, not `Content-Type` — CI
+uploaders frequently send an inaccurate or generic content type. The body is
+read once and trimmed; if it starts with `<`, it's parsed as JUnit XML,
+otherwise it's parsed as JSON. `Content-Type: application/json` or
+`application/xml` are both accepted (or any other value) — send whichever
+your CI tool defaults to.
+
+##### JUnit XML support
+
+JUnit XML is the common output format for jest-junit, pytest, Go, Maven
+Surefire, Cypress, and most other test runners. Both a `<testsuites>` root
+(possibly wrapping multiple, possibly nested `<testsuite>` elements) and a
+bare single `<testsuite>` root (pytest's default) are accepted.
+
+Per `<testcase>`, status is derived structurally:
+
+| Testcase contains | Status |
+|--------------------|--------|
+| a `<failure>` or `<error>` child | `failed` |
+| a `<skipped>` child (and no `<failure>`/`<error>`) | `skipped` |
+| none of the above | `passed` |
+
+**JUnit reports never produce a `flaky` status and `retryCount` is always
+`0`** — the JUnit format has no retry semantics (a rerun that an emitter
+encodes as a duplicate `<testcase>` is not something Flackyness infers
+within a single report). Flakiness for JUnit-sourced tests instead emerges
+the same way it already does for everything else: from the flake-rate
+`(failed + flaky) / total` computed **across multiple report uploads** for
+the same test name (see [Get Real-Time Flakiness Analysis](#get-real-time-flakiness-analysis)).
+A test that fails in 1 of 3 JUnit uploads is flagged flaky by that rate,
+even though each individual upload only ever reports it as plainly `passed`
+or `failed`.
+
+Field mapping: `testName` is `classname › name` (or just `name` when
+`classname` is empty/absent); `testFile` prefers the testcase's own `file`
+attribute, then falls back to the containing `<testsuite>`'s `file`
+attribute, then `classname`, then `''`. `durationMs` comes from the `time`
+attribute (seconds → milliseconds), defaulting to `0` when absent. The same
+name/file (500 char) and error-message (10,000 char) truncation the
+Playwright parser applies also apply here. `tags` and `annotations` are
+always empty arrays for JUnit-sourced results (JUnit has no equivalent
+concept) — they persist as `NULL`, same as an empty Playwright report.
+Reports over 50,000 `<testcase>` elements are rejected with a `400`.
 
 **Response (201):**
 ```json
@@ -705,6 +751,24 @@ curl -X POST "https://flackyness.example.com/api/v1/reports" \
   -H "Content-Type: application/json" \
   -d @results.json
 ```
+
+## Example: Upload a JUnit XML Report with curl
+
+```bash
+# e.g. jest --reporters=jest-junit --testResultsProcessor=jest-junit,
+# or pytest --junitxml=report.xml
+
+curl -X POST "https://flackyness.example.com/api/v1/reports" \
+  --url-query "branch=main" \
+  --url-query "commit=$(git rev-parse HEAD)" \
+  --url-query "pipeline=$CI_PIPELINE_ID" \
+  -H "Authorization: Bearer $FLACKYNESS_TOKEN" \
+  -H "Content-Type: application/xml" \
+  --data-binary @report.xml
+```
+
+Note `--data-binary` (not `-d`), which sends the file byte-for-byte —
+curl's `-d` strips newlines, which is harmless for JSON but can corrupt XML.
 
 ## Example: Create Project (Admin)
 

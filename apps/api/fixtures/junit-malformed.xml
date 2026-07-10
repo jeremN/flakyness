@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="broken">
+  <testsuite name="auth.spec.ts">
+    <testcase classname="auth.spec.ts" name="should login">
+  </testsuite>
+</testsuites>

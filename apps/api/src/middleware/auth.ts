@@ -19,6 +19,35 @@ export function generateToken(): string {
 }
 
 /**
+ * Extract the token from a `Bearer <token>` Authorization header.
+ * Returns null if the header is missing or not in the expected format.
+ */
+export function extractBearerToken(authHeader: string | undefined | null): string | null {
+  if (!authHeader) return null;
+
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') return null;
+
+  return parts[1];
+}
+
+/**
+ * Constant-time token comparison, shared by adminAuth and any other route
+ * gated by a bearer token compared against a single expected value (e.g. the
+ * /metrics endpoint's METRICS_TOKEN).
+ *
+ * Hashing both tokens before comparing ensures:
+ * 1. Both buffers are always the same length (32 bytes SHA-256)
+ * 2. No timing leak on token length
+ * 3. Uses Node.js native crypto.timingSafeEqual (constant-time)
+ */
+export function tokensMatch(candidate: string, expected: string): boolean {
+  const candidateHash = createHash('sha256').update(candidate).digest();
+  const expectedHash = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(candidateHash, expectedHash);
+}
+
+/**
  * Bearer token authentication middleware for project tokens
  *
  * Extracts the Bearer token from Authorization header,
@@ -79,21 +108,12 @@ export function adminAuth(): MiddlewareHandler {
       throw new HTTPException(401, { message: 'Authorization header required' });
     }
 
-    const parts = authHeader.split(' ');
-    if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    const token = extractBearerToken(authHeader);
+    if (!token) {
       throw new HTTPException(401, { message: 'Invalid authorization format. Use: Bearer <token>' });
     }
 
-    const token = parts[1];
-
-    // Hash both tokens before comparing — this ensures:
-    // 1. Both buffers are always the same length (32 bytes SHA-256)
-    // 2. No timing leak on token length
-    // 3. Uses Node.js native crypto.timingSafeEqual (constant-time)
-    const tokenHash = createHash('sha256').update(token).digest();
-    const adminTokenHash = createHash('sha256').update(adminToken).digest();
-
-    if (!timingSafeEqual(tokenHash, adminTokenHash)) {
+    if (!tokensMatch(token, adminToken)) {
       throw new HTTPException(401, { message: 'Invalid admin token' });
     }
 

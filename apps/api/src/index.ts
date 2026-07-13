@@ -8,7 +8,9 @@ import 'dotenv/config';
 
 // Custom middleware
 import { requestLogger, logError, logger } from './middleware/logger';
+import { extractBearerToken, tokensMatch } from './middleware/auth';
 import { closeDb } from './db';
+import { renderMetrics } from './metrics';
 
 // Routes
 import reports from './routes/reports';
@@ -55,6 +57,24 @@ app.get('/health', (c) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
   });
+});
+
+// Prometheus scrape endpoint. Off by default: unset METRICS_TOKEN makes the
+// route 404 (feature invisible), matching how self-hosters opt in to admin
+// features. Mounted on the root app (Prometheus convention), not /api/v1.
+app.get('/metrics', async (c) => {
+  const metricsToken = process.env.METRICS_TOKEN;
+  if (!metricsToken) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+
+  const token = extractBearerToken(c.req.header('Authorization'));
+  if (!token || !tokensMatch(token, metricsToken)) {
+    throw new HTTPException(401, { message: 'Invalid or missing metrics token' });
+  }
+
+  c.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  return c.body(await renderMetrics());
 });
 
 // API routes

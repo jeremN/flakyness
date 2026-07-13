@@ -3,12 +3,18 @@
 version: 2
 updates:
   # JavaScript / TypeScript dependencies across the pnpm workspace.
-  # The "npm" ecosystem understands pnpm workspaces; the directories glob
-  # covers the root manifest plus every app and package.
+  # The "npm" ecosystem understands pnpm workspaces. Split into two entries
+  # because Dependabot `ignore` rules apply to the whole `updates` entry and
+  # cannot be scoped per-directory: the dashboard needs an extra TypeScript
+  # majors ignore that the root/api entry must NOT inherit (see below).
   - package-ecosystem: "npm"
     directories:
+      # Explicit paths, not the `/apps/*` glob — a glob here would overlap the
+      # dashboard entry below and double-open its PRs. Trade-off: a NEW app
+      # under apps/ must be added to this list by hand, or it silently gets no
+      # dependency updates.
       - "/"
-      - "/apps/*"
+      - "/apps/api"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -27,6 +33,48 @@ updates:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
     # Batch low-risk updates into a few PRs instead of one-per-package.
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      production-minor-patch:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # apps/dashboard: same as above, but TypeScript majors are additionally
+  # ignored. svelte-check 4.x crashes under TypeScript 7 (see AGENTS.md sharp
+  # edges), so the dashboard is deliberately pinned to TS 6 while apps/api
+  # (above) moves ahead to TS 7.
+  - package-ecosystem: "npm"
+    directories:
+      - "/apps/dashboard"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 2
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    # @types/node must track the Node runtime (24) — never the newest types
+    # release (25+ targets a Node version we don't run).
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # TypeScript 7 (the native rewrite) breaks svelte-check 4.x: it reads
+      # `ts.default.sys.useCaseSensitiveFileNames`, which TS 7 no longer
+      # exposes, so `svelte-check` crashes on startup (see PR #62). Its peer
+      # range claims `typescript: ">=5.0.0"`, so nothing stops the install —
+      # only this rule does. The API is already on TS 7; only the dashboard is
+      # pinned. REMOVE THIS once svelte-check ships TS 7 support, then bump the
+      # dashboard to match the API.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: "development"

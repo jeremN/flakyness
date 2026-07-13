@@ -451,6 +451,64 @@ GET /api/v1/tests/:name/history?project=project-id
 Playwright report's test case (and, for annotations, its per-project entries) and are `null` when the report
 carried none.
 
+#### Get Per-Test Flake-Rate Trend
+
+```http
+GET /api/v1/tests/:name/trend?project=project-id&days=30
+```
+
+Daily flake-rate trend for a single test, so you can answer "is this test
+getting worse, or settling down?" There is no snapshot table behind this —
+it's computed on demand from `test_results` every request (same approach as
+[Get Flake Rate Trend](#get-flake-rate-trend) for a whole project).
+
+**Query Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `project` | string | Yes | — | Project ID (a test name is only unique within a project) |
+| `days` | number | No | `30` | Trend window in days, clamped to `[1, 90]` |
+
+**Response:**
+```json
+{
+  "testName": "Checkout › should complete purchase",
+  "projectId": "uuid",
+  "days": 30,
+  "direction": "worsening",
+  "trend": [
+    { "date": "2026-06-14", "totalRuns": 4, "failed": 0, "flaky": 0, "flakeRate": 0 },
+    { "date": "2026-06-15", "totalRuns": 0, "failed": 0, "flaky": 0, "flakeRate": null },
+    { "date": "2026-06-16", "totalRuns": 5, "failed": 2, "flaky": 1, "flakeRate": 0.6 }
+  ]
+}
+```
+
+`trend` always has exactly `days` entries, oldest first, one per calendar
+day in the window — a day with no runs is zero-filled rather than omitted.
+`flakeRate` is `(failed + flaky) / totalRuns` for that day, computed the
+same way as everywhere else in the product (`skipped` counts toward
+neither); it is a plain number when `totalRuns > 0`.
+
+**`flakeRate: null` means the test did not run that day — it is not a `0`.**
+"The test didn't run" and "the test ran and never flaked" are different
+facts, and a consumer (chart, alert) must not treat `null` as "healthy". A
+day with `totalRuns: 0` is always paired with `flakeRate: null`.
+
+`direction` (`'improving' | 'worsening' | 'stable' | 'insufficient-data'`)
+compares the mean flake rate of the first half of the window against the
+second half, counting only days that actually had runs. A swing of `0.05`
+or less (absolute) is `'stable'`; if either half has no runs at all, it's
+`'insufficient-data'`. This is a deliberately crude heuristic meant to sort
+a list, not a statistical claim.
+
+**The trend horizon is bounded by the project's data retention** (see
+[retentionDays](#update-project-flakiness-config) under Admin Endpoints). This endpoint
+reads directly from `test_results`, so once a project has `retentionDays`
+configured and old runs are pruned, days older than that window have no
+rows left — they report `totalRuns: 0` and `flakeRate: null`, identical to
+a day that genuinely had no runs. The trend silently shortens; it does not
+error.
+
 #### Get Flaky Test by ID
 
 ```http
@@ -546,6 +604,7 @@ GET /api/v1/admin/projects
       "windowDays": null,
       "minRuns": null,
       "webhookUrl": null,
+      "retentionDays": null,
       "stats": {
         "totalRuns": 150,
         "totalTests": 5000,
@@ -563,6 +622,12 @@ overrides — see [Update Project Flakiness Config](#update-project-flakiness-co
 `webhookUrl` is an optional outbound notification URL — see
 [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` means
 no webhook is configured.
+
+`retentionDays` is an optional per-project data retention window — see
+[Update Project Flakiness Config](#update-project-flakiness-config) and
+[Prune Project Data](#prune-project-data). `null` (the default for every
+project, including ones created before this field existed) means **keep
+forever**; no data is ever deleted automatically.
 
 ### Create Project
 
@@ -615,11 +680,12 @@ POST /api/v1/admin/projects/:id/rotate-token
 PATCH /api/v1/admin/projects/:id
 ```
 
-Update a project's per-project flakiness detection overrides and/or its
-transition-notification webhook. Fields omitted from the body are left
-unchanged; sending a field as `null` explicitly clears it back to the
-built-in default (or, for `webhookUrl`, disables the webhook). At least one
-field is required.
+Update a project's per-project flakiness detection overrides, its
+transition-notification webhook, and/or its data retention. Fields omitted
+from the body are left unchanged; sending a field as `null` explicitly clears
+it back to the built-in default (or, for `webhookUrl`, disables the webhook;
+for `retentionDays`, reverts to "keep forever"). At least one field is
+required.
 
 **Body (all fields optional, but at least one required):**
 ```json
@@ -627,7 +693,8 @@ field is required.
   "flakeThreshold": 0.1,
   "windowDays": 30,
   "minRuns": 5,
-  "webhookUrl": "https://example.com/hooks/flackyness"
+  "webhookUrl": "https://example.com/hooks/flackyness",
+  "retentionDays": 60
 }
 ```
 
@@ -637,6 +704,7 @@ field is required.
 | `windowDays` | integer \| null | `[1, 90]` | Analysis window in days used by background flakiness reconciliation. `null` resets to the default (`14`). |
 | `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
 | `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` disables the webhook. |
+| `retentionDays` | integer \| null | `[1, 3650]` | Days of `test_runs` history to keep — see [Prune Project Data](#prune-project-data). `null` (the default) means **keep forever**; no global default exists. |
 
 **Response (200):**
 ```json
@@ -649,13 +717,25 @@ field is required.
     "flakeThreshold": 0.1,
     "windowDays": 30,
     "minRuns": 5,
-    "webhookUrl": "https://example.com/hooks/flackyness"
+    "webhookUrl": "https://example.com/hooks/flackyness",
+    "retentionDays": 60
   }
 }
 ```
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
 `webhookUrl`, or an empty body) and `404` if the project doesn't exist.
+
+> **The retention/window guard:** `retentionDays` may never be lower than the
+> project's *resolved* flakiness `windowDays` (the stored override if set,
+> otherwise the default `14`) — pruning data still inside the analysis window
+> would make flake rates drift as history vanishes underneath them. A request
+> that violates this is rejected with `400` naming both numbers:
+> ```json
+> { "error": "retentionDays (7) must be >= the flakiness windowDays (14)" }
+> ```
+> If the same request sets **both** fields, the check validates against the
+> **new** `windowDays` being written, not the previously stored one.
 
 > **Tuning flakiness detection:** Flakiness is normally governed by three
 > defaults — `windowDays: 14`, `flakeThreshold: 0.05`, `minRuns: 3`. This
@@ -739,6 +819,73 @@ DELETE /api/v1/admin/projects/:id
   "success": true,
   "message": "Project \"my-project\" and all associated data deleted."
 }
+```
+
+### Prune Project Data
+
+```http
+POST /api/v1/admin/projects/:id/prune
+POST /api/v1/admin/projects/:id/prune?confirm=true
+```
+
+Deletes `test_runs` older than the project's configured `retentionDays` (set
+via [Update Project Flakiness Config](#update-project-flakiness-config)).
+`test_results` for those runs cascade automatically via a foreign key —
+they are never deleted directly. **`flaky_tests` is never touched by this
+route**: it is the product's memory of past and currently-muted flakiness
+(including `status: "ignored"` rows) and has no relationship to `test_runs`,
+so it survives pruning intact regardless of how much run history is deleted.
+
+There is no scheduler — call this endpoint from cron, a CI job, or any
+trigger you control, on whatever cadence you choose.
+
+**Dry-run is the default.** Without `?confirm=true`, the route reports the
+counts it *would* delete and **deletes nothing**. Deletion only happens with
+the explicit `?confirm=true` query parameter — an admin token plus a `curl`
+typo must not be able to destroy history.
+
+**Dry-run response (200), no `?confirm=true`:**
+```json
+{
+  "dryRun": true,
+  "cutoff": "2024-11-11T00:00:00.000Z",
+  "runsToDelete": 42,
+  "resultsToDelete": 1830
+}
+```
+
+**Confirmed response (200), `?confirm=true`:**
+```json
+{
+  "dryRun": false,
+  "cutoff": "2024-11-11T00:00:00.000Z",
+  "runsDeleted": 42,
+  "resultsDeleted": 1830
+}
+```
+
+`cutoff` is `now - retentionDays` (ISO 8601); runs with `created_at` older
+than `cutoff` are the ones counted/deleted. Deletion happens in batches of
+5000 run ids per statement so a first prune of a long-lived database doesn't
+hold one enormous lock.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | `retentionDays` is not configured for this project (`null`) — pruning without an explicit retention is always a mistake. |
+| `400` | The stored `retentionDays` is lower than the project's *resolved* `windowDays` — the same guard enforced on PATCH, re-checked here because `windowDays` may have been raised **after** `retentionDays` was set, leaving a stale, invalid pair. Names both numbers, e.g. `{ "error": "retentionDays (7) must be >= the flakiness windowDays (14)" }`. Nothing is deleted. |
+| `404` | Project doesn't exist. |
+
+**Example — nightly prune via cron (dry-run first, then confirmed):**
+```bash
+# Dry-run: see what would be deleted, deletes nothing.
+curl -sX POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "$FLACKYNESS_URL/api/v1/admin/projects/$PROJECT_ID/prune"
+
+# Nightly prune (drop --confirm=true to go back to a dry-run).
+curl -sX POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "$FLACKYNESS_URL/api/v1/admin/projects/$PROJECT_ID/prune?confirm=true"
 ```
 
 ### System Health

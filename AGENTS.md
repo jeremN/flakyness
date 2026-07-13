@@ -15,6 +15,7 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 | Typecheck API | `pnpm --filter api exec tsc --noEmit` |
 | Typecheck dashboard | `pnpm --filter dashboard check` |
 | Tests | `pnpm test` (API route suites need `DATABASE_URL` + `ADMIN_TOKEN`, else they self-skip; dashboard suite always runs) |
+| E2E (Playwright, real Postgres + built dashboard) | `pnpm --filter dashboard test:e2e` — see `apps/dashboard/e2e/` |
 | Build | `pnpm build` |
 
 ## Sharp edges
@@ -28,8 +29,11 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   environment. `docker compose` also refuses to even parse its config
   unless `DB_PASSWORD` and `ADMIN_TOKEN` have values (from `.env` or the
   shell).
-- **TS 6 bridge**: root tsconfig sets `ignoreDeprecations: "6.0"`; migrate
-  the deprecated options before any TS 7 upgrade.
+- **TypeScript is split across the workspace**: `apps/api` is on **TS 7**;
+  `apps/dashboard` is pinned to **TS 6** because `svelte-check` 4.x crashes
+  under TS 7 (it reads `ts.default.sys`, which the native rewrite removed).
+  `.github/dependabot.yml` ignores TS majors for the dashboard only — lift
+  that pin when svelte-check supports TS 7.
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under

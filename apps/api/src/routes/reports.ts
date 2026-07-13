@@ -9,6 +9,7 @@ import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
 import { sendFlakyTransitionWebhook, type FlakyTransitionPayload } from '../services/notifications';
 import { logger } from '../middleware/logger';
+import { reportsIngestedTotal, reportParseFailuresTotal } from '../metrics';
 
 const BATCH_SIZE = 1000;
 
@@ -63,6 +64,7 @@ reports.post(
       try {
         parsed = parseJUnitReport(bodyText);
       } catch (error) {
+        reportParseFailuresTotal.inc();
         const message = error instanceof Error ? error.message : 'Unknown error';
         return c.json({ error: `Failed to parse JUnit report: ${message}` }, 400);
       }
@@ -71,12 +73,14 @@ reports.post(
       try {
         rawReport = JSON.parse(bodyText);
       } catch {
+        reportParseFailuresTotal.inc();
         return c.json({ error: 'Invalid JSON body' }, 400);
       }
 
       try {
         parsed = parsePlaywrightReport(rawReport);
       } catch (error) {
+        reportParseFailuresTotal.inc();
         const message = error instanceof Error ? error.message : 'Unknown error';
         return c.json({ error: `Failed to parse Playwright report: ${message}` }, 400);
       }
@@ -122,6 +126,8 @@ reports.post(
 
       return run;
     });
+
+    reportsIngestedTotal.inc({ project: project.name });
 
     // Trigger flakiness detection in background (don't await). If it surfaces
     // a newly-flaky or newly-resolved test and the project has a webhook

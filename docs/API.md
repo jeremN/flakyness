@@ -694,6 +694,50 @@ GET /api/v1/admin/health
 
 ---
 
+## Monitoring
+
+```http
+GET /metrics
+```
+
+A Prometheus scrape endpoint on the root app (not under `/api/v1`, per
+Prometheus convention). Off by default: with no `METRICS_TOKEN` set in the
+environment, the route returns `404` and is otherwise invisible. Once set,
+requests must present it as a Bearer token:
+
+```bash
+curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics
+```
+
+An unset or wrong token returns `401`. On success the response is
+`text/plain; version=0.0.4` Prometheus exposition format containing:
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `flackyness_reports_ingested_total` | Counter | `project` | Reports successfully ingested (HTTP 201) |
+| `flackyness_report_parse_failures_total` | Counter | — | Ingest requests that failed to parse (Playwright JSON or JUnit XML) |
+| `flackyness_flaky_tests_active` | Gauge | `project` | Currently active flaky tests, computed at scrape time |
+| `flackyness_test_runs_total` | Gauge | `project` | Total ingested test runs, computed at scrape time |
+
+Plus the standard Node.js process metrics (`process_cpu_*`, `process_resident_memory_bytes`,
+`nodejs_eventloop_lag_seconds`, etc.) from `prom-client`'s default collector.
+
+If the database is unreachable when Prometheus scrapes, the two gauges are
+simply omitted from that scrape (logged server-side) rather than the
+endpoint returning an error — the counters and process metrics are always
+served.
+
+**Example Prometheus scrape config:**
+```yaml
+scrape_configs:
+  - job_name: flackyness
+    bearer_token: <your METRICS_TOKEN>
+    static_configs:
+      - targets: ['flackyness-api:8080']
+```
+
+---
+
 ## Error Responses
 
 All errors follow this format:

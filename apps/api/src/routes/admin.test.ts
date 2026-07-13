@@ -781,6 +781,35 @@ describeAdmin('Admin API Integration Tests', () => {
       return rows.length;
     }
 
+    /**
+     * Every ingest fires reports.ts's updateFlakyTests() in the background,
+     * un-awaited (reports.ts:132-135, by design — ingest doesn't block on
+     * recomputation). A test that fabricates `flaky_tests` rows right after
+     * ingesting is racing that background reconcile: if it lands *after* the
+     * fabrication, it finds the fabricated row, correctly observes it has no
+     * backing test_results, and resolves it — flipping any "survives
+     * byte-for-byte" assertion underneath us. Don't delete this: wait for the
+     * reconcile to demonstrably land before fabricating anything.
+     *
+     * buildFlakinessReport()'s "control test" always crosses the flake
+     * threshold, so a completed reconcile leaves at least one row in
+     * flaky_tests for the project — that's the observable signal we poll for.
+     */
+    async function waitForFlakyReconcile(projectId: string): Promise<void> {
+      const settled = await waitFor(async () => {
+        const rows = await db.query.flakyTests.findMany({
+          where: eq(flakyTests.projectId, projectId),
+        });
+        return rows.length > 0;
+      });
+      if (!settled) {
+        throw new Error(
+          'background updateFlakyTests never completed — reports.ts:135 fires it un-awaited; ' +
+            'this test must wait for it before fabricating rows'
+        );
+      }
+    }
+
     // Test plan #1 — the most important test in this plan: dry-run must
     // delete NOTHING, proven by a follow-up count.
     it('dry-run (no confirm) reports counts and deletes nothing', async () => {
@@ -851,6 +880,9 @@ describeAdmin('Admin API Integration Tests', () => {
       const { projectId, token } = await createPruneProject('flaky-survives');
       await setRetentionDays(projectId, 14);
       await ingestBackdatedRun(token, 30);
+      // Let the ingest's background updateFlakyTests() settle before we
+      // fabricate rows below — see waitForFlakyReconcile()'s comment.
+      await waitForFlakyReconcile(projectId);
 
       const [activeRow] = await db
         .insert(flakyTests)

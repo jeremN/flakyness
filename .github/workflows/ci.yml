@@ -116,6 +116,111 @@ jobs:
         run: pnpm --filter dashboard test
 
   # ============================================================
+  # End-to-end tests (Playwright, real Postgres + built dashboard)
+  # + dogfooding the suite's own report back into the API
+  # ============================================================
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: flackyness_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d flackyness_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:test_password@localhost:5432/flackyness_test
+      ADMIN_TOKEN: test-admin-token-for-ci
+      PUBLIC_API_URL: http://127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271  # v6
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: pnpm --filter dashboard exec playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: |
+          touch .env
+          pnpm db:migrate
+
+      - name: Build and start the API
+        run: |
+          pnpm --filter api build
+          node apps/api/dist/index.js &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+              echo "API is healthy."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become healthy within 30s." >&2
+          exit 1
+
+      - name: Run E2E suite
+        run: pnpm --filter dashboard test:e2e
+
+      # Bonus, not a gate (design decision 5 in plan 026): POST the suite's
+      # own report.json — real Playwright reporter output, not a hand-written
+      # fixture — through the same ingest path CI uploaders use, and confirm
+      # it's accepted. A fresh token is minted via rotate-token instead of
+      # reusing global-setup's seed token so that the project's real ingest
+      # token is never written to a file or log anywhere in this job.
+      - name: Dogfood the suite's own report
+        continue-on-error: true
+        env:
+          # `github` context values are untrusted input (branch names are
+          # attacker-influenceable); pass them through env: rather than
+          # interpolating `${{ }}` directly into the shell script.
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          PROJECT_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('apps/dashboard/e2e/.artifacts/seed.json', 'utf-8')).projectId)")
+          TOKEN_RESPONSE=$(curl -sS -X POST "http://127.0.0.1:8080/api/v1/admin/projects/${PROJECT_ID}/rotate-token" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}")
+          TOKEN=$(node -e "console.log(JSON.parse(process.argv[1]).token)" "$TOKEN_RESPONSE")
+          ENCODED_BRANCH=$(node -e "console.log(encodeURIComponent(process.argv[1]))" "$REF_NAME")
+          STATUS=$(curl -sS -o /tmp/dogfood-response.json -w '%{http_code}' \
+            -X POST "http://127.0.0.1:8080/api/v1/reports?branch=${ENCODED_BRANCH}&commit=${COMMIT_SHA}&pipeline=${RUN_ID}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @apps/dashboard/playwright-report/report.json)
+          if [ "$STATUS" = "201" ]; then
+            echo "Dogfood ingest succeeded (201)."
+          else
+            echo "Dogfood ingest failed (HTTP $STATUS) — this does not fail the job. Response body:"
+            cat /tmp/dogfood-response.json
+            exit 1
+          fi
+
+      - name: Upload Playwright HTML report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: playwright-report
+          path: apps/dashboard/playwright-report/html
+          retention-days: 7
+
+  # ============================================================
   # Build
   # ============================================================
   build:

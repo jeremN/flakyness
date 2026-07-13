@@ -28,13 +28,7 @@ cd flackyness
 pnpm install
 ```
 
-### 2. Start Database
-
-```bash
-docker compose up -d
-```
-
-### 3. Configure Environment
+### 2. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -49,6 +43,19 @@ openssl rand -hex 32
 # Add to .env
 ADMIN_TOKEN=your-generated-token-here
 ```
+
+### 3. Start Database
+
+```bash
+docker compose up -d postgres
+```
+
+Scope this to the `postgres` service only. A bare `docker compose up -d`
+starts every service (dashboard, API, etc.) with hard-coded container
+names, which collide with any other checkout of this repo running on the
+same machine — and `docker compose` refuses to even parse its config
+unless `DB_PASSWORD` and `ADMIN_TOKEN` have values, which is why the `.env`
+step above comes first.
 
 ### 4. Run Migrations
 

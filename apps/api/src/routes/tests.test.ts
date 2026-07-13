@@ -437,6 +437,31 @@ describeWithDb('Tests API Integration Tests', () => {
       expect(body.trend).toHaveLength(90);
     });
 
+    it('should fall back to the default window for an unparseable days parameter', async () => {
+      // parseInt('abc') is NaN, and NaN slips through a Math.min/Math.max
+      // clamp untouched — the response would be `days: null` with an empty
+      // `trend`, i.e. a 200 claiming "no history" for what is really a typo.
+      // Assert on days + bucket count, not just the status: a 200 is exactly
+      // what the bug already returned.
+      const res = await app.request(
+        `/api/v1/tests/some-test/trend?project=${testProjectId}&days=abc`
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.days).toBe(30);
+      expect(body.trend).toHaveLength(30);
+    });
+
+    it('should fall back to the default window for an empty days parameter', async () => {
+      const res = await app.request(
+        `/api/v1/tests/some-test/trend?project=${testProjectId}&days=`
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.days).toBe(30);
+      expect(body.trend).toHaveLength(30);
+    });
+
     it('should return a plausible trend + direction for the known ingested test', async () => {
       const encodedName = encodeURIComponent(KNOWN_TEST_NAME);
       const res = await app.request(

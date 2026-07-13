@@ -232,8 +232,18 @@ testsRouter.get('/:testName/trend', async (c) => {
     return c.json({ error: 'Invalid project ID format' }, 400);
   }
 
-  // Clamp days between 1 and 90 (DoS guard, same as /projects/:id/trend).
-  const days = Math.min(Math.max(parseInt(c.req.query('days') || '30', 10), 1), 90);
+  // Clamp days between 1 and 90 (DoS guard, same as /projects/:id/trend),
+  // but guard the *parse* first: parseInt('abc') is NaN, and every
+  // Math.min/Math.max comparison against NaN is false, so NaN would sail
+  // straight through the clamp and produce an empty `trend` with
+  // `days: null` — a 200 that says "this test has no history" when the
+  // truth is "you typo'd a query param". `days` is display tuning, not a
+  // semantic input, so an unparseable value falls back to the default
+  // rather than 400ing — it just must never silently render empty.
+  // Not `parseInt(...) || 30`: that would swallow days=0 into 30 instead of
+  // clamping it to 1.
+  const rawDays = parseInt(c.req.query('days') ?? '', 10);
+  const days = Number.isNaN(rawDays) ? 30 : Math.min(Math.max(rawDays, 1), 90);
 
   const now = new Date();
   const cutoff = new Date(now);

@@ -451,6 +451,64 @@ GET /api/v1/tests/:name/history?project=project-id
 Playwright report's test case (and, for annotations, its per-project entries) and are `null` when the report
 carried none.
 
+#### Get Per-Test Flake-Rate Trend
+
+```http
+GET /api/v1/tests/:name/trend?project=project-id&days=30
+```
+
+Daily flake-rate trend for a single test, so you can answer "is this test
+getting worse, or settling down?" There is no snapshot table behind this —
+it's computed on demand from `test_results` every request (same approach as
+[Get Flake Rate Trend](#get-flake-rate-trend) for a whole project).
+
+**Query Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `project` | string | Yes | — | Project ID (a test name is only unique within a project) |
+| `days` | number | No | `30` | Trend window in days, clamped to `[1, 90]` |
+
+**Response:**
+```json
+{
+  "testName": "Checkout › should complete purchase",
+  "projectId": "uuid",
+  "days": 30,
+  "direction": "worsening",
+  "trend": [
+    { "date": "2026-06-14", "totalRuns": 4, "failed": 0, "flaky": 0, "flakeRate": 0 },
+    { "date": "2026-06-15", "totalRuns": 0, "failed": 0, "flaky": 0, "flakeRate": null },
+    { "date": "2026-06-16", "totalRuns": 5, "failed": 2, "flaky": 1, "flakeRate": 0.6 }
+  ]
+}
+```
+
+`trend` always has exactly `days` entries, oldest first, one per calendar
+day in the window — a day with no runs is zero-filled rather than omitted.
+`flakeRate` is `(failed + flaky) / totalRuns` for that day, computed the
+same way as everywhere else in the product (`skipped` counts toward
+neither); it is a plain number when `totalRuns > 0`.
+
+**`flakeRate: null` means the test did not run that day — it is not a `0`.**
+"The test didn't run" and "the test ran and never flaked" are different
+facts, and a consumer (chart, alert) must not treat `null` as "healthy". A
+day with `totalRuns: 0` is always paired with `flakeRate: null`.
+
+`direction` (`'improving' | 'worsening' | 'stable' | 'insufficient-data'`)
+compares the mean flake rate of the first half of the window against the
+second half, counting only days that actually had runs. A swing of `0.05`
+or less (absolute) is `'stable'`; if either half has no runs at all, it's
+`'insufficient-data'`. This is a deliberately crude heuristic meant to sort
+a list, not a statistical claim.
+
+**The trend horizon is bounded by the project's data retention** (see
+[retentionDays](#update-project-flakiness-config) under Admin Endpoints). This endpoint
+reads directly from `test_results`, so once a project has `retentionDays`
+configured and old runs are pruned, days older than that window have no
+rows left — they report `totalRuns: 0` and `flakeRate: null`, identical to
+a day that genuinely had no runs. The trend silently shortens; it does not
+error.
+
 #### Get Flaky Test by ID
 
 ```http

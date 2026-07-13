@@ -284,7 +284,9 @@ projectsRouter.get('/:id/analysis', async (c) => {
 /**
  * GET /api/v1/projects/:id/trend
  *
- * Get flake rate trend data for the last N days (daily aggregation)
+ * Get flake rate trend data for the last N days (daily aggregation). A day
+ * with zero runs reports `null` in `rates`, never `0` — see the comment
+ * below where `rates` is built for why.
  */
 projectsRouter.get('/:id/trend', async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
@@ -292,7 +294,20 @@ projectsRouter.get('/:id/trend', async (c) => {
     return c.json({ error: 'Invalid project ID format' }, 400);
   }
   const projectId = parsed.data;
-  const days = Math.min(Math.max(parseInt(c.req.query('days') || '7', 10), 1), 90);
+
+  // Guard the *parse* before the clamp: parseInt('abc') is NaN, and every
+  // Math.min/Math.max comparison against NaN is false, so NaN would sail
+  // straight through a clamp that looks airtight — the zero-fill loop below
+  // (`for (let i = days - 1; ...)`) would then never execute, turning a
+  // typo'd query param into a silently empty chart. `days` is display
+  // tuning, not a semantic input, so an unparseable value falls back to this
+  // endpoint's default (7 — the sibling per-test trend in tests.ts defaults
+  // to 30; both are correct for their own contract) rather than 400ing. Not
+  // `parseInt(...) || 7`: that would also swallow `days=0` into 7 instead of
+  // clamping it to 1. Mirrors the identical guard in tests.ts's
+  // `/:testName/trend` (see plans/025 and plans/028).
+  const rawDays = parseInt(c.req.query('days') ?? '', 10);
+  const days = Number.isNaN(rawDays) ? 7 : Math.min(Math.max(rawDays, 1), 90);
 
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
@@ -334,12 +349,19 @@ projectsRouter.get('/:id/trend', async (c) => {
   }
 
   const trendDays: string[] = [];
-  const rates: number[] = [];
+  // `null`, not `0`, when a day had zero runs. "The pipeline never ran" and
+  // "the pipeline ran and nothing flaked" are different facts — collapsing
+  // them draws a confident flat 0% line straight through a hole in the data
+  // (a weekend, an outage, a paused pipeline), which is precisely the
+  // situation where the tool actually knows nothing. Do not "simplify" this
+  // back to 0; see plans/028-honest-visible-trends.md and the identical
+  // rule in tests.ts's `buildTrend`.
+  const rates: (number | null)[] = [];
 
   for (const [day, data] of dailyMap) {
     const date = new Date(`${day}T00:00:00Z`);
     trendDays.push(date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }));
-    rates.push(data.total > 0 ? Math.round((data.flaky / data.total) * 1000) / 10 : 0);
+    rates.push(data.total > 0 ? Math.round((data.flaky / data.total) * 1000) / 10 : null);
   }
 
   return c.json({ days: trendDays, rates });

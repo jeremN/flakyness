@@ -64,6 +64,27 @@ export interface AnalysisResponse {
   allTests: TestFlakiness[];
 }
 
+export type TrendDirection = 'improving' | 'worsening' | 'stable' | 'insufficient-data';
+
+export interface TestTrendBucket {
+  date: string;
+  totalRuns: number;
+  failed: number;
+  flaky: number;
+  // `null` means the test did not run that day — distinct from `0`, which
+  // means it ran and never flaked. See apps/api/src/routes/tests.ts
+  // `buildTrend` and docs/API.md.
+  flakeRate: number | null;
+}
+
+export interface TestTrend {
+  testName: string;
+  projectId: string;
+  days: number;
+  direction: TrendDirection;
+  trend: TestTrendBucket[];
+}
+
 export interface TestHistory {
   testName: string;
   flakyInfo: FlakyTest | null;

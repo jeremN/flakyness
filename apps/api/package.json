@@ -17,7 +17,7 @@
     "simulate:ci": "tsx --env-file=../../.env scripts/simulate-ci.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^2.0.4",
+    "@hono/node-server": "^2.0.8",
     "@hono/zod-validator": "^0.8.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",

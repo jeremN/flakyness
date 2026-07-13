@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, desc, and, gte } from 'drizzle-orm';
+import { eq, desc, and, gte, inArray } from 'drizzle-orm';
 import { db, projects, flakyTests, testRuns } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
@@ -10,8 +10,39 @@ const projectsRouter = new Hono();
 const uuidSchema = z.string().uuid();
 const flakyStatusSchema = z.enum(['active', 'resolved', 'ignored', 'all']).default('active');
 
+// Safety cap for the quarantine endpoint — a CI consumer needs the complete
+// set (no pagination), but an unbounded query is still a risk. A project
+// with more than this many quarantined tests has a bigger problem than
+// pagination; `truncated: true` signals the cap was hit.
+const QUARANTINE_ROW_CAP = 1000;
+
 // Apply rate limiting
 projectsRouter.use('*', apiRateLimit);
+
+/**
+ * Escape regex metacharacters so a test name is matched literally inside the
+ * generated --grep-invert pattern. Test names routinely contain `.`, `(`, `)`
+ * and `[` — unescaped, they silently match the wrong tests.
+ *
+ * Exported for unit testing.
+ */
+export function escapeRegex(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build the Playwright `--grep-invert` pattern from muted test names ONLY.
+ * `""` (empty string) when there are no muted tests — NOT null, and NOT a
+ * regex that matches everything. A CI job doing
+ * `playwright test --grep-invert "$(curl …)"` with a bad empty value would
+ * skip the entire suite and go green for the wrong reason.
+ *
+ * Exported for unit testing.
+ */
+export function buildGrepInvert(mutedTestNames: string[]): string {
+  if (mutedTestNames.length === 0) return '';
+  return `^(?:${mutedTestNames.map(escapeRegex).join('|')})$`;
+}
 
 /**
  * GET /api/v1/projects
@@ -93,6 +124,71 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
     .limit(limit);
 
   return c.json({ flakyTests: flakyTestsList });
+});
+
+/**
+ * GET /api/v1/projects/:id/quarantine
+ *
+ * Machine-readable quarantine list for CI to consume. Splits flaky-test rows
+ * into two sets that must never be conflated:
+ *   - `muted`: status = 'ignored' — an operator explicitly muted it. Safe to skip.
+ *   - `flaky`: status = 'active'  — auto-detected. Advisory only: retry or
+ *     annotate, do NOT skip.
+ * `grepInvert` is built from `muted` ONLY. Auto-skipping a machine-detected
+ * test without human sign-off would silently hide a real regression.
+ * `grepInvert` is `""` (not null, not a match-everything regex) when there
+ * are no muted tests — a CI job passing an empty pattern to
+ * `--grep-invert` must run the full suite, never zero tests.
+ */
+projectsRouter.get('/:id/quarantine', async (c) => {
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
+
+  // Cap at COUNT+1 so overflow can be detected before slicing back to the cap.
+  const rows = await db
+    .select({
+      testName: flakyTests.testName,
+      testFile: flakyTests.testFile,
+      flakeRate: flakyTests.flakeRate,
+      lastSeen: flakyTests.lastSeen,
+      status: flakyTests.status,
+    })
+    .from(flakyTests)
+    .where(
+      and(
+        eq(flakyTests.projectId, projectId),
+        inArray(flakyTests.status, ['ignored', 'active'])
+      )
+    )
+    .orderBy(desc(flakyTests.flakeRate))
+    .limit(QUARANTINE_ROW_CAP + 1);
+
+  const truncated = rows.length > QUARANTINE_ROW_CAP;
+  const capped = truncated ? rows.slice(0, QUARANTINE_ROW_CAP) : rows;
+
+  const toEntry = ({ testName, testFile, flakeRate, lastSeen }: (typeof capped)[number]) => ({
+    testName,
+    testFile,
+    flakeRate,
+    lastSeen,
+  });
+  const muted = capped.filter((r) => r.status === 'ignored').map(toEntry);
+  const flaky = capped.filter((r) => r.status === 'active').map(toEntry);
+
+  // Load-bearing: grepInvert is derived from `muted` ONLY. Do not add
+  // `flaky` here — see the doc comment above and design decision 3 in
+  // plans/020-quarantine-list-for-ci.md.
+  const grepInvert = buildGrepInvert(muted.map((t) => t.testName));
+
+  if (c.req.query('format') === 'playwright') {
+    c.header('Content-Type', 'text/plain; charset=utf-8');
+    return c.body(grepInvert);
+  }
+
+  return c.json({ projectId, muted, flaky, grepInvert, truncated });
 });
 
 /**

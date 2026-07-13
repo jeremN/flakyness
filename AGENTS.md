@@ -15,6 +15,7 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 | Typecheck API | `pnpm --filter api exec tsc --noEmit` |
 | Typecheck dashboard | `pnpm --filter dashboard check` |
 | Tests | `pnpm test` (API route suites need `DATABASE_URL` + `ADMIN_TOKEN`, else they self-skip; dashboard suite always runs) |
+| E2E (Playwright, real Postgres + built dashboard) | `pnpm --filter dashboard test:e2e` — see `apps/dashboard/e2e/` |
 | Build | `pnpm build` |
 
 ## Sharp edges

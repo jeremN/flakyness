@@ -131,9 +131,64 @@ project its own first user (026).
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 024 | GitHub Action that comments flaky results on the PR (D2) | P2 | M | 020 (soft — consumes its `/quarantine` endpoint; already DONE) | IN PROGRESS |
-| 025 | Per-test flake trend endpoint (D4) | P2 | M | — (**no table, no migration** — see below) | IN PROGRESS |
-| 026 | Dogfood: Playwright E2E suite, ingested into itself (D5) | P3 | M | lockfile-serial: sole owner of `pnpm-lock.yaml` this batch | IN PROGRESS |
+| 024 | GitHub Action that comments flaky results on the PR (D2) | P2 | M | 020 (soft — consumes its `/quarantine` endpoint; already DONE) | DONE (merged via PR #68, commit `b0a0f9c`) |
+| 025 | Per-test flake trend endpoint (D4) | P2 | M | — (**no table, no migration** — see below) | DONE (merged via PR #67, commit `86954ff`) |
+| 026 | Dogfood: Playwright E2E suite, ingested into itself (D5) | P3 | M | lockfile-serial: sole owner of `pnpm-lock.yaml` this batch | DONE (merged via PR #69, commit `058f052`) |
+| 027 | Fix the flaky test in the flaky-test tracker | P1 | S | — (test-only; landed first so CI was trustworthy) | DONE (merged via PR #70, commit `ae18a9c`) |
+
+**Batch 5 complete (2026-07-13):** all four landed via PRs #67–#70. Each of 024/025/026
+took exactly **one REVISE round**, and the three defects were the same species —
+*something that looks green while quietly telling you nothing*:
+
+- **025**: the `days` clamp guarded the range but not the type. `Math.min(Math.max(parseInt('abc',10),1),90)`
+  is `NaN` (every comparison against `NaN` is false), so `?days=abc` returned
+  `200 {"days": null, "trend": []}` — "this test has no history" for what was really a
+  typo. Fixed with an explicit `Number.isNaN` guard. **Note `?days=` (empty) survives by
+  accident** — `'' || '30'` substitutes the default before `parseInt` sees it — so the
+  regression test for it is a guard, not a bug detector.
+- **024**: `github.sha` on a `pull_request` event is the *ephemeral merge commit*
+  (`refs/pull/N/merge`), which exists nowhere in the contributor's branch and is
+  regenerated whenever the base moves. Flackyness persists it as `test_runs.commitSha`
+  precisely to answer "which change introduced this flake?" — a phantom SHA makes that
+  silently unanswerable. Now `github.event.pull_request.head.sha || github.sha`.
+- **026**: `chart.spec.ts` *claimed* to guard the plan-008 blank-chart bug. It didn't.
+  Reintroducing that exact bug (dropping `LineChart` from `echarts.use([...])`) and
+  rebuilding, the spec still passed: ECharts treats an unregistered series type as a
+  **silent no-op** — no throw, and its dev-mode warning is compiled out by `__DEV__`
+  guards in the production build the suite (correctly) tests. `GridComponent` keeps
+  painting the axes, so the canvas is present, sized, and non-blank while the data line
+  has vanished. Replaced with `chart-registration.test.ts`, a deterministic static guard,
+  verified to fail when the bug is reintroduced.
+
+### 027 — the flaky test in the flaky-test tracker
+
+**Found in CI on PR #66, a pull request that changed only `.md` files.** The same `Tests`
+job passed on three other PRs opened minutes earlier.
+
+```
+apps/api/src/routes/admin.test.ts:894
+-   "status": "active",
++   "status": "resolved",
+    "testName": "prune-active-flaky",
+```
+
+**Root cause**: `reports.ts:135` fires `updateFlakyTests()` **un-awaited** (deliberate —
+ingest returns 201 without blocking on recomputation). The prune test ingests a report,
+then fabricates a `flaky_tests` row with **zero backing `test_results`**, then asserts it
+survives a prune byte-for-byte. If the background reconcile lands *after* the fabrication,
+it finds the invented row, correctly observes it meets no flake threshold, and resolves it
+(`flakiness.ts`: active rows absent from the analysis get resolved). Fast laptop: passes.
+Loaded CI runner: sometimes doesn't.
+
+That test exists **because a reviewer demanded it** during the adversarial review of plan
+021 (which deletes data). It proves the right thing. It just wasn't deterministic.
+
+**Honest limitation, recorded deliberately**: the race could **not be reproduced locally**,
+even with the background reconcile artificially delayed by 800ms and a slow runner
+simulated. The fix (a bounded, condition-based poll before fabricating — never a fixed
+sleep, which is just a slower race) is justified by code-reading, not by a reproduction.
+It is strictly safer than the status quo and cannot make things worse, but it is **not
+proven to be the whole story**. If the flake recurs, start here.
 
 **The design question 025 settles.** Batch 3 deferred D4 with the note "a snapshot
 table *may be premature* — the same answer may be computable on the fly from
@@ -272,6 +327,51 @@ future audit should not re-derive it from scratch.
   `.agent/CONTEXT.md` has listed this as pending since June. Running an E2E suite in
   CI *and ingesting its own report into Flackyness* is coverage, a live validation of
   the ingest path, and the most honest demo the project could have. Effort M.
+
+## Open follow-ups (found during batch 5, no plan yet)
+
+Recorded so they don't evaporate. Roughly in priority order.
+
+1. **`projects.ts:295` has the identical `NaN`-through-the-clamp bug that 025 fixed.**
+   `Math.min(Math.max(parseInt(c.req.query('days') || '7', 10), 1), 90)` — `?days=abc`
+   yields `NaN`, and `GET /projects/:id/trend?days=abc` returns an empty chart rather
+   than defaulting or 400ing. 025 fixed only its own endpoint (scope); this is where the
+   pattern was copied *from*. Note the fix is not a copy-paste: that response shape has no
+   `days` scalar to assert on, so its test asserts on the `days`/`rates` array lengths.
+   Same bug also exists at `index.ts:96` (`parseInt(process.env.API_PORT || '8080', 10)`),
+   though a garbage `API_PORT` is a far less likely input.
+2. **A second latent race of exactly 027's shape, in `tests.test.ts:145-161`.** A top-level
+   `beforeAll` ingests a report (firing the un-awaited reconcile); a nested `beforeAll`
+   later fabricates a `patch-route-flaky-test` row for the **same project**.
+   `updateFlakyTests` sweeps *all* existing rows for a project, not just names in the
+   latest report, so it would resolve the fabricated row if it lands after. Not yet
+   observed failing — there's a natural buffer (a whole `describe` block with four HTTP
+   round-trips runs in between). **Deliberately reported and not fixed**: speculatively
+   "fixing" a race you have never seen fail is how one flake becomes two.
+3. **026's dogfood CI step reproduces the very bug 024 was made to fix.** The `e2e` job
+   passes `REF_NAME: ${{ github.ref_name }}` and `COMMIT_SHA: ${{ github.sha }}`, so on a
+   PR the dogfooded run is recorded with branch `69/merge` and the phantom merge-commit
+   SHA — confirmed in the CI log of PR #69. The action we *ship* (`action.yml`) now does
+   this correctly; our own CI step does not. Low severity (it's demo data), but the
+   inconsistency is exactly the kind of thing that erodes trust in the tool.
+4. **There is no way for an API client to know when flakiness reconciliation finished.**
+   `POST /api/v1/reports` returns `201` *before* `updateFlakyTests` has run. Every consumer
+   that reads `flaky_tests` straight after an ingest must poll — plan 026's E2E global
+   setup does, plan 027 now makes the API suite do, and any third-party integrator will hit
+   this too. A completion signal (a status field, a synchronous `?wait=true`, or an
+   ingest-returns-reconcile-id) would remove a whole class of race from downstream code.
+   This is a genuine product/DX gap, not just a test problem.
+5. **`apps/api`'s build emits no `.d.ts`** — `tsup src/index.ts --format esm`, no `--dts`,
+   no tsup config, despite `declaration: true` in the root tsconfig. Harmless for an app
+   with no consumers, but the long-standing tsconfig comment blaming "baseUrl injected by
+   tsup's d.ts builder" describes something that does not happen.
+6. **Dependabot maintenance obligation**: the npm entry lists `/` and `/apps/api`
+   explicitly instead of an `/apps/*` glob (a glob would overlap the dashboard entry and
+   double-open its PRs). **A new app under `apps/` must be added to that list by hand, or
+   it silently gets no dependency updates.**
+7. **The dashboard TS 6 pin is temporary.** Lift it when `svelte-check` supports TS 7:
+   bump the dashboard's TypeScript and delete the `typescript` majors ignore from its
+   Dependabot entry.
 
 ## Findings considered and rejected
 

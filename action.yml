@@ -1,0 +1,53 @@
+name: 'Flackyness Report'
+description: >-
+  Upload a Playwright or JUnit report to a self-hosted Flackyness instance and
+  comment on the pull request partitioning this run's failures into
+  known-flaky (muted / auto-detected) and unknown.
+author: 'Flackyness'
+
+inputs:
+  api-url:
+    description: 'Base URL of your Flackyness instance, e.g. https://flackyness.example.com'
+    required: true
+  token:
+    description: 'Flackyness project token used to authenticate the report upload. Treat as a secret.'
+    required: true
+  project-id:
+    description: 'Flackyness project UUID, used to look up the quarantine (known-flaky) list.'
+    required: true
+  report-path:
+    description: 'Path to the Playwright JSON or JUnit XML report to upload.'
+    required: false
+    default: 'playwright-report/report.json'
+  github-token:
+    description: >-
+      Token used to read and write the PR comment. Needs `pull-requests: write`.
+      Defaults to the workflow's own `GITHUB_TOKEN`.
+    required: false
+    default: ${{ github.token }}
+  comment:
+    description: 'Set to "false" to upload the report without commenting on the PR.'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload report and comment on PR
+      shell: bash
+      env:
+        FLACKYNESS_API_URL: ${{ inputs.api-url }}
+        FLACKYNESS_TOKEN: ${{ inputs.token }}
+        FLACKYNESS_PROJECT_ID: ${{ inputs.project-id }}
+        FLACKYNESS_REPORT_PATH: ${{ inputs.report-path }}
+        FLACKYNESS_COMMENT: ${{ inputs.comment }}
+        FLACKYNESS_BRANCH: ${{ github.head_ref || github.ref_name }}
+        FLACKYNESS_COMMIT: ${{ github.sha }}
+        FLACKYNESS_PIPELINE: ${{ github.run_id }}
+        FLACKYNESS_PR_NUMBER: ${{ github.event.pull_request.number }}
+        FLACKYNESS_REPOSITORY: ${{ github.repository }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "${{ github.action_path }}/.github/action-scripts/comment.sh"
+
+# No `branding:` block: the plan (024) explicitly defers that to a future
+# GitHub Marketplace listing, alongside a tagged v1 release. Out of scope now.

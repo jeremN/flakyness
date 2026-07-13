@@ -8,6 +8,7 @@ A self-hosted flaky test tracking system for CI/CD pipelines. Collect, analyze, 
 - 🔍 **Flaky Detection** - Automatically detect tests with inconsistent results
 - 📈 **Trend Analysis** - Track flake rates over time with ECharts
 - 🔌 **GitLab CI Integration** - Simple curl-based report upload
+- 🐙 **GitHub Action** - Upload reports and comment known-flaky failures on PRs
 - 🐳 **Docker Ready** - Easy self-hosted deployment
 
 ## Tech Stack
@@ -153,6 +154,13 @@ e2e-tests:
 
 Set these CI/CD variables:
 - `FLACKYNESS_TOKEN`: Your project's API token (get from admin API)
+
+## GitHub Actions Integration
+
+A composite action (`action.yml` at the repo root) uploads a report and
+comments on the pull request with which failures are known-flaky. See
+[docs/GITHUB_ACTION.md](docs/GITHUB_ACTION.md) for inputs, required
+permissions, and a full example workflow.
 
 ## API Endpoints
 

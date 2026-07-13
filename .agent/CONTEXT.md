@@ -2,8 +2,8 @@
 
 > **Purpose:** This document helps AI agents (and developers) quickly understand the Flackyness codebase to improve, fix, or add features effectively.
 
-**Last Updated:** June 3, 2026  
-**Current Status:** Production-ready (Phase 6 complete); full stack updated to latest (pnpm 11, TS 6, Vite 8, Svelte 5.56, zod 4, Drizzle 0.45, Hono 4.12)  
+**Last Updated:** July 13, 2026  
+**Current Status:** Batches 1–2 of the improve-skill backlog complete (19 plans landed, PRs #36–#56); full stack updated to latest (pnpm 11, TS 6, Vite 8, Svelte 5.56, zod 4, Drizzle 0.45, Hono 4.12) — see `plans/README.md` for the authoritative plan-by-plan status  
 **Grade:** A- (92/100)
 
 ---
@@ -47,19 +47,23 @@ flackyness/
 │   │   │   │   ├── schema.ts        # ⭐ Database schema (Drizzle)
 │   │   │   │   ├── index.ts         # DB connection
 │   │   │   │   └── seed.ts          # Sample data
+│   │   │   ├── metrics.ts           # Prometheus registry + /metrics collectors
 │   │   │   ├── routes/              # API endpoints
 │   │   │   │   ├── reports.ts       # POST /api/v1/reports (ingestion)
-│   │   │   │   ├── projects.ts      # Projects CRUD
-│   │   │   │   └── tests.ts         # Test history
+│   │   │   │   ├── projects.ts      # Projects CRUD (read-side)
+│   │   │   │   ├── tests.ts         # Test history + flaky mute/unmute
+│   │   │   │   └── admin.ts         # Project create/rotate-token/delete, config overrides, health
 │   │   │   ├── services/
-│   │   │   │   └── flakiness.ts     # ⭐ Flakiness detection algorithm
+│   │   │   │   ├── flakiness.ts     # ⭐ Flakiness detection algorithm
+│   │   │   │   └── notifications.ts # Flaky-transition webhook delivery
 │   │   │   ├── parsers/
-│   │   │   │   └── playwright.ts    # ⭐ Parse Playwright JSON
+│   │   │   │   ├── playwright.ts    # ⭐ Parse Playwright JSON
+│   │   │   │   └── junit.ts         # Parse JUnit XML (jest-junit, pytest, Go, Maven, …)
 │   │   │   └── middleware/
 │   │   │       ├── auth.ts          # Bearer token auth
 │   │   │       ├── logger.ts        # Structured logging
 │   │   │       └── rate-limit.ts    # Rate limiting
-│   │   ├── drizzle/                 # Database migrations
+│   │   ├── drizzle/                 # Database migrations (0000–0005)
 │   │   ├── fixtures/                # Test fixtures
 │   │   └── Dockerfile
 │   │
@@ -70,17 +74,18 @@ flackyness/
 │       │   │   ├── +page.svelte     # Overview page
 │       │   │   ├── flaky/           # Flaky tests page
 │       │   │   ├── runs/            # Test runs page
+│       │   │   ├── analysis/        # Analysis view (surfaces GET /analysis)
 │       │   │   └── tests/[testName]/ # Test detail page
 │       │   └── lib/
 │       │       ├── api.ts           # ⭐ API client
 │       │       └── components/      # Reusable components
 │       │           ├── Chart.svelte
-│       │           ├── LoadingSkeleton.svelte
 │       │           └── ErrorState.svelte
 │       └── Dockerfile
 │
 ├── docs/
-│   └── API.md                       # API documentation
+│   ├── API.md                       # API documentation
+│   └── GETTING_STARTED.md           # New-user setup + CI integration guide
 ├── IMPLEMENTATION_PLAN.md           # ⭐ Full implementation roadmap
 ├── docker-compose.yml               # Production deployment
 └── .env.example                     # Environment variables template
@@ -116,10 +121,12 @@ GitLab CI → Playwright → JSON Report
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `projects` | Track projects | `id`, `name`, `token_hash` |
+| `projects` | Track projects | `id`, `name`, `token_hash`, `flake_threshold`, `window_days`, `min_runs` (nullable per-project overrides), `webhook_url` |
 | `test_runs` | Pipeline executions | `project_id`, `branch`, `commit_sha` |
-| `test_results` | Individual test outcomes | `test_name`, `status`, `duration_ms` |
-| `flaky_tests` | Computed flaky tests | `flake_rate`, `status`, `last_seen` |
+| `test_results` | Individual test outcomes | `test_name`, `status`, `duration_ms`, `tags`, `annotations` (jsonb, Playwright metadata) |
+| `flaky_tests` | Computed flaky tests | `flake_rate`, `status` (`active` / `resolved` / `ignored`), `last_seen` |
+
+Migrations: `apps/api/drizzle/` holds `0000`–`0005`.
 
 **Relationships:**
 ```
@@ -139,9 +146,42 @@ flake_rate = (failed + flaky) / total_runs
 is_flaky = flake_rate >= threshold (default 5%) AND total_runs >= minRuns (default 3)
 ```
 
+`DEFAULT_CONFIG` (5% threshold, 3 min runs) is only the **fallback**. Each
+project's `flake_threshold` / `window_days` / `min_runs` columns (NULL =
+unset) win over it via `resolveProjectConfig`, which merges the project's
+non-NULL overrides on top of `DEFAULT_CONFIG`.
+
 **Triggered:**
 - After each report ingestion (async, non-blocking)
 - Manually via analysis endpoint
+
+### 4. Muting Flaky Tests
+
+`flaky_tests.status` is `active`, `resolved`, or `ignored` (muted).
+`PATCH /api/v1/tests/flaky/:id` (`routes/tests.ts`) flips between `ignored`
+and `active`. **Non-obvious invariant:** the reconcile upsert in
+`updateFlakyTests` (`services/flakiness.ts`) preserves `ignored` across
+every subsequent ingest — an operator-muted test stays silent even while
+it keeps failing, until explicitly unmuted.
+
+### 5. Webhook Notifications
+
+Each project may carry a `webhook_url` (nullable, admin-set via
+`PATCH /api/v1/admin/projects/:id`). After a report ingest, if any test
+just became flaky or just resolved, `services/notifications.ts` POSTs a
+`flaky_tests_changed` payload to that URL. v1 scope: one best-effort POST,
+no retries, no signing — delivery failures are logged and swallowed, never
+failing the ingest request.
+
+### 6. Prometheus Metrics
+
+`GET /metrics` (`apps/api/src/metrics.ts`, mounted in `index.ts`) exposes
+`flackyness_reports_ingested_total`, `flackyness_report_parse_failures_total`,
+`flackyness_flaky_tests_active`, plus default Node process metrics. Off by
+default: the route 404s unless `METRICS_TOKEN` is set; once set, it requires
+a matching Bearer token (401 otherwise), checked with the same
+constant-time comparison as admin auth. Only `flakyTestsActive` is labeled
+by project — the counters stay unlabeled to keep cardinality flat.
 
 ---
 
@@ -150,8 +190,15 @@ is_flaky = flake_rate >= threshold (default 5%) AND total_runs >= minRuns (defau
 ### Starting Development
 
 ```bash
-# 1. Start PostgreSQL
-docker compose up -d
+# 0. Ensure a root .env exists with DB_PASSWORD + ADMIN_TOKEN set
+#    (docker compose parses the whole file's interpolations before it starts
+#    anything, so it fails outright if they're unset)
+cp .env.example .env
+
+# 1. Start PostgreSQL — scope to the `postgres` service. A bare
+#    `docker compose up -d` starts EVERY service, and the hard-coded
+#    container names collide with any other checkout on this machine.
+docker compose up -d postgres
 
 # 2. Run migrations
 pnpm db:migrate
@@ -397,8 +444,8 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 
 ### Medium Priority
 - ✅ ~~Admin API endpoints (create/rotate tokens)~~ (Complete — `routes/admin.ts`)
-- ⏳ **Prometheus metrics** endpoint
-- ⏳ E2E tests (Playwright)
+- ✅ ~~Prometheus metrics endpoint~~ (Complete — `apps/api/src/metrics.ts`, `GET /metrics`, gated by `METRICS_TOKEN`; plan 018, PR #56)
+- ⏳ E2E tests (Playwright) — no `playwright.config` or spec files in the repo yet
 
 ### Code review findings — status (June 4, 2026)
 Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-token `crypto.timingSafeEqual`, stream-aware body limit (`hono/body-limit`), graceful shutdown, FK `onDelete: cascade`, oxlint + CI.
@@ -551,8 +598,8 @@ pnpm db:migrate             # Apply migrations
 pnpm db:studio              # Open DB GUI
 pnpm db:seed                # Seed sample data
 
-# Docker
-docker compose up -d        # Start PostgreSQL only
+# Docker (needs DB_PASSWORD + ADMIN_TOKEN set, or compose won't even parse)
+docker compose up -d postgres  # Start PostgreSQL only (bare `up -d` starts EVERYTHING)
 docker compose build        # Build all images
 docker compose --profile production up -d  # Full stack
 
@@ -629,5 +676,5 @@ pnpm --filter dashboard build
 
 **Good luck! 🚀**
 
-*Last updated by AI Agent on June 3, 2026*
+*Last updated by AI Agent on July 13, 2026*
 *If you improve this project, please update this guide!*

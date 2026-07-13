@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, sql, desc } from 'drizzle-orm';
+import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests } from '../db';
 import { adminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { logger } from '../middleware/logger';
+import { resolveProjectConfig } from '../services/flakiness';
 
 const adminRouter = new Hono();
 
@@ -49,6 +50,10 @@ const projectConfigPatchSchema = z
       )
       .nullable()
       .optional(),
+    // Per-project data retention in days; NULL means "keep forever" (see
+    // schema.ts). Must never undercut the project's resolved flakiness
+    // windowDays — enforced below, after parsing.
+    retentionDays: z.number().int().min(1).max(3650).nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
 
@@ -69,6 +74,7 @@ adminRouter.get('/projects', async (c) => {
       windowDays: projects.windowDays,
       minRuns: projects.minRuns,
       webhookUrl: projects.webhookUrl,
+      retentionDays: projects.retentionDays,
       totalRuns: sql<number>`coalesce((
         select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
       ), 0)`,
@@ -92,6 +98,7 @@ adminRouter.get('/projects', async (c) => {
     windowDays: p.windowDays,
     minRuns: p.minRuns,
     webhookUrl: p.webhookUrl,
+    retentionDays: p.retentionDays,
     stats: {
       totalRuns: p.totalRuns,
       totalTests: p.totalTests,
@@ -198,9 +205,10 @@ adminRouter.post('/projects/:id/rotate-token', async (c) => {
  * PATCH /api/v1/admin/projects/:id
  *
  * Update a project's per-project flakiness detection overrides
- * (flakeThreshold, windowDays, minRuns). Any field omitted from the body is
- * left unchanged; sending a field as `null` explicitly clears it back to the
- * flakiness service's DEFAULT_CONFIG value.
+ * (flakeThreshold, windowDays, minRuns) and/or its data retention
+ * (retentionDays). Any field omitted from the body is left unchanged; sending
+ * a field as `null` explicitly clears it back to the flakiness service's
+ * DEFAULT_CONFIG value (or, for retentionDays, "keep forever").
  */
 adminRouter.patch(
   '/projects/:id',
@@ -212,6 +220,32 @@ adminRouter.patch(
     }
     const projectId = parsed.data;
     const data = c.req.valid('json');
+
+    const existing = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId),
+    });
+    if (!existing) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
+
+    // Retention may never undercut the *resolved* flakiness windowDays, or
+    // flake rates would silently drift as history vanishes underneath the
+    // analysis. If this same request also sets windowDays, validate against
+    // the new value being written, not the stale stored one.
+    if (typeof data.retentionDays === 'number') {
+      const effectiveWindowDays =
+        'windowDays' in data
+          ? resolveProjectConfig({ ...existing, windowDays: data.windowDays ?? null }).windowDays
+          : resolveProjectConfig(existing).windowDays;
+      if (data.retentionDays < effectiveWindowDays) {
+        return c.json(
+          {
+            error: `retentionDays (${data.retentionDays}) must be >= the flakiness windowDays (${effectiveWindowDays})`,
+          },
+          400
+        );
+      }
+    }
 
     // Build the .set() object only from keys present in the parsed body, so
     // an omitted field leaves the stored value untouched while an explicit
@@ -232,6 +266,9 @@ adminRouter.patch(
     if ('webhookUrl' in data) {
       updates.webhookUrl = data.webhookUrl ?? null;
     }
+    if ('retentionDays' in data) {
+      updates.retentionDays = data.retentionDays ?? null;
+    }
 
     const [project] = await db
       .update(projects)
@@ -246,6 +283,7 @@ adminRouter.patch(
         windowDays: projects.windowDays,
         minRuns: projects.minRuns,
         webhookUrl: projects.webhookUrl,
+        retentionDays: projects.retentionDays,
       });
 
     if (!project) {
@@ -262,6 +300,124 @@ adminRouter.patch(
     });
   }
 );
+
+// Postgres bind-param limit forces chunking multi-row deletes; matches the
+// chunking style in services/flakiness.ts (BATCH_SIZE there is 1000 for
+// multi-column upserts — this route only binds one id per row, so it can
+// afford a larger batch).
+const PRUNE_BATCH_SIZE = 5000;
+
+/**
+ * POST /api/v1/admin/projects/:id/prune
+ *
+ * Delete test_runs (and, via FK cascade, their test_results) older than the
+ * project's configured `retentionDays`. Dry-run by default: without
+ * `?confirm=true` this reports the counts it would delete and deletes
+ * nothing. `flaky_tests` is never touched by this route — it is the
+ * product's memory of past flakiness and has no FK to test_runs, so it
+ * survives automatically (see schema.ts).
+ */
+adminRouter.post('/projects/:id/prune', async (c) => {
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
+
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId),
+  });
+  if (!project) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
+  // Pruning without a configured retention is always a mistake — NULL means
+  // "keep forever" and there is no global default (see schema.ts).
+  if (project.retentionDays == null) {
+    return c.json({ error: 'No retention configured for this project' }, 400);
+  }
+
+  // Re-check the window guard against the *stored* config: windowDays may
+  // have been raised after retentionDays was set, leaving a stale pair that
+  // is now invalid. A prune that ran anyway would corrupt flake rates by
+  // deleting history the flakiness window still depends on.
+  const { windowDays } = resolveProjectConfig(project);
+  if (project.retentionDays < windowDays) {
+    return c.json(
+      {
+        error: `retentionDays (${project.retentionDays}) must be >= the flakiness windowDays (${windowDays})`,
+      },
+      400
+    );
+  }
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - project.retentionDays);
+  const staleRunsFilter = and(eq(testRuns.projectId, projectId), lt(testRuns.createdAt, cutoff));
+
+  const [{ count: runsCount } = { count: 0 }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(testRuns)
+    .where(staleRunsFilter);
+
+  const [{ count: resultsCount } = { count: 0 }] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(testResults)
+    .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+    .where(staleRunsFilter);
+
+  const confirmed = c.req.query('confirm') === 'true';
+
+  if (!confirmed) {
+    logger.info('Prune dry-run', {
+      projectId,
+      projectName: project.name,
+      cutoff: cutoff.toISOString(),
+      runsToDelete: runsCount,
+      resultsToDelete: resultsCount,
+    });
+    return c.json({
+      dryRun: true,
+      cutoff: cutoff.toISOString(),
+      runsToDelete: runsCount,
+      resultsToDelete: resultsCount,
+    });
+  }
+
+  // Delete test_runs only, in batches — test_results cascade via the FK
+  // (onDelete: 'cascade'); never hand-delete them. Re-select each iteration
+  // (rather than loading every stale id up front) so a first prune of a
+  // year-old database doesn't hold one enormous row set in memory or one
+  // giant lock.
+  let runsDeleted = 0;
+  for (;;) {
+    const batch = await db
+      .select({ id: testRuns.id })
+      .from(testRuns)
+      .where(staleRunsFilter)
+      .limit(PRUNE_BATCH_SIZE);
+
+    if (batch.length === 0) break;
+
+    await db.delete(testRuns).where(inArray(testRuns.id, batch.map((r) => r.id)));
+    runsDeleted += batch.length;
+  }
+
+  logger.warn('Project data pruned', {
+    projectId,
+    projectName: project.name,
+    cutoff: cutoff.toISOString(),
+    runsDeleted,
+    resultsDeleted: resultsCount,
+  });
+
+  return c.json({
+    dryRun: false,
+    cutoff: cutoff.toISOString(),
+    runsDeleted,
+    resultsDeleted: resultsCount,
+  });
+});
 
 /**
  * DELETE /api/v1/admin/projects/:id

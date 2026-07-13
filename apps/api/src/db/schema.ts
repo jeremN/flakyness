@@ -15,6 +15,12 @@ export const projects = pgTable('projects', {
   // means "no webhook configured". Set only via the admin-token PATCH route
   // (same trust level as the operator's shell) — no SSRF deny-list in v1.
   webhookUrl: varchar('webhook_url', { length: 2048 }),
+  // Per-project data retention. NULL means "keep forever" (the default for
+  // every existing install). When set, `POST /admin/projects/:id/prune`
+  // deletes test_runs older than this many days; test_results cascade.
+  // Must never be lower than the resolved flakiness windowDays — see
+  // routes/admin.ts.
+  retentionDays: integer('retention_days'),
 }, (table) => ({
   // Index for token hash lookup (authentication)
   tokenHashIdx: index('projects_token_hash_idx').on(table.tokenHash),

@@ -1,0 +1,70 @@
+# Example workflow for a repo that CONSUMES the Flackyness GitHub Action.
+#
+# This file is NOT a live workflow — the `.example` suffix is mandatory. A
+# real `.yml` in this directory would execute in the Flackyness repo itself
+# (see docs/GITHUB_ACTION.md and plans/024-github-action-pr-comments.md for
+# why this stays out of Flackyness's own CI). Copy this file into your own
+# repo as `.github/workflows/e2e.yml` (or similar) and fill in the two
+# secrets/vars noted below.
+name: E2E tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  # Required for the Flackyness action's PR comment step. Without this, the
+  # action degrades quietly (a `::warning::` in the log, not a failed build)
+  # instead of commenting — see docs/GITHUB_ACTION.md#permissions.
+  pull-requests: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Run Playwright tests
+        id: playwright
+        # Let the job continue to the Flackyness step even when tests fail —
+        # otherwise the workflow stops before the report ever gets uploaded
+        # or the PR ever gets its comment.
+        continue-on-error: true
+        run: npx playwright test --reporter=json --output-file=playwright-report/report.json
+
+      - name: Report to Flackyness
+        uses: jeremN/flackyness@v1
+        with:
+          api-url: https://flackyness.example.com
+          # Project token: Settings → Secrets and variables → Actions → New
+          # repository secret. Get the token from Flackyness's admin API
+          # (POST /api/v1/admin/projects) — see docs/API.md.
+          token: ${{ secrets.FLACKYNESS_TOKEN }}
+          # Project UUID: Settings → Secrets and variables → Actions →
+          # Variables tab (this one isn't secret — the quarantine lookup it's
+          # used for is an unauthenticated read).
+          project-id: ${{ vars.FLACKYNESS_PROJECT_ID }}
+          report-path: playwright-report/report.json
+
+      - name: Fail the job if tests failed
+        # The Flackyness step never fails the build (by design — see
+        # docs/GITHUB_ACTION.md#guarantees) and `continue-on-error` above
+        # already swallowed the test step's own failure. This step restores
+        # the correct red/green signal for the job as a whole.
+        if: steps.playwright.outcome == 'failure'
+        run: exit 1
+
+      - name: Upload Playwright report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

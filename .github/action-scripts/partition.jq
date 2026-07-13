@@ -68,9 +68,22 @@ def all_failures:
   | map(select(.failed) | .name)
   | unique;
 
+# Test names are arbitrary strings written by the test author, so they must
+# never be trusted to be inert markup. Two real failure modes:
+#   - a backtick (`it('renders `<Button />` correctly')` is ordinary JS/TS)
+#     breaks out of a markdown code span, and
+#   - a literal "</details>" closes the disclosure block early.
+# HTML-escaping the name and wrapping it in <code>…</code> instead of a
+# markdown backtick span fixes both at once. `&` must be substituted FIRST,
+# or it would re-escape the ampersands introduced by the later rules.
+# (Not a security boundary — GitHub sanitises comment HTML and this body
+# never reaches a shell — purely so the comment renders intact.)
+def html_escape:
+  gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+
 def render_list(items):
   if (items | length) == 0 then "_none_"
-  else (items | map("- `" + . + "`") | join("\n"))
+  else (items | map("- <code>" + (. | html_escape) + "</code>") | join("\n"))
   end;
 
 all_failures as $failures

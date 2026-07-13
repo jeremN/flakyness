@@ -42,7 +42,16 @@ runs:
         FLACKYNESS_REPORT_PATH: ${{ inputs.report-path }}
         FLACKYNESS_COMMENT: ${{ inputs.comment }}
         FLACKYNESS_BRANCH: ${{ github.head_ref || github.ref_name }}
-        FLACKYNESS_COMMIT: ${{ github.sha }}
+        # NOT plain `github.sha`. On a `pull_request` event that is the SHA of
+        # the ephemeral auto-generated merge commit (refs/pull/N/merge) between
+        # the PR head and the base branch — a commit that exists nowhere in the
+        # contributor's branch, is regenerated whenever the base branch moves,
+        # and cannot be resolved back to a real revision. Flackyness persists
+        # this as `test_runs.commitSha` to answer "which change introduced this
+        # flake?", so a phantom SHA silently makes that unanswerable. On
+        # `pull_request` the left side is the real head commit; on `push` it is
+        # empty and `github.sha` (correct there) takes over. Do not "simplify".
+        FLACKYNESS_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         FLACKYNESS_PIPELINE: ${{ github.run_id }}
         FLACKYNESS_PR_NUMBER: ${{ github.event.pull_request.number }}
         FLACKYNESS_REPOSITORY: ${{ github.repository }}

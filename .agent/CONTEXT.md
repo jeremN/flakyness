@@ -28,7 +28,7 @@
 - **Package manager: pnpm 11** (pinned via `packageManager` in root `package.json`; use `corepack pnpm …`).
 - **Supply-chain hardening** in `pnpm-workspace.yaml`: `minimumReleaseAge: 1440` (don't install versions <24h old) and `allowBuilds: { esbuild: true }` (build scripts blocked by default — add new ones here after auditing).
   - Consequence: a fresh-published "latest" can be temporarily un-installable; pin one release back until it ages out. That's why `@sveltejs/kit` may trail the absolute latest.
-- **TS 6**: root `tsconfig.json` sets `"ignoreDeprecations": "6.0"` to tolerate options removed in TS 7 (migrate those before upgrading to TS 7).
+- **TypeScript is split across the workspace**: `apps/api` is on **TS 7**; `apps/dashboard` stays on **TS 6** because `svelte-check` 4.x crashes under TS 7 — it reads `ts.default.sys.useCaseSensitiveFileNames`, a CommonJS shape the native TS 7 rewrite removed (upstream bug, not fixable here). `.github/dependabot.yml` has a dashboard-only entry that ignores TypeScript majors; lift it once svelte-check supports TS 7.
 - **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). No `tailwind.config.js` file exists (it was dead — never loaded, no `@config` directive — removed in Plan 009).
 - **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI runs it via `oxc-project/oxlint-action`.
 - **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → build → docker. Plus `docker-publish.yml`.
@@ -461,7 +461,7 @@ Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-to
 - 🔵 **Unauthenticated read APIs** (`/projects/*`, `/tests/*`) — intentional for the current internal/self-hosted use (concept validation). If sold, add an env-gated read token that the dashboard's server-side loads pass.
 
 **Open / optional:**
-- ⏳ TypeScript: root tsconfig has `strict: true` + `ignoreDeprecations: "6.0"` (TS 6 bridge — migrate the deprecated options out before TS 7); consider `noUncheckedIndexedAccess`.
+- ✅ ~~TypeScript 7 for the API~~ (Complete — Plan 023: `apps/api` is on TS 7, `ignoreDeprecations` removed from root tsconfig since `tsc --noEmit` and `pnpm build` both pass clean under TS 7 without it; `apps/dashboard` stays on TS 6, fenced in `.github/dependabot.yml`, until `svelte-check` supports TS 7). Still open: consider `noUncheckedIndexedAccess`.
 - ⏳ `analyzeFlakiness` still aggregates in memory — fine at current scale; push to SQL `GROUP BY` if datasets grow large.
 
 **Ops / scaling notes:**

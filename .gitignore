@@ -30,5 +30,10 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 
+# Playwright (apps/dashboard/e2e)
+playwright-report/
+test-results/
+apps/dashboard/e2e/.artifacts/
+
 # Docker
 postgres_data/

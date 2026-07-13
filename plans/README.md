@@ -98,10 +98,12 @@ resolves TypeScript **7.0.2**, `apps/dashboard` **6.0.3**; svelte-check still ru
 (398 files, 0 errors). `ignoreDeprecations` was empirically confirmed removable and
 is **gone** from the root tsconfig.
 
-- **Outstanding operator action**: close Dependabot PRs **#60, #61, #62** as
-  superseded by #64. (#61 was correct but only did the API half; #60/#62 will keep
-  failing until svelte-check supports TS 7. The new dashboard ignore rule stops
-  #62's kind from being re-opened weekly.)
+- ~~**Outstanding operator action**: close Dependabot PRs **#60, #61, #62** as
+  superseded by #64.~~ **Done 2026-07-13.** (#61 was correct but only did the API
+  half — its green CI is precisely the evidence that made #64's split possible, so
+  it was closed as *redundant*, not as *wrong*. #60/#62 would keep failing until
+  svelte-check supports TS 7. The new dashboard ignore rule stops #62's kind from
+  being re-opened weekly.)
 - **The dashboard TS pin is temporary.** Lift it when svelte-check ships TS 7
   support: bump the dashboard's TypeScript and delete the `typescript` majors
   ignore from the dashboard's Dependabot entry.
@@ -114,6 +116,42 @@ is **gone** from the root tsconfig.
   `/apps/api` explicitly instead of the `/apps/*` glob (a glob would overlap the
   dashboard entry and double-open its PRs). **A new app under `apps/` must be added
   to that list by hand, or it silently gets no dependency updates.**
+
+### Batch 5 — the deferred direction findings (planned 2026-07-13 at commit `38c1eaf`)
+
+Provenance: the three direction findings D2/D4/D5 that batch 3 recorded as deferred
+(see "Direction findings deferred" below) were taken up together. All three were
+dispatched **in parallel** — see the dependency notes for why that is safe.
+
+The through-line: batch 3's plan 020 took Flackyness from *observe* to *act* by
+exposing a quarantine list. Batch 5 closes the loop in three different directions —
+**out** to the PR where decisions are made (024), **backwards in time** so a flake
+rate becomes a trajectory instead of a scalar (025), and **inward**, by making the
+project its own first user (026).
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 024 | GitHub Action that comments flaky results on the PR (D2) | P2 | M | 020 (soft — consumes its `/quarantine` endpoint; already DONE) | IN PROGRESS |
+| 025 | Per-test flake trend endpoint (D4) | P2 | M | — (**no table, no migration** — see below) | IN PROGRESS |
+| 026 | Dogfood: Playwright E2E suite, ingested into itself (D5) | P3 | M | lockfile-serial: sole owner of `pnpm-lock.yaml` this batch | IN PROGRESS |
+
+**The design question 025 settles.** Batch 3 deferred D4 with the note "a snapshot
+table *may be premature* — the same answer may be computable on the fly from
+`test_results`; settle that before building one." Recon settled it: `test_results`
+keeps raw per-attempt rows with `created_at`, and `GET /projects/:id/trend` already
+demonstrates daily bucketing over exactly those rows. **So 025 adds no table and no
+migration** — the per-test trend is derived on demand from data already stored. This
+is also what made 025 safe to run in parallel with the rest of the batch.
+
+**The invariant 025 must not break**: a day on which a test *did not run* reports
+`flakeRate: null`, **never `0`**. "The test didn't run" and "the test ran and never
+flaked" are different facts; collapsing them makes the chart lie in the exact
+direction users most want to be reassured.
+
+**What 024 deliberately does NOT do**: it reports, it never acts. It does not skip
+tests, does not retry them, and never alters a job's exit code — and if Flackyness is
+unreachable, it degrades quietly rather than failing the build. A flaky-test reporter
+that breaks pipelines when its own backend is down is a tool that gets ripped out.
 
 **Batch 2 complete (2026-07-13):** all 8 direction plans landed via PRs #49–#56.
 
@@ -185,28 +223,55 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   useful when it can also say "these were auto-retried", which needs 020's
   endpoint to exist first.
 
+### Batch 5 dependency notes
+
+All three ran **in parallel**. The three hazards that make parallel worktrees
+collide were each checked and found absent:
+
+- **Disjoint file sets.** 024 owns `action.yml` + `docs/GITHUB_ACTION.md` +
+  `README.md`; 025 owns `apps/api/src/routes/tests.ts` (+ its test) + `docs/API.md`;
+  026 owns `apps/dashboard/**` + `.github/workflows/ci.yml` + `.gitignore` +
+  `AGENTS.md`. No file appears twice. Note that 024 is *explicitly forbidden* from
+  touching `ci.yml` for exactly this reason — dogfooding Flackyness's own action in
+  its own CI is deliberately left to a future plan.
+- **Lockfile serialization.** Only 026 adds a dependency (`@playwright/test`), so it
+  is the sole owner of `pnpm-lock.yaml`. Dependabot PR **#59** also rewrites the
+  lockfile — **hold #59 until 026 lands** and let Dependabot rebase itself, rather
+  than hand-resolving a lockfile conflict.
+- **Migration serialization.** None of the three generates a migration.
+  `apps/api/drizzle/` stays at `0006`. This is only true because 025 was designed to
+  compute its trend from existing rows; had it added a snapshot table, it would have
+  had to run alone.
+
+- **025 documents a caveat that 021 created**: a per-test trend can only reach as far
+  back as the raw `test_results` rows still exist, and plan 021's retention prune
+  deletes old `test_runs` (cascading to their results). So on a project with
+  `retentionDays: 30`, a 90-day trend is *structurally* incapable of returning 90
+  days of data. That is correct behavior, but it must be documented or it reads as a
+  bug.
+
 ## Direction findings deferred (batch 3 audit, 2026-07-13)
 
-Grounded and still open — the maintainer chose not to plan them *yet*. Evidence
-is recorded here so the next audit doesn't re-derive them from scratch.
+**All three were taken up in batch 5 (2026-07-13) — see plans 024, 025, 026.** The
+evidence is kept below because it is the *rationale* for those plans, and because a
+future audit should not re-derive it from scratch.
 
-- **D2 — CI-native feedback: a GitHub Action that comments on the PR.** The repo
-  ships only `.gitlab-ci.yml.example` (an upload snippet); plan 016's webhooks
+- **D2 → plan 024. CI-native feedback: a GitHub Action that comments on the PR.** The
+  repo ships only `.gitlab-ci.yml.example` (an upload snippet); plan 016's webhooks
   push outward, but nothing posts back into the PR where the decision is made.
-  Effort M–L. **Blocked on 020 by preference, not by code** — the comment is much
-  more valuable once a quarantine/retry list exists.
-- **D4 — Flake-rate history / regression detection.** `flaky_tests` stores only
-  the *current* `flakeRate` (no time series), so "is this test degrading?" is
-  unanswerable and 016's webhooks fire only on `active`↔`resolved` transitions. A
-  snapshot table would enable trend arrows and "degrading" alerts. Effort M–L.
-  Deferred as possibly premature: the same answer may be computable on the fly
-  from `test_results` without a new table — settle that before building one.
-- **D5 — Dogfood: give the flaky-test tracker its own Playwright E2E suite.**
-  Confirmed zero E2E tests (no `playwright.config`, no spec files); `.agent/CONTEXT.md`
-  has listed this as pending since June. Running an E2E suite in CI *and ingesting
-  its own report into Flackyness* is coverage, a live validation of the ingest
-  path, and the most honest demo the project could have. Effort M. Deferred as
-  non-core, not as a bad idea — worth picking up any time.
+  Effort M–L. Was "blocked on 020 by preference, not by code" — 020 is now DONE, so
+  the comment can say "these failures are already muted", which is the whole point.
+- **D4 → plan 025. Flake-rate history / regression detection.** `flaky_tests` stores
+  only the *current* `flakeRate` (no time series), so "is this test degrading?" is
+  unanswerable and 016's webhooks fire only on `active`↔`resolved` transitions.
+  Effort M–L. The deferral note asked whether a snapshot table was premature.
+  **It was**: see batch 5 above — the trend is derivable on demand from
+  `test_results`, so 025 adds no table.
+- **D5 → plan 026. Dogfood: give the flaky-test tracker its own Playwright E2E
+  suite.** Confirmed zero E2E tests (no `playwright.config`, no spec files);
+  `.agent/CONTEXT.md` has listed this as pending since June. Running an E2E suite in
+  CI *and ingesting its own report into Flackyness* is coverage, a live validation of
+  the ingest path, and the most honest demo the project could have. Effort M.
 
 ## Findings considered and rejected
 

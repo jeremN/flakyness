@@ -120,6 +120,76 @@ GET /api/v1/projects/:id/flaky-tests?status=active&limit=50
 }
 ```
 
+#### Get Quarantine List (CI-consumable)
+
+```http
+GET /api/v1/projects/:id/quarantine
+GET /api/v1/projects/:id/quarantine?format=playwright
+```
+
+A machine-readable view of the project's flaky-test rows, shaped for a CI
+job to act on directly. It splits rows into two sets that must never be
+conflated:
+
+- **`muted`** — `status = 'ignored'`. An operator explicitly muted the test
+  via [Mute / Unmute a Flaky Test](#mute--unmute-a-flaky-test). Human
+  judgment. **Safe to skip.**
+- **`flaky`** — `status = 'active'`. Auto-detected by the current threshold.
+  Machine judgment only. **Advisory** — retry or annotate it, but Flackyness
+  deliberately does **not** offer a way to skip it automatically. Silently
+  skipping a test nobody has signed off on could hide a real regression.
+
+`grepInvert` is a ready-to-use Playwright `--grep-invert` regex built from
+**`muted` tests only** — it never includes `flaky` (auto-detected) tests.
+It is `""` (empty string) when there are no muted tests — not `null`, and
+not a regex that matches everything. **Always check for an empty string
+before passing it to `--grep-invert`**: passing an empty pattern runs zero
+tests instead of the full suite, which is worse than not filtering at all.
+
+There is no pagination limit — a CI consumer needs the *complete* quarantine
+set, or the skip list is wrong. A hard safety cap of 1000 rows applies;
+`truncated: true` signals the cap was hit (a project with over 1000
+quarantined tests has a bigger problem than pagination).
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `format` | string | (unset) | `playwright` returns the bare `grepInvert` pattern as `text/plain`, so a CI job can do `curl … > skip.txt` without `jq`. Omit for the JSON shape below. |
+
+**Response (JSON, default):**
+```json
+{
+  "projectId": "uuid",
+  "muted": [
+    { "testName": "flaky login test", "testFile": "tests/auth.spec.ts", "flakeRate": "0.4200", "lastSeen": "2024-12-11T00:00:00.000Z" }
+  ],
+  "flaky": [
+    { "testName": "checkout retries under load", "testFile": "tests/checkout.spec.ts", "flakeRate": "0.1100", "lastSeen": "2024-12-11T00:00:00.000Z" }
+  ],
+  "grepInvert": "^(?:flaky\\ login\\ test)$",
+  "truncated": false
+}
+```
+
+**Response (`?format=playwright`):** `text/plain; charset=utf-8`, body is
+just the `grepInvert` string (may be empty).
+
+An unknown-but-well-formed project id returns `200` with empty arrays and
+`grepInvert === ""` (an empty quarantine list is a valid answer, not a
+`404`). A malformed id returns `400`.
+
+**Example — skip only operator-muted tests in CI:**
+```bash
+SKIP=$(curl -s "$FLACKYNESS_URL/api/v1/projects/$PROJECT_ID/quarantine?format=playwright")
+if [ -n "$SKIP" ]; then
+  npx playwright test --grep-invert "$SKIP"
+else
+  npx playwright test
+fi
+```
+The `-n` guard is not decoration — it is what stops an empty pattern from
+being passed to `--grep-invert`, which would otherwise skip the entire suite.
+
 #### Get Project Test Runs
 
 ```http

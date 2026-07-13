@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'crypto';
+import { db, flakyTests } from '../db';
+import { escapeRegex, buildGrepInvert } from './projects';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -38,6 +41,42 @@ afterAll(async () => {
     // Assert so cleanup failures are visible instead of silently leaking rows
     expect(res.status).toBe(200);
   }
+});
+
+// Pure unit tests — must run without a DB.
+describe('escapeRegex', () => {
+  it('escapes every regex metacharacter class so the name matches literally', () => {
+    const name = 'should handle a.b(c) [x] $y';
+    const escaped = escapeRegex(name);
+
+    const re = new RegExp(`^${escaped}$`);
+    expect(re.test(name)).toBe(true);
+
+    // The unescaped metacharacters must not be interpreted: a name that
+    // merely resembles the pattern structurally should NOT match.
+    expect(re.test('should handle axbc x $y')).toBe(false);
+  });
+
+  it('escapes the full metacharacter set from the plan', () => {
+    const name = '.*+?^${}()|[]\\';
+    const escaped = escapeRegex(name);
+    const re = new RegExp(`^${escaped}$`);
+    expect(re.test(name)).toBe(true);
+  });
+});
+
+describe('buildGrepInvert', () => {
+  it('is exactly the empty string ("") for an empty muted set', () => {
+    const grepInvert = buildGrepInvert([]);
+    // Explicit === '' assertion, not a falsy check — an empty pattern that
+    // isn't exactly '' would tell a CI job to skip the entire suite.
+    expect(grepInvert === '').toBe(true);
+  });
+
+  it('joins escaped names into an anchored alternation', () => {
+    const grepInvert = buildGrepInvert(['foo.bar', 'a(b)']);
+    expect(grepInvert).toBe('^(?:foo\\.bar|a\\(b\\))$');
+  });
 });
 
 describeWithDb('Projects API Integration Tests', () => {
@@ -107,6 +146,102 @@ describeWithDb('Projects API Integration Tests', () => {
     it('should return all when status=all', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/flaky-tests?status=all`);
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('GET /api/v1/projects/:id/quarantine', () => {
+    const mutedTestName = 'quarantine-test-ignored';
+    const activeTestName = 'quarantine-test-active';
+    const resolvedTestName = 'quarantine-test-resolved';
+
+    beforeAll(async () => {
+      // Seed one row per status directly — this route only cares about
+      // existing flaky_tests rows, not how they got there.
+      await db.insert(flakyTests).values([
+        {
+          projectId: testProjectId,
+          testName: mutedTestName,
+          testFile: 'quarantine.spec.ts',
+          status: 'ignored',
+          flakeCount: 4,
+          totalRuns: 10,
+          flakeRate: '0.4000',
+        },
+        {
+          projectId: testProjectId,
+          testName: activeTestName,
+          testFile: 'quarantine.spec.ts',
+          status: 'active',
+          flakeCount: 1,
+          totalRuns: 10,
+          flakeRate: '0.1000',
+        },
+        {
+          projectId: testProjectId,
+          testName: resolvedTestName,
+          testFile: 'quarantine.spec.ts',
+          status: 'resolved',
+          flakeCount: 0,
+          totalRuns: 10,
+          flakeRate: '0.0000',
+        },
+      ]);
+    });
+
+    it('partitions rows into muted (ignored) and flaky (active), excluding resolved', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/quarantine`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.projectId).toBe(testProjectId);
+
+      const mutedNames = body.muted.map((t: { testName: string }) => t.testName);
+      const flakyNames = body.flaky.map((t: { testName: string }) => t.testName);
+
+      expect(mutedNames).toContain(mutedTestName);
+      expect(mutedNames).not.toContain(activeTestName);
+      expect(mutedNames).not.toContain(resolvedTestName);
+
+      expect(flakyNames).toContain(activeTestName);
+      expect(flakyNames).not.toContain(mutedTestName);
+      expect(flakyNames).not.toContain(resolvedTestName);
+    });
+
+    it('builds grepInvert from the muted test only, never the active one', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/quarantine`);
+      const body = await res.json();
+
+      expect(body.grepInvert).toContain(mutedTestName);
+      expect(body.grepInvert).not.toContain(activeTestName);
+    });
+
+    it('?format=playwright returns text/plain whose body equals grepInvert exactly', async () => {
+      const jsonRes = await app.request(`/api/v1/projects/${testProjectId}/quarantine`);
+      const jsonBody = await jsonRes.json();
+
+      const plainRes = await app.request(`/api/v1/projects/${testProjectId}/quarantine?format=playwright`);
+      expect(plainRes.status).toBe(200);
+      expect(plainRes.headers.get('content-type')).toContain('text/plain');
+
+      const plainBody = await plainRes.text();
+      expect(plainBody).toBe(jsonBody.grepInvert);
+    });
+
+    it('returns 200 with empty arrays and grepInvert === "" for a project with no quarantine rows', async () => {
+      // A well-formed uuid with no rows is a valid, empty answer — not a 404.
+      const res = await app.request(`/api/v1/projects/${randomUUID()}/quarantine`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.muted).toEqual([]);
+      expect(body.flaky).toEqual([]);
+      expect(body.grepInvert === '').toBe(true);
+      expect(body.truncated).toBe(false);
+    });
+
+    it('returns 400 for a malformed project id', async () => {
+      const res = await app.request('/api/v1/projects/not-a-uuid/quarantine');
+      expect(res.status).toBe(400);
     });
   });
 

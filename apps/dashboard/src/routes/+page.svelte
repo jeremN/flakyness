@@ -2,7 +2,7 @@
   import type { PageData } from './$types';
   import Chart from '$lib/components/Chart.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
-  import { invalidateAll } from '$app/navigation';
+  import { invalidateAll, goto } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
 
   interface Props {
@@ -235,9 +235,16 @@
           </thead>
           <tbody class="divide-y divide-gray-100">
             {#each data.recentRuns as run}
-              <tr class="hover:bg-gray-50 transition-colors">
+              <tr
+                class="hover:bg-gray-50 transition-colors cursor-pointer"
+                onclick={() => goto(`/runs/${run.id}?project=${data.stats?.project.id ?? ''}`)}
+              >
                 <td class="py-4 px-4 font-mono text-sm font-medium">{run.branch}</td>
-                <td class="py-4 px-4 font-mono text-sm text-muted">{run.commitSha.slice(0, 7)}</td>
+                <td class="py-4 px-4 font-mono text-sm text-muted">
+                  <a href="/runs/{run.id}?project={data.stats?.project.id ?? ''}" class="hover:underline">
+                    {run.commitSha.slice(0, 7)}
+                  </a>
+                </td>
                 <td class="py-4 px-4 font-medium">{run.totalTests}</td>
                 <td class="py-4 px-4">
                   <span class="badge badge-green">{run.passed}</span>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import { goto } from '$app/navigation';
 
   interface Props {
     data: PageData;
@@ -66,14 +67,19 @@
       <tbody class="divide-y divide-gray-100">
         {#each data.runs as run}
           {@const passRate = getPassRate(run)}
-          <tr class="hover:bg-gray-50 transition-colors">
+          <tr
+            class="hover:bg-gray-50 transition-colors cursor-pointer"
+            onclick={() => goto(`/runs/${run.id}?project=${data.currentProject?.id ?? ''}`)}
+          >
             <td class="py-4 px-4">
               <span class="badge badge-purple font-mono">
                 {run.branch}
               </span>
             </td>
             <td class="py-4 px-4 font-mono text-muted text-sm">
-              {run.commitSha.slice(0, 7)}
+              <a href="/runs/{run.id}?project={data.currentProject?.id ?? ''}" class="hover:underline">
+                {run.commitSha.slice(0, 7)}
+              </a>
             </td>
             <td class="py-4 px-4 text-muted text-sm">
               {run.pipelineId || '—'}
@@ -81,8 +87,8 @@
             <td class="py-4 px-4">
               <div class="flex items-center gap-3">
                 <div class="w-16 bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                  <div 
-                    class="h-full rounded-full transition-all {passRate >= 90 ? 'bg-green-500' : passRate >= 70 ? 'bg-yellow-500' : 'bg-red-500'}" 
+                  <div
+                    class="h-full rounded-full transition-all {passRate >= 90 ? 'bg-green-500' : passRate >= 70 ? 'bg-yellow-500' : 'bg-red-500'}"
                     style="width: {passRate}%"
                   ></div>
                 </div>

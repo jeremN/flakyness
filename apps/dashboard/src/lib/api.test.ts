@@ -3,6 +3,7 @@ import {
   getProjects,
   getFlakyTests,
   getProjectRuns,
+  getRunDetail,
   getTestHistory,
   getTestTrend,
   getFlakeTrend,
@@ -88,6 +89,30 @@ describe('lib/api', () => {
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('?limit=7');
+  });
+
+  it('getRunDetail builds the URL from project id and run id, with no status param by default', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(JSON.stringify({ run: {}, results: [], truncated: false }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getRunDetail('p1', 'r1');
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1');
+  });
+
+  it('getRunDetail appends ?status= only when a status is passed', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(JSON.stringify({ run: {}, results: [], truncated: false }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getRunDetail('p1', 'r1', 'all');
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1?status=all');
   });
 
   it('getTestHistory encodes the test name exactly once', async () => {

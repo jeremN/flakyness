@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, desc, and, gte, inArray } from 'drizzle-orm';
-import { db, projects, flakyTests, testRuns } from '../db';
+import { db, projects, flakyTests, testRuns, testResults } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
 
@@ -15,6 +15,25 @@ const flakyStatusSchema = z.enum(['active', 'resolved', 'ignored', 'all']).defau
 // with more than this many quarantined tests has a bigger problem than
 // pagination; `truncated: true` signals the cap was hit.
 const QUARANTINE_ROW_CAP = 1000;
+
+// Safety cap for GET /:id/runs/:runId's `results` — the default (failed +
+// flaky) scope will essentially never hit this, but `?status=all` on a huge
+// suite could otherwise return an unbounded payload. `truncated: true`
+// mirrors the quarantine endpoint's cap semantics.
+const RUN_RESULTS_CAP = 2000;
+
+const runResultsStatusSchema = z.enum(['all', 'failed', 'flaky', 'passed', 'skipped']);
+
+// Sort weight for the default reading order: failures first, then flaky,
+// then skipped, then passed — the point of the page is "what needs
+// attention", so the worst news sorts to the top regardless of which
+// `?status` scope was requested.
+const RESULT_STATUS_ORDER: Record<string, number> = {
+  failed: 0,
+  flaky: 1,
+  skipped: 2,
+  passed: 3,
+};
 
 // Apply rate limiting
 projectsRouter.use('*', apiRateLimit);
@@ -228,6 +247,112 @@ projectsRouter.get('/:id/runs', async (c) => {
     .limit(limit);
 
   return c.json({ runs });
+});
+
+/**
+ * GET /api/v1/projects/:id/runs/:runId
+ *
+ * Get a single run's summary plus its per-test results. Scoped by BOTH the
+ * project id and the run id — `WHERE test_runs.id = :runId AND
+ * test_runs.project_id = :id` — so a well-formed `runId` belonging to a
+ * *different* project 404s instead of leaking that project's data (the
+ * same confused-deputy shape closed elsewhere in this API; see plan 031).
+ *
+ * `status` query param:
+ *   - absent (default) — only `failed` and `flaky` results ("what needs
+ *     attention"); this is the common case and keeps the payload small.
+ *   - `all` — every result, no status filter.
+ *   - `failed` | `flaky` | `passed` | `skipped` — exactly that one status.
+ *   - anything else unparseable — falls back to the default (failed+flaky),
+ *     same idiom as `/:id/flaky-tests`'s status handling.
+ *
+ * Results are ordered failed, then flaky, then skipped, then passed; within
+ * a status, alphabetically by `testName`. Capped at RUN_RESULTS_CAP — the
+ * default scope will essentially never hit it, but `?status=all` on a huge
+ * suite could otherwise return an unbounded payload; `truncated: true`
+ * signals the cap was hit (mirrors the quarantine endpoint's flag).
+ */
+projectsRouter.get('/:id/runs/:runId', async (c) => {
+  const parsedProjectId = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsedProjectId.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const parsedRunId = uuidSchema.safeParse(c.req.param('runId'));
+  if (!parsedRunId.success) {
+    return c.json({ error: 'Invalid run ID format' }, 400);
+  }
+  const projectId = parsedProjectId.data;
+  const runId = parsedRunId.data;
+
+  const [run] = await db
+    .select({
+      id: testRuns.id,
+      branch: testRuns.branch,
+      commitSha: testRuns.commitSha,
+      pipelineId: testRuns.pipelineId,
+      startedAt: testRuns.startedAt,
+      finishedAt: testRuns.finishedAt,
+      createdAt: testRuns.createdAt,
+      totalTests: testRuns.totalTests,
+      passed: testRuns.passed,
+      failed: testRuns.failed,
+      skipped: testRuns.skipped,
+      flaky: testRuns.flaky,
+    })
+    .from(testRuns)
+    // Ownership check: both predicates in the same WHERE, not a separate
+    // "does this project exist" lookup followed by an unscoped run lookup.
+    .where(and(eq(testRuns.id, runId), eq(testRuns.projectId, projectId)))
+    .limit(1);
+
+  if (!run) {
+    return c.json({ error: 'Run not found' }, 404);
+  }
+
+  // The absent case ("failed+flaky") can't be expressed as a single zod
+  // enum `.default(...)` (it's two values, not one), so it's handled
+  // explicitly here rather than folded into `runResultsStatusSchema`.
+  const rawStatus = c.req.query('status');
+  let statusFilter: ReturnType<typeof eq> | ReturnType<typeof inArray> | undefined;
+  if (rawStatus === undefined) {
+    statusFilter = inArray(testResults.status, ['failed', 'flaky']);
+  } else {
+    const parsedStatus = runResultsStatusSchema.safeParse(rawStatus);
+    const status = parsedStatus.success ? parsedStatus.data : undefined;
+    if (status === 'all') {
+      statusFilter = undefined;
+    } else if (status === undefined) {
+      // Unparseable value — fall back to the default scope rather than 400,
+      // same idiom as `/:id/flaky-tests`.
+      statusFilter = inArray(testResults.status, ['failed', 'flaky']);
+    } else {
+      statusFilter = eq(testResults.status, status);
+    }
+  }
+
+  const rows = await db
+    .select({
+      testName: testResults.testName,
+      testFile: testResults.testFile,
+      status: testResults.status,
+      durationMs: testResults.durationMs,
+      retryCount: testResults.retryCount,
+      errorMessage: testResults.errorMessage,
+      tags: testResults.tags,
+      annotations: testResults.annotations,
+    })
+    .from(testResults)
+    .where(and(eq(testResults.testRunId, runId), statusFilter))
+    // Cap at COUNT+1 so overflow can be detected before slicing back to the cap.
+    .limit(RUN_RESULTS_CAP + 1);
+
+  const truncated = rows.length > RUN_RESULTS_CAP;
+  const results = (truncated ? rows.slice(0, RUN_RESULTS_CAP) : rows).sort((a, b) => {
+    const orderDelta = (RESULT_STATUS_ORDER[a.status] ?? 4) - (RESULT_STATUS_ORDER[b.status] ?? 4);
+    return orderDelta !== 0 ? orderDelta : a.testName.localeCompare(b.testName);
+  });
+
+  return c.json({ run, results, truncated });
 });
 
 /**

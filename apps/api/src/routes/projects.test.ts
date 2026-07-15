@@ -278,6 +278,201 @@ describeWithDb('Projects API Integration Tests', () => {
     });
   });
 
+  describe('GET /api/v1/projects/:id/runs/:runId', () => {
+    let runDetailProjectId: string;
+    let runDetailToken: string;
+    let runId: string;
+
+    // A single ingest whose results deliberately cross every status this
+    // endpoint cares about: one passed, one failed, one flaky (fails then
+    // passes on retry) — exercises the default scope, `?status=all`,
+    // `?status=passed`, and the failed/flaky-before-passed ordering all
+    // from one seeded run.
+    const mixedReport = {
+      config: { version: '1.48.0' },
+      suites: [
+        {
+          title: 'run-detail.spec.ts',
+          file: 'run-detail.spec.ts',
+          specs: [
+            {
+              title: 'passes reliably',
+              ok: true,
+              tags: [],
+              tests: [
+                {
+                  projectName: 'chromium',
+                  results: [
+                    { workerIndex: 0, status: 'passed', duration: 100, retry: 0, startTime: '2026-07-01T10:00:00.000Z', errors: [] },
+                  ],
+                  status: 'expected',
+                },
+              ],
+              id: 'run-detail-spec1',
+              file: 'run-detail.spec.ts',
+              line: 1,
+              column: 1,
+            },
+            {
+              title: 'fails consistently',
+              ok: false,
+              tags: [],
+              tests: [
+                {
+                  projectName: 'chromium',
+                  results: [
+                    { workerIndex: 0, status: 'failed', duration: 50, retry: 0, startTime: '2026-07-01T10:00:01.000Z', errors: [{ message: 'boom' }] },
+                  ],
+                  status: 'unexpected',
+                },
+              ],
+              id: 'run-detail-spec2',
+              file: 'run-detail.spec.ts',
+              line: 2,
+              column: 1,
+            },
+            {
+              title: 'flakes on retry',
+              ok: true,
+              tags: [],
+              tests: [
+                {
+                  projectName: 'chromium',
+                  results: [
+                    { workerIndex: 0, status: 'failed', duration: 40, retry: 0, startTime: '2026-07-01T10:00:02.000Z', errors: [{ message: 'transient' }] },
+                    { workerIndex: 0, status: 'passed', duration: 45, retry: 1, startTime: '2026-07-01T10:00:03.000Z', errors: [] },
+                  ],
+                  status: 'flaky',
+                },
+              ],
+              id: 'run-detail-spec3',
+              file: 'run-detail.spec.ts',
+              line: 3,
+              column: 1,
+            },
+          ],
+        },
+      ],
+      errors: [],
+      stats: { startTime: '2026-07-01T10:00:00.000Z', duration: 200, expected: 2, unexpected: 1, flaky: 1, skipped: 0 },
+    };
+
+    beforeAll(async () => {
+      const createRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: `run-detail-test-${Date.now()}` }),
+      });
+      expect(createRes.status).toBe(201);
+      const createBody = await createRes.json();
+      runDetailProjectId = createBody.project.id;
+      runDetailToken = createBody.token;
+
+      const ingestRes = await app.request(
+        '/api/v1/reports?branch=main&commit=rundetailsha123&pipeline=1',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${runDetailToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(mixedReport),
+        }
+      );
+      expect(ingestRes.status).toBe(201);
+      const ingestBody = await ingestRes.json();
+      runId = ingestBody.testRun.id;
+    });
+
+    afterAll(async () => {
+      if (runDetailProjectId) {
+        const res = await app.request(`/api/v1/admin/projects/${runDetailProjectId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        expect(res.status).toBe(200);
+      }
+    });
+
+    it('defaults to failed+flaky only, with the run summary and truncated:false', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.run).toBeDefined();
+      expect(body.run.id).toBe(runId);
+      expect(body.run.branch).toBe('main');
+      expect(body.run.commitSha).toBe('rundetailsha123');
+      expect(body.truncated).toBe(false);
+
+      const names = body.results.map((r: { testName: string }) => r.testName);
+      expect(names).toContain('fails consistently');
+      expect(names).toContain('flakes on retry');
+      expect(names).not.toContain('passes reliably');
+      expect(body.results.length).toBe(2);
+    });
+
+    it('?status=all includes the passed result too', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=all`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      const names = body.results.map((r: { testName: string }) => r.testName);
+      expect(names).toContain('passes reliably');
+      expect(names).toContain('fails consistently');
+      expect(names).toContain('flakes on retry');
+      expect(body.results.length).toBe(3);
+    });
+
+    it('?status=passed returns only the passed result', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=passed`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.results.length).toBe(1);
+      expect(body.results[0].testName).toBe('passes reliably');
+      expect(body.results[0].status).toBe('passed');
+    });
+
+    it('orders failed and flaky results before passed under ?status=all', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=all`);
+      const body = await res.json();
+
+      const statuses = body.results.map((r: { status: string }) => r.status);
+      const passedIndex = statuses.indexOf('passed');
+      const failedIndex = statuses.indexOf('failed');
+      const flakyIndex = statuses.indexOf('flaky');
+
+      expect(failedIndex).toBeLessThan(passedIndex);
+      expect(flakyIndex).toBeLessThan(passedIndex);
+    });
+
+    it('returns 404 when the runId belongs to a different project', async () => {
+      // testProjectId is a wholly different project created in this file's
+      // top-level beforeAll — `runId` was never ingested into it.
+      const res = await app.request(`/api/v1/projects/${testProjectId}/runs/${runId}`);
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 for a malformed runId', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/not-a-uuid`);
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for a malformed project id', async () => {
+      const res = await app.request(`/api/v1/projects/not-a-uuid/runs/${runId}`);
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for a well-formed but non-existent runId', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${randomUUID()}`);
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('GET /api/v1/projects/:id/analysis', () => {
     it('should return real-time flakiness analysis', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/analysis`);

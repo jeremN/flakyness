@@ -47,9 +47,10 @@ updates:
           - "patch"
 
   # apps/dashboard: same as above, but TypeScript majors are additionally
-  # ignored. svelte-check 4.x crashes under TypeScript 7 (see AGENTS.md sharp
-  # edges), so the dashboard is deliberately pinned to TS 6 while apps/api
-  # (above) moves ahead to TS 7.
+  # ignored. svelte-check 4.x can't run under TypeScript 7 at all — TS 7.0
+  # has no stable programmatic API yet (see AGENTS.md sharp edges) — so the
+  # dashboard is deliberately pinned to TS 6 while apps/api (above) moves
+  # ahead to TS 7.
   - package-ecosystem: "npm"
     directories:
       - "/apps/dashboard"
@@ -69,11 +70,18 @@ updates:
         update-types: ["version-update:semver-major"]
       # TypeScript 7 (the native rewrite) breaks svelte-check 4.x: it reads
       # `ts.default.sys.useCaseSensitiveFileNames`, which TS 7 no longer
-      # exposes, so `svelte-check` crashes on startup (see PR #62). Its peer
-      # range claims `typescript: ">=5.0.0"`, so nothing stops the install —
-      # only this rule does. The API is already on TS 7; only the dashboard is
-      # pinned. REMOVE THIS once svelte-check ships TS 7 support, then bump the
-      # dashboard to match the API.
+      # exposes, so `svelte-check` crashes on startup (see PR #62). That crash
+      # is a symptom: verified 2026-07-15, TS 7.0 GA ships no stable
+      # programmatic API, which Svelte's template type-checking needs to run
+      # against the Go (`tsgo`) compiler at all — so svelte-check can't
+      # support TS 7.0, period. The API is expected in TS 7.1 (~Oct 2026,
+      # upstream estimate); official Svelte guidance is to stay on TS 6 until
+      # then. Its peer range claims `typescript: ">=5.0.0"`, so nothing stops
+      # the install — only this rule does. The API is already on TS 7; only
+      # the dashboard is pinned. REMOVE THIS only once BOTH TS 7.1 has shipped
+      # AND a svelte-check release supports it (latest is still 4.7.2) — track
+      # `sveltejs/language-tools#2733` — then bump the dashboard to match the
+      # API.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
     groups:

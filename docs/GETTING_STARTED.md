@@ -44,6 +44,11 @@ openssl rand -hex 32
 ADMIN_TOKEN=your-generated-token-here
 ```
 
+Optionally, also set `DASHBOARD_PASSWORD` (any non-empty value) to require
+HTTP Basic Auth on the dashboard even in local dev. It's safe to leave unset
+on `localhost` — but **not** once you expose the dashboard beyond your own
+machine; see [Production Deployment](#production-deployment) below.
+
 ### 3. Start Database
 
 ```bash
@@ -230,6 +235,7 @@ cd flackyness
 cat > .env << EOF
 DATABASE_URL=postgres://postgres:secure-password@db:5432/flackyness
 ADMIN_TOKEN=$(openssl rand -hex 32)
+DASHBOARD_PASSWORD=$(openssl rand -hex 32)
 PUBLIC_API_URL=https://your-domain.com
 EOF
 
@@ -239,6 +245,20 @@ docker compose --profile production up -d
 # Run migrations
 docker compose exec api pnpm db:migrate
 ```
+
+> ⚠️ **If you set `ADMIN_TOKEN`, also set `DASHBOARD_PASSWORD` — this is not
+> optional once the dashboard is reachable by anyone other than you.** The
+> dashboard's only mutating action (mute/unmute a flaky test) holds
+> `ADMIN_TOKEN` and spends it on behalf of *whoever submits the form* — it
+> does not itself check that the requester is who they claim. Without
+> `DASHBOARD_PASSWORD`, any visitor who can load the dashboard can mute a
+> test, and a muted test feeds the CI quarantine skip-list (see
+> [Get Quarantine List](API.md#get-quarantine-list-ci-consumable)), which
+> makes a *downstream* pipeline silently stop running that test. Setting
+> `DASHBOARD_PASSWORD` gates **every** dashboard route behind HTTP Basic Auth
+> (`apps/dashboard/src/hooks.server.ts`); leaving it unset is only a safe
+> choice for a dashboard that is genuinely reachable only on a trusted,
+> network-isolated segment.
 
 ### Option 2: Kubernetes / Cloud Run
 

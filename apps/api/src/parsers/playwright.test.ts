@@ -420,4 +420,183 @@ describe('Playwright Parser', () => {
       }
     });
   });
+
+  describe('failureDetail', () => {
+    it('captures deduped errors (stack + snippet), mixed stdout/stderr chunks, and attachment metadata only (never body)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'detail.spec.ts',
+            file: 'detail.spec.ts',
+            specs: [
+              {
+                title: 'captures rich failure detail',
+                ok: false,
+                tags: [],
+                file: 'detail.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        error: {
+                          message: 'expect(received).toBe(expected)',
+                          stack: 'Error: expect(received).toBe(expected)\n    at detail.spec.ts:10:5',
+                          snippet: '  9 | ...\n> 10 | expect(a).toBe(b)',
+                        },
+                        errors: [
+                          // Duplicate of `error` above (same message + stack) -> deduped
+                          {
+                            message: 'expect(received).toBe(expected)',
+                            stack: 'Error: expect(received).toBe(expected)\n    at detail.spec.ts:10:5',
+                          },
+                          // Distinct second assertion -> kept
+                          { message: 'second assertion failed' },
+                        ],
+                        stdout: ['first line\n', { text: 'second line\n' }],
+                        stderr: ['warn: something\n', { text: 'stderr chunk\n' }],
+                        attachments: [
+                          { name: 'screenshot', contentType: 'image/png', path: 'test-results/detail/screenshot.png' },
+                          {
+                            name: 'trace',
+                            contentType: 'application/zip',
+                            path: 'test-results/detail/trace.zip',
+                            body: 'QmFzZTY0Qm9keQ==', // must NEVER reach the parsed output
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toBeNull();
+
+      expect(detail?.errors).toHaveLength(2);
+      expect(detail?.errors[0].message).toBe('expect(received).toBe(expected)');
+      expect(detail?.errors[0].stack).toContain('at detail.spec.ts:10:5');
+      expect(detail?.errors[0].snippet).toContain('expect(a).toBe(b)');
+      expect(detail?.errors[1].message).toBe('second assertion failed');
+      expect(detail?.errors[1].stack).toBeUndefined();
+
+      expect(detail?.stdout).toBe('first line\nsecond line\n');
+      expect(detail?.stderr).toBe('warn: something\nstderr chunk\n');
+
+      expect(detail?.attachments).toHaveLength(2);
+      for (const att of detail?.attachments ?? []) {
+        // The metadata-only guarantee: a screenshot/trace's base64 body must
+        // never reach the parsed output, let alone the DB. See plan 037.
+        expect(att).not.toHaveProperty('body');
+      }
+      const trace = detail?.attachments?.find((a) => a.name === 'trace');
+      expect(trace).toEqual({
+        name: 'trace',
+        contentType: 'application/zip',
+        path: 'test-results/detail/trace.zip',
+      });
+    });
+
+    it('is null for a passing result with no errors, output, or attachments', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'pass.spec.ts',
+            file: 'pass.spec.ts',
+            specs: [
+              {
+                title: 'passes cleanly',
+                ok: true,
+                tags: [],
+                file: 'pass.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 50, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].failureDetail).toBeNull();
+    });
+
+    it('clamps oversized stdout to 10,000 chars, keeps an at-bound stack intact, and caps attachments to MAX_ATTACHMENTS (25)', () => {
+      // Not bounded by TestErrorSchema's own zod max (stdout chunks are
+      // `z.any()`) — this is what actually exercises our own clamp(), unlike
+      // the stack case below which is already capped upstream by zod.
+      const hugeChunk = 'y'.repeat(15_000);
+      // At the zod schema's own max bound (10,000) — the largest value that
+      // can reach our extractor at all; confirms it survives intact.
+      const maxStack = 'x'.repeat(10_000);
+
+      const attachments = Array.from({ length: 30 }, (_, i) => ({
+        name: `att-${i}`,
+        contentType: 'text/plain',
+        path: `test-results/att-${i}.txt`,
+      }));
+
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'caps.spec.ts',
+            file: 'caps.spec.ts',
+            specs: [
+              {
+                title: 'exceeds every cap',
+                ok: false,
+                tags: [],
+                file: 'caps.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 50,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ stack: maxStack }],
+                        stdout: [hugeChunk],
+                        attachments,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toBeNull();
+      expect(detail?.errors[0].stack?.length).toBe(10_000);
+      expect(detail?.stdout?.length).toBe(10_000);
+      expect(detail?.attachments).toHaveLength(25);
+    });
+  });
 });

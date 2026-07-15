@@ -437,6 +437,18 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(body.results[0].status).toBe('passed');
     });
 
+    it('includes failureDetail on a failed row and null on a passed row under ?status=all', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=all`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      const failed = body.results.find((r: { testName: string }) => r.testName === 'fails consistently');
+      const passed = body.results.find((r: { testName: string }) => r.testName === 'passes reliably');
+
+      expect(failed?.failureDetail).toEqual({ errors: [{ message: 'boom' }] });
+      expect(passed?.failureDetail).toBeNull();
+    });
+
     it('orders failed and flaky results before passed under ?status=all', async () => {
       const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=all`);
       const body = await res.json();

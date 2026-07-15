@@ -161,6 +161,7 @@ reports.post(
           errorMessage: result.errorMessage,
           tags: result.tags.length > 0 ? result.tags : null,
           annotations: result.annotations.length > 0 ? result.annotations : null,
+          failureDetail: result.failureDetail,
         }));
 
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {

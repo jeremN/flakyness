@@ -50,6 +50,13 @@
       "when": 1783953994535,
       "tag": "0006_gigantic_johnny_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784127843945,
+      "tag": "0007_natural_trish_tilby",
+      "breakpoints": true
     }
   ]
 }

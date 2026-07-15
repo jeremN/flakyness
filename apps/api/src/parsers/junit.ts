@@ -171,6 +171,10 @@ function buildResult({ raw, suiteFile }: FlatTestCase): ParsedTestResult {
     errorMessage: errorMessage ? clamp(errorMessage, MAX_ERROR_LENGTH) : null,
     tags: [],
     annotations: [],
+    // JUnit has no stack/snippet/stdout/stderr/attachment structure to mine
+    // (only the flat `errorMessage` text extracted above) — richer failure
+    // detail is Playwright-only in this pass. See plan 037.
+    failureDetail: null,
   };
 }
 
@@ -194,6 +198,8 @@ const ParsedTestResultSchema = z.object({
       description: z.string().optional(),
     })
   ),
+  // Always null for JUnit — see the comment on `failureDetail` in buildResult.
+  failureDetail: z.null(),
 });
 
 const ParsedReportSchema = z.object({

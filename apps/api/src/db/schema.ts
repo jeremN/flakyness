@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
+import type { FailureDetail } from '../parsers/playwright';
 
 // Projects being tracked
 export const projects = pgTable('projects', {
@@ -62,6 +63,11 @@ export const testResults = pgTable('test_results', {
   // Playwright metadata, persisted as-is; NULL when the report has none.
   tags: jsonb('tags').$type<string[]>(),
   annotations: jsonb('annotations').$type<{ type: string; description?: string }[]>(),
+  // Richer per-run failure detail (stack/snippet/errors[]/stdout/stderr/
+  // attachment metadata); NULL when the result has none (e.g. it passed, or
+  // was ingested before this column existed). See plan 037. Attachments are
+  // metadata only — never the base64 `body`.
+  failureDetail: jsonb('failure_detail').$type<FailureDetail>(),
 }, (table) => ({
   // Index for FK lookups (joining with test runs)
   testRunIdIdx: index('test_results_test_run_id_idx').on(table.testRunId),

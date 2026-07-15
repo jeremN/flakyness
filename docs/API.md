@@ -274,7 +274,20 @@ The ordering is applied before the cap, so a truncated response drops
       "retryCount": 1,
       "errorMessage": "Expected redirect to /success, got /checkout",
       "tags": [],
-      "annotations": []
+      "annotations": [],
+      "failureDetail": {
+        "errors": [
+          {
+            "message": "Expected redirect to /success, got /checkout",
+            "stack": "Error: Expected redirect to /success, got /checkout\n    at /app/tests/checkout.spec.ts:42:11",
+            "snippet": "  40 |   await page.click('#pay');\n  41 |   await expect(page).toHaveURL('/success');\n> 42 |   // failed here"
+          }
+        ],
+        "stdout": "Starting checkout flow...\n",
+        "attachments": [
+          { "name": "screenshot", "contentType": "image/png", "path": "test-results/checkout-failed/screenshot.png" }
+        ]
+      }
     }
   ],
   "truncated": false
@@ -282,9 +295,14 @@ The ordering is applied before the cap, so a truncated response drops
 ```
 
 **Note:** `errorMessage` is only the first error's message text, truncated
-to 10,000 characters — Flackyness does not store stack traces, stdout/stderr,
-or screenshots/attachments from the CI run. For those, consult the CI job's
-own logs/artifacts.
+to 10,000 characters. `failureDetail` carries richer detail for the same
+result: every distinct error's message/stack/snippet (up to 10), stdout and
+stderr (each flattened and capped at 10,000 characters), and attachment
+**metadata only** — `{ name, contentType, path }`. The attachment *files*
+themselves (screenshots, videos, traces) are never stored by Flackyness —
+only their name/type/path are recorded for cross-referencing the CI job's
+own artifacts. `failureDetail` is `null` for passing results and for any
+result ingested before this field existed.
 
 A malformed `:id` or `:runId` returns `400`. A well-formed `:runId` that
 doesn't exist, or belongs to a different project than `:id`, returns `404`.

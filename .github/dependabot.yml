@@ -11,8 +11,9 @@ updates:
     directories:
       # Explicit paths, not the `/apps/*` glob — a glob here would overlap the
       # dashboard entry below and double-open its PRs. Trade-off: a NEW app
-      # under apps/ must be added to this list by hand, or it silently gets no
-      # dependency updates.
+      # under apps/ must be added to this list by hand — enforced by
+      # `apps/api/src/dependabot-coverage.test.ts`, which fails CI if a
+      # workspace package dir is missing here.
       - "/"
       - "/apps/api"
     schedule:

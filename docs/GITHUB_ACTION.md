@@ -4,7 +4,11 @@
 is a composite action that:
 
 1. Uploads a Playwright JSON or JUnit XML report to your self-hosted Flackyness
-   instance (same call `.gitlab-ci.yml.example` makes, just from GitHub Actions).
+   instance (the same endpoint `.gitlab-ci.yml.example` calls from GitLab CI,
+   just from GitHub Actions instead — with one addition,
+   [`?wait=true`](API.md#synchronous-ingest-wait-true), so step 2 below sees
+   this run's own effect on flakiness, including a test that crosses the
+   flake threshold on this very run).
 2. Fetches the project's [quarantine list](API.md#get-apiv1projectsidquarantine)
    (`GET /api/v1/projects/:id/quarantine`).
 3. Extracts this run's failing specs from the report, partitions them against

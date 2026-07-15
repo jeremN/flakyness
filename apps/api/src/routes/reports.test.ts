@@ -4,6 +4,7 @@ import { join } from 'path';
 import { and, eq } from 'drizzle-orm';
 import { db, testResults, flakyTests } from '../db';
 import { updateFlakyTests } from '../services/flakiness';
+import { withTimeout } from './reports';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -28,6 +29,25 @@ const junitBasicPassingReport = readFileSync(
   'utf-8'
 );
 const junitMalformedReport = readFileSync(join(__dirname, '../../fixtures/junit-malformed.xml'), 'utf-8');
+
+// `withTimeout` needs no DB, so this runs unconditionally (not gated behind
+// `describeWithDb`) — it proves the bounded-wait semantics that back
+// `?wait=true`'s reconcile-error path, since fault-injecting a real DB
+// failure through the full HTTP integration tests below isn't practical.
+describe('withTimeout (bounds the ?wait=true reconcile)', () => {
+  it('resolves with the inner value when the promise settles before the timeout', async () => {
+    await expect(withTimeout(Promise.resolve('ok'), 50)).resolves.toBe('ok');
+  });
+
+  it('propagates the inner rejection when the promise fails before the timeout', async () => {
+    await expect(withTimeout(Promise.reject(new Error('boom')), 50)).rejects.toThrow('boom');
+  });
+
+  it('rejects with a timeout error when the promise takes longer than the bound — simulating a pathologically slow reconcile', async () => {
+    const neverSettles = new Promise<never>(() => {});
+    await expect(withTimeout(neverSettles, 10)).rejects.toThrow(/timed out/i);
+  });
+});
 
 beforeAll(async () => {
   if (hasDatabase && hasAdminToken) {
@@ -193,6 +213,29 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(summary.passed).toBe(4);
       expect(summary.failed).toBe(1);
       expect(summary.flaky).toBe(1);
+    });
+
+    it('default path (no wait param) stays byte-for-byte unchanged: 201, no reconcile field', async () => {
+      // Deliberately does NOT assert on post-ingest flaky_tests state — the
+      // whole point of the default path is that reconciliation is a
+      // fire-and-forget background job, so asserting on its result here
+      // would just be racing it (see AGENTS.md's "Sharp edges").
+      const res = await app.request('/api/v1/reports?branch=main&commit=nowait001&pipeline=nowait-pipeline', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testProjectToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sampleReport),
+      });
+      expect(res.status).toBe(201);
+
+      const body = await res.json();
+      expect(body.reconcile).toBeUndefined();
+      expect(Object.keys(body).sort()).toEqual(['success', 'testRun']);
+      expect(Object.keys(body.testRun).sort()).toEqual(
+        ['branch', 'commit', 'id', 'pipeline', 'project', 'summary'].sort()
+      );
     });
   });
 
@@ -410,6 +453,109 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(flaky.totalRuns).toBe(3);
       expect(Number(flaky.flakeRate)).toBeGreaterThanOrEqual(0.05);
       expect(Number(flaky.flakeRate)).toBeCloseTo(1 / 3, 2);
+    });
+  });
+
+  describe('?wait=true reconciliation', () => {
+    // Isolated in its own project, same reasoning as the JUnit flaky describe
+    // block above: an exact totalRuns/flakeRate assertion needs a clean
+    // flakiness window for this test name.
+    let waitProjectId: string;
+    let waitProjectToken: string;
+
+    beforeAll(async () => {
+      const res = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: `reports-wait-${Date.now()}` }),
+      });
+      const body = await res.json();
+      waitProjectId = body.project.id;
+      waitProjectToken = body.token;
+    });
+
+    afterAll(async () => {
+      if (waitProjectId) {
+        const res = await app.request(`/api/v1/admin/projects/${waitProjectId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        expect(res.status).toBe(200);
+      }
+    });
+
+    const waitTestName = 'flakes across executions delivered in one report';
+
+    // ONE Playwright JSON report whose single spec carries THREE `tests[]`
+    // entries (2 passed + 1 failed), none tagged with a `projectName`. The
+    // real reporter shape nests attempts under `spec.tests[].results[]` —
+    // one `tests[]` entry per Playwright project running the spec — and the
+    // parser (`getExecutions` in `parsers/playwright.ts`) emits ONE
+    // `test_results` row per `tests[]` entry. Three entries in a single
+    // upload therefore reach `minRuns` (3) in ONE ingest, without three
+    // separate report uploads. The legacy `spec.results[]` shape (attempts
+    // nested directly on the spec, no `tests[]`) would instead collapse to a
+    // SINGLE row no matter how many attempts it holds — that's the trap the
+    // plan calls out, and precisely why this fixture avoids it.
+    const singleUploadFlakyReport = {
+      config: {},
+      suites: [
+        {
+          title: 'wait.spec.ts',
+          file: 'wait.spec.ts',
+          specs: [
+            {
+              title: waitTestName,
+              ok: true,
+              tests: [
+                { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-15T10:00:00.000Z' }] },
+                { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-15T10:00:01.000Z' }] },
+                { results: [{ workerIndex: 0, status: 'failed', duration: 10, retry: 0, startTime: '2026-07-15T10:00:02.000Z' }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    it('is synchronous: the response carries the reconcile result, and an immediate quarantine read reflects it with no poll', async () => {
+      const res = await app.request(
+        '/api/v1/reports?branch=main&commit=waitsync001&wait=true',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${waitProjectToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(singleUploadFlakyReport),
+        }
+      );
+      expect(res.status).toBe(201);
+      const body = await res.json();
+
+      // Fixture sanity check (per the plan): this single upload genuinely
+      // produces 3 executions (2 passed + 1 failed) for the same test name —
+      // not a report that merely looks like it should be flaky.
+      expect(body.testRun.summary.total).toBe(3);
+      expect(body.testRun.summary.passed).toBe(2);
+      expect(body.testRun.summary.failed).toBe(1);
+
+      // The whole point of `wait=true`: the reconcile result is already in
+      // the response body, naming this test as newly flaky.
+      expect(body.reconcile).toBeDefined();
+      expect(body.reconcile.newlyFlaky).toContain(waitTestName);
+      expect(body.reconcile.newlyResolved).toEqual([]);
+
+      // ...AND an immediately-following read — no waitFor, no poll, no sleep
+      // — already reflects it, because `wait=true` only returns after
+      // `flaky_tests` has been made consistent with this ingest.
+      const quarantineRes = await app.request(`/api/v1/projects/${waitProjectId}/quarantine`);
+      expect(quarantineRes.status).toBe(200);
+      const quarantine = await quarantineRes.json();
+      expect(quarantine.flaky.map((t: { testName: string }) => t.testName)).toContain(waitTestName);
     });
   });
 });

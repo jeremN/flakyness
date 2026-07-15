@@ -338,6 +338,7 @@ Content-Type: application/json
 | `branch` | string | No | Git branch name; defaults to `main`; max 255 chars |
 | `commit` | string | Yes | Git commit SHA, max 40 chars |
 | `pipeline` | string | No | CI pipeline ID; max 100 chars |
+| `wait` | string | No | Set to exactly `true` to await flakiness reconciliation before responding — see [Synchronous ingest (`?wait=true`)](#synchronous-ingest-wait-true) below. Any other value (absent, `1`, `yes`) takes the default async behavior. |
 
 **Body:** Raw Playwright JSON report (from `--reporter=json`), or a JUnit XML report.
 
@@ -407,6 +408,68 @@ Reports over 50,000 `<testcase>` elements are rejected with a `400`.
   }
 }
 ```
+
+##### Synchronous ingest (`?wait=true`)
+
+By default, ingesting a report triggers flakiness reconciliation (the
+recomputation that updates `flaky_tests`) **in the background** — the `201`
+above is returned as soon as the report is stored, **before** `flaky_tests`
+necessarily reflects it. This keeps high-throughput CI uploaders from
+blocking on recomputation, but it means a client that immediately reads
+flakiness state afterward (e.g. [Get Quarantine List](#get-quarantine-list-ci-consumable) or
+[Get Project Flaky Tests](#get-project-flaky-tests)) is racing that background job — it may
+still see pre-ingest state.
+
+Pass `?wait=true` to opt into synchronous behavior instead: the response is
+only sent once `flaky_tests` has been reconciled for this ingest, and the
+body gains a `reconcile` field describing what changed:
+
+```http
+POST /api/v1/reports?branch=main&commit=abc123&wait=true
+```
+
+```json
+{
+  "success": true,
+  "testRun": { "...": "unchanged, same shape as above" },
+  "reconcile": {
+    "newlyFlaky": ["auth.spec.ts › should log in"],
+    "newlyResolved": []
+  }
+}
+```
+
+`newlyFlaky` / `newlyResolved` are test names that transitioned status as
+part of *this* reconcile (see [Get Real-Time Flakiness Analysis](#get-real-time-flakiness-analysis)
+for the underlying transition rules) — an empty array means nothing
+transitioned, not that reconciliation didn't run. A client that then
+immediately calls the quarantine or flaky-tests endpoints is guaranteed to
+see this ingest's effect, with no polling required.
+
+**Latency trade-off**: `?wait=true` adds the reconcile's DB work (a scan of
+this project's `test_results` within the configured window, then an upsert)
+to the request's latency — normally low tens of milliseconds, but it scales
+with the project's history and test count. Do not set it as the default for
+a high-throughput uploader; use it only where a caller specifically needs the
+post-ingest guarantee (the shipped GitHub Action uses it for exactly this
+reason — see [`docs/GITHUB_ACTION.md`](GITHUB_ACTION.md)).
+
+**Bounded, and never turns a successful upload into a `500`**: the report is
+already committed by the time reconciliation runs, so a reconcile that fails
+or takes longer than 10 seconds does not fail the request — it still returns
+`201`, with the failure reported in the body instead:
+
+```json
+{
+  "success": true,
+  "testRun": { "...": "..." },
+  "reconcile": { "error": "Reconcile timed out after 10000ms" }
+}
+```
+
+The reconcile itself is triggered exactly once regardless of `wait`; a slow
+or failed reconcile under `?wait=true` keeps running in the background past
+the timeout, same as the default path.
 
 ---
 

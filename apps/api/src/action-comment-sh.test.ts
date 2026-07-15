@@ -358,8 +358,6 @@ describe('comment.sh', () => {
 
   describe('case 6: JUnit XML report is not the Playwright JSON this action expects', () => {
     it('detects it and skips the PR comment when the file’s first line is a single "<"', () => {
-      // This is the narrow shape the script's own detection actually
-      // handles correctly (see the bug documented in the next test).
       const dir = newTempDir('flackyness-comment-work-');
       const reportPath = writeReportFile(dir, 'report.xml', '<\n<testsuites/>\n');
       const ghLog = path.join(dir, 'gh.log');
@@ -377,28 +375,17 @@ describe('comment.sh', () => {
       expect(existsSync(ghLog)).toBe(false);
     });
 
-    // GENUINE BUG FOUND BY THIS TEST (reported, not fixed — see AGENTS.md /
-    // plan instructions: pin current behavior, don't paper over it).
-    //
-    // comment.sh detects JUnit XML via:
-    //   first_nonspace_char="$(grep -m1 -o '[^[:space:]]' "$REPORT_PATH" ...)"
-    //   if [ "$first_nonspace_char" = "<" ]; then ...
-    //
-    // `grep -m1` stops after the first MATCHING LINE, not the first match —
-    // and `-o` prints every match found within that line before stopping.
-    // For any realistic XML report, the first line has many non-space
-    // characters (e.g. `<?xml version="1.0" encoding="UTF-8"?>`), so
-    // `first_nonspace_char` ends up holding ALL of them, one per output
-    // line ("<\n?\nx\nm\nl\n..."), which can never equal the literal string
-    // "<". Verified against this repo's own real JUnit fixture shape
-    // (apps/api/fixtures/junit-basic.xml starts with exactly that XML
-    // declaration) — the intended friendly warning never fires in
-    // practice. Execution instead falls through to the generic `jq` parse
-    // failure a few lines later, which happens to ALSO warn-and-exit-0, so
-    // the build-safety contract survives, but the specific, friendlier
-    // "looks like JUnit XML" message is effectively dead code, and a raw
-    // jq parse-error is dumped to the log instead.
-    it('BUG: never fires for a realistic multi-character first line — falls through to a generic jq parse-failure warning instead', () => {
+    // Plan 034 fixed a bug where this never fired for realistic XML: `grep
+    // -m1` stops after the first MATCHING LINE, not the first match, and
+    // `-o` prints every match found within that line before stopping. For a
+    // realistic XML declaration (`<?xml version="1.0" encoding="UTF-8"?>`),
+    // that meant `first_nonspace_char` held ALL of those characters, one
+    // per output line, which could never equal the literal string "<" — so
+    // the friendly warning was dead code and execution fell through to a
+    // generic jq parse-failure warning instead. The fix pipes through `head
+    // -n1` to take only the first character of grep's output. This test
+    // pins the corrected behavior: the friendly message now fires.
+    it('detects a realistic multi-line XML declaration and skips the PR comment', () => {
       const dir = newTempDir('flackyness-comment-work-');
       const realisticJunit =
         '<?xml version="1.0" encoding="UTF-8"?>\n' +
@@ -416,12 +403,28 @@ describe('comment.sh', () => {
         MOCK_GH_LOG: ghLog,
       });
 
-      // Still degrades quietly (contract intact)...
       expect(result.status).toBe(0);
+      expect(result.stdout).toContain('looks like JUnit XML');
       expect(existsSync(ghLog)).toBe(false);
-      // ...but NOT via the intended, friendlier message.
-      expect(result.stdout).not.toContain('looks like JUnit XML');
-      expect(result.stdout).toContain('could not parse');
+    });
+
+    it('detects XML preceded by leading blank lines and whitespace', () => {
+      const dir = newTempDir('flackyness-comment-work-');
+      const leadingWhitespaceJunit = '\n\n  <?xml version="1.0"?>\n<testsuites/>\n';
+      const reportPath = writeReportFile(dir, 'report.xml', leadingWhitespaceJunit);
+      const ghLog = path.join(dir, 'gh.log');
+
+      const result = runCommentSh({
+        FLACKYNESS_API_URL: 'https://mock.example',
+        FLACKYNESS_TOKEN: 't',
+        FLACKYNESS_PROJECT_ID: 'p',
+        FLACKYNESS_REPORT_PATH: reportPath,
+        MOCK_GH_LOG: ghLog,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('looks like JUnit XML');
+      expect(existsSync(ghLog)).toBe(false);
     });
   });
 

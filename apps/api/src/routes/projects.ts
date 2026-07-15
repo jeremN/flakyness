@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, desc, and, gte, inArray } from 'drizzle-orm';
+import { eq, desc, and, gte, inArray, sql } from 'drizzle-orm';
 import { db, projects, flakyTests, testRuns, testResults } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
@@ -20,20 +20,11 @@ const QUARANTINE_ROW_CAP = 1000;
 // flaky) scope will essentially never hit this, but `?status=all` on a huge
 // suite could otherwise return an unbounded payload. `truncated: true`
 // mirrors the quarantine endpoint's cap semantics.
-const RUN_RESULTS_CAP = 2000;
+//
+// Exported so tests can size a >CAP fixture without hardcoding the number.
+export const RUN_RESULTS_CAP = 2000;
 
 const runResultsStatusSchema = z.enum(['all', 'failed', 'flaky', 'passed', 'skipped']);
-
-// Sort weight for the default reading order: failures first, then flaky,
-// then skipped, then passed — the point of the page is "what needs
-// attention", so the worst news sorts to the top regardless of which
-// `?status` scope was requested.
-const RESULT_STATUS_ORDER: Record<string, number> = {
-  failed: 0,
-  flaky: 1,
-  skipped: 2,
-  passed: 3,
-};
 
 // Apply rate limiting
 projectsRouter.use('*', apiRateLimit);
@@ -267,10 +258,13 @@ projectsRouter.get('/:id/runs', async (c) => {
  *     same idiom as `/:id/flaky-tests`'s status handling.
  *
  * Results are ordered failed, then flaky, then skipped, then passed; within
- * a status, alphabetically by `testName`. Capped at RUN_RESULTS_CAP — the
- * default scope will essentially never hit it, but `?status=all` on a huge
- * suite could otherwise return an unbounded payload; `truncated: true`
- * signals the cap was hit (mirrors the quarantine endpoint's flag).
+ * a status, alphabetically by `testName` — ordered in SQL *before* the
+ * `.limit`, so that truncation (see below) drops the lowest-priority
+ * (passed) rows first rather than an arbitrary tail that could contain
+ * failures. Capped at RUN_RESULTS_CAP — the default scope will essentially
+ * never hit it, but `?status=all` on a huge suite could otherwise return an
+ * unbounded payload; `truncated: true` signals the cap was hit (mirrors the
+ * quarantine endpoint's flag).
  */
 projectsRouter.get('/:id/runs/:runId', async (c) => {
   const parsedProjectId = uuidSchema.safeParse(c.req.param('id'));
@@ -343,14 +337,22 @@ projectsRouter.get('/:id/runs/:runId', async (c) => {
     })
     .from(testResults)
     .where(and(eq(testResults.testRunId, runId), statusFilter))
+    // Order BEFORE the cap: failed, then flaky, then skipped, then passed
+    // (else last), then alphabetically by testName. Ordering must happen in
+    // SQL, not after the `.limit`, so that when a run has more than
+    // RUN_RESULTS_CAP results the rows dropped by truncation are the
+    // lowest-priority (passed) ones — not an arbitrary insertion-order tail
+    // that could otherwise discard real failures. See plan
+    // 036-run-detail-order-before-cap.
+    .orderBy(
+      sql`CASE ${testResults.status} WHEN 'failed' THEN 0 WHEN 'flaky' THEN 1 WHEN 'skipped' THEN 2 WHEN 'passed' THEN 3 ELSE 4 END`,
+      testResults.testName
+    )
     // Cap at COUNT+1 so overflow can be detected before slicing back to the cap.
     .limit(RUN_RESULTS_CAP + 1);
 
   const truncated = rows.length > RUN_RESULTS_CAP;
-  const results = (truncated ? rows.slice(0, RUN_RESULTS_CAP) : rows).sort((a, b) => {
-    const orderDelta = (RESULT_STATUS_ORDER[a.status] ?? 4) - (RESULT_STATUS_ORDER[b.status] ?? 4);
-    return orderDelta !== 0 ? orderDelta : a.testName.localeCompare(b.testName);
-  });
+  const results = truncated ? rows.slice(0, RUN_RESULTS_CAP) : rows;
 
   return c.json({ run, results, truncated });
 });

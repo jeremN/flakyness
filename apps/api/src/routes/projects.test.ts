@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { db, flakyTests } from '../db';
-import { escapeRegex, buildGrepInvert } from './projects';
+import { escapeRegex, buildGrepInvert, RUN_RESULTS_CAP } from './projects';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -448,6 +448,101 @@ describeWithDb('Projects API Integration Tests', () => {
 
       expect(failedIndex).toBeLessThan(passedIndex);
       expect(flakyIndex).toBeLessThan(passedIndex);
+    });
+
+    it('keeps failures ahead of passed when truncation drops the excess, even when the failures sort last alphabetically', async () => {
+      // RUN_RESULTS_CAP passing specs, then 2 failing specs — deliberately
+      // named to sort LAST alphabetically ("zzz-..."), so the only way they
+      // can appear ahead of passed rows in a truncated response is via
+      // status priority ordering happening in SQL before the `.limit`, not
+      // via name and not via lucky insertion order.
+      const passingSpecs = Array.from({ length: RUN_RESULTS_CAP }, (_, i) => ({
+        title: `cap passing spec ${i}`,
+        ok: true,
+        tags: [],
+        tests: [
+          {
+            projectName: 'chromium',
+            results: [
+              { workerIndex: 0, status: 'passed', duration: 1, retry: 0, startTime: '2026-07-02T10:00:00.000Z', errors: [] },
+            ],
+            status: 'expected',
+          },
+        ],
+        id: `cap-pass-${i}`,
+        file: 'cap.spec.ts',
+        line: i + 1,
+        column: 1,
+      }));
+
+      const failingSpecNames = ['zzz-cap-failure-1', 'zzz-cap-failure-2'];
+      const failingSpecs = failingSpecNames.map((title, i) => ({
+        title,
+        ok: false,
+        tags: [],
+        tests: [
+          {
+            projectName: 'chromium',
+            results: [
+              { workerIndex: 0, status: 'failed', duration: 1, retry: 0, startTime: '2026-07-02T10:00:01.000Z', errors: [{ message: 'boom' }] },
+            ],
+            status: 'unexpected',
+          },
+        ],
+        id: `cap-fail-${i}`,
+        file: 'cap.spec.ts',
+        line: RUN_RESULTS_CAP + i + 1,
+        column: 1,
+      }));
+
+      const capReport = {
+        config: { version: '1.48.0' },
+        suites: [
+          {
+            title: 'cap.spec.ts',
+            file: 'cap.spec.ts',
+            specs: [...passingSpecs, ...failingSpecs],
+          },
+        ],
+        errors: [],
+        stats: {
+          startTime: '2026-07-02T10:00:00.000Z',
+          duration: 1000,
+          expected: RUN_RESULTS_CAP,
+          unexpected: failingSpecNames.length,
+          flaky: 0,
+          skipped: 0,
+        },
+      };
+
+      const ingestRes = await app.request(
+        '/api/v1/reports?branch=main&commit=capordertest01&pipeline=1',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${runDetailToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(capReport),
+        }
+      );
+      expect(ingestRes.status).toBe(201);
+      const ingestBody = await ingestRes.json();
+      const capRunId = ingestBody.testRun.id;
+
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${capRunId}?status=all`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.truncated).toBe(true);
+
+      const names = body.results.map((r: { testName: string }) => r.testName);
+      expect(names).toContain(failingSpecNames[0]);
+      expect(names).toContain(failingSpecNames[1]);
+
+      const firstPassedIndex = body.results.findIndex((r: { status: string }) => r.status === 'passed');
+      expect(names.indexOf(failingSpecNames[0])).toBeLessThan(firstPassedIndex);
+      expect(names.indexOf(failingSpecNames[1])).toBeLessThan(firstPassedIndex);
     });
 
     it('returns 404 when the runId belongs to a different project', async () => {

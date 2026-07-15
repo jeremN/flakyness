@@ -22,7 +22,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "fast-xml-parser": "^5.10.0",
-    "hono": "^4.12.29",
+    "hono": "^4.12.30",
     "hono-rate-limiter": "^0.5.3",
     "postgres": "^3.4.9",
     "prom-client": "^15.1.3",

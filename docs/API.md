@@ -245,6 +245,8 @@ within a status, alphabetically by `testName`. Capped at 2000 rows —
 the default scope will essentially never hit this, but `?status=all` on a
 large suite could otherwise return an unbounded payload; `truncated: true`
 signals the cap was hit (same semantics as the quarantine endpoint's flag).
+The ordering is applied before the cap, so a truncated response drops
+`passed` rows first and never hides a `failed` or `flaky` result.
 
 **Response:**
 ```json

@@ -3,8 +3,8 @@
 > **Purpose:** This document helps AI agents (and developers) quickly understand the Flackyness codebase to improve, fix, or add features effectively.
 
 **Last Updated:** July 13, 2026  
-**Current Status:** Batches 1–2 of the improve-skill backlog complete (19 plans landed, PRs #36–#56); full stack updated to latest (pnpm 11, TS 6, Vite 8, Svelte 5.56, zod 4, Drizzle 0.45, Hono 4.12) — see `plans/README.md` for the authoritative plan-by-plan status  
-**Grade:** A- (92/100)
+**Current Status:** Batches 1–5 of the improve-skill backlog complete (27 plans landed, PRs #36–#70); full stack updated to latest (pnpm 11, TS 7 for `apps/api` / TS 6 for `apps/dashboard`, Vite 8, Svelte 5.56, zod 4, Drizzle 0.45, Hono 4.12) — see `plans/README.md` for the authoritative plan-by-plan status  
+**Grade:** A- (92/100) — unverified against current code by this refresh; carried over from an earlier pass. Treat as informal, not a citation.
 
 ---
 
@@ -13,10 +13,12 @@
 **Flackyness** is a self-hosted flaky test tracking system for CI/CD pipelines.
 
 ### What It Does
-1. **Collects** Playwright JSON test reports from GitLab CI
+1. **Collects** Playwright JSON or JUnit XML test reports from CI — GitLab CI
+   (`.gitlab-ci.yml.example`) or GitHub Actions (the first-party `action.yml`
+   at the repo root, see `docs/GITHUB_ACTION.md`)
 2. **Detects** flaky tests by analyzing historical results
 3. **Visualizes** flakiness metrics in a SvelteKit dashboard
-4. **Tracks** test stability over time with ECharts
+4. **Tracks** test stability over time with ECharts, incl. a per-test trend
 
 ### Tech Stack
 - **Backend:** Hono (TypeScript) + Node.js 24
@@ -30,8 +32,8 @@
   - Consequence: a fresh-published "latest" can be temporarily un-installable; pin one release back until it ages out. That's why `@sveltejs/kit` may trail the absolute latest.
 - **TypeScript is split across the workspace**: `apps/api` is on **TS 7**; `apps/dashboard` stays on **TS 6** because `svelte-check` 4.x crashes under TS 7 — it reads `ts.default.sys.useCaseSensitiveFileNames`, a CommonJS shape the native TS 7 rewrite removed (upstream bug, not fixable here). `.github/dependabot.yml` has a dashboard-only entry that ignores TypeScript majors; lift it once svelte-check supports TS 7.
 - **Dashboard CSS**: Tailwind v4 goes through the `@tailwindcss/vite` plugin (NOT a `postcss.config.js`). No `tailwind.config.js` file exists (it was dead — never loaded, no `@config` directive — removed in Plan 009).
-- **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI runs it via `oxc-project/oxlint-action`.
-- **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → build → docker. Plus `docker-publish.yml`.
+- **Linting: oxlint** (`pnpm lint` → `oxlint --deny-warnings apps/`), NOT ESLint. `.oxlintrc.json` disables `no-unassigned-vars` (false-positive on Svelte `bind:this`). CI invokes `pnpm lint` directly (not the `oxc-project/oxlint-action`, which was dropped early on: its changed-files mode exits 1 with "No files found to lint" on config-only PRs like Dependabot bumps).
+- **CI**: `.github/workflows/ci.yml` runs lint → typecheck (API `tsc` + dashboard `svelte-check`) → test (real Postgres 16 service) → **e2e** (Playwright against a real Postgres + the built dashboard, plus a non-blocking dogfood step — see §11) → build → docker (`docker`'s `needs:` is `[lint, typecheck, test, build]`; it does not gate on `e2e`). Plus `docker-publish.yml` (tag-triggered image publish). Branch protection on `main` currently requires only `Lint`, `Type Check`, `Tests`, `Build`, `Docker Build` — **`E2E` is not (yet) a required check.**
 
 ---
 
@@ -63,11 +65,13 @@ flackyness/
 │   │   │       ├── auth.ts          # Bearer token auth
 │   │   │       ├── logger.ts        # Structured logging
 │   │   │       └── rate-limit.ts    # Rate limiting
-│   │   ├── drizzle/                 # Database migrations (0000–0005)
+│   │   ├── drizzle/                 # Database migrations (0000–0006)
 │   │   ├── fixtures/                # Test fixtures
 │   │   └── Dockerfile
 │   │
 │   └── dashboard/                    # SvelteKit frontend (Port 5173/3000)
+│       ├── e2e/                     # Playwright E2E specs + global-setup/seed (see §11)
+│       ├── playwright.config.ts     # E2E config: retries: 0, builds + serves the real prod artifact
 │       ├── src/
 │       │   ├── routes/              # SvelteKit pages
 │       │   │   ├── +layout.svelte   # ⭐ Main layout + sidebar
@@ -80,14 +84,18 @@ flackyness/
 │       │       ├── api.ts           # ⭐ API client
 │       │       └── components/      # Reusable components
 │       │           ├── Chart.svelte
-│       │           └── ErrorState.svelte
+│       │           ├── ErrorState.svelte
+│       │           └── chart-registration.test.ts # static guard, see AGENTS.md conventions
 │       └── Dockerfile
 │
 ├── docs/
 │   ├── API.md                       # API documentation
-│   └── GETTING_STARTED.md           # New-user setup + CI integration guide
+│   ├── GETTING_STARTED.md           # New-user setup + CI integration guide
+│   └── GITHUB_ACTION.md             # First-party GitHub Action usage (see §10)
+├── action.yml                        # ⭐ GitHub Action: upload report + comment on PR (see §10)
+├── .github/action-scripts/          # comment.sh + partition.jq, used by action.yml
 ├── IMPLEMENTATION_PLAN.md           # ⭐ Full implementation roadmap
-├── docker-compose.yml               # Production deployment
+├── docker-compose.yml               # Production deployment (+ docker-compose.override.yml for local dev)
 └── .env.example                     # Environment variables template
 ```
 
@@ -100,15 +108,16 @@ flackyness/
 ### 1. Data Flow
 
 ```
-GitLab CI → Playwright → JSON Report
+CI (GitLab CI / GitHub Actions / any uploader) → Playwright JSON or JUnit XML report
                             ↓
                     POST /api/v1/reports
                             ↓
-                    Parse with playwright.ts
+     Parse — format detected from body content, not Content-Type:
+     '<'-prefixed → parsers/junit.ts, else → parsers/playwright.ts
                             ↓
             Store in test_runs + test_results
                             ↓
-        Trigger flakiness detection (async)
+        Trigger flakiness detection (async, un-awaited — see §3 sharp edge)
                             ↓
             Update flaky_tests table
                             ↓
@@ -121,12 +130,12 @@ GitLab CI → Playwright → JSON Report
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| `projects` | Track projects | `id`, `name`, `token_hash`, `flake_threshold`, `window_days`, `min_runs` (nullable per-project overrides), `webhook_url` |
+| `projects` | Track projects | `id`, `name`, `token_hash`, `flake_threshold`, `window_days`, `min_runs` (nullable per-project overrides), `webhook_url`, `retention_days` (nullable; NULL = keep forever, see §8) |
 | `test_runs` | Pipeline executions | `project_id`, `branch`, `commit_sha` |
 | `test_results` | Individual test outcomes | `test_name`, `status`, `duration_ms`, `tags`, `annotations` (jsonb, Playwright metadata) |
 | `flaky_tests` | Computed flaky tests | `flake_rate`, `status` (`active` / `resolved` / `ignored`), `last_seen` |
 
-Migrations: `apps/api/drizzle/` holds `0000`–`0005`.
+Migrations: `apps/api/drizzle/` holds `0000`–`0006` (`0006` adds `projects.retention_days`).
 
 **Relationships:**
 ```
@@ -155,6 +164,22 @@ non-NULL overrides on top of `DEFAULT_CONFIG`.
 - After each report ingestion (async, non-blocking)
 - Manually via analysis endpoint
 
+> **Sharp edge — read this before writing a test or script against ingest:**
+> `POST /api/v1/reports` (`routes/reports.ts`) returns `201` *before*
+> `updateFlakyTests()` finishes — it is called **un-awaited**, by design, so a
+> CI uploader never blocks on recomputation. `updateFlakyTests` also sweeps
+> *every existing* `flaky_tests` row for the project, not just names in the
+> report just ingested, so it can flip an `active` row to `resolved` if that
+> row has no backing `test_results` (e.g. a row inserted directly for a test,
+> or one whose runs have aged out of the window). Any consumer — test,
+> script, dashboard load, or E2E suite — that reads `flaky_tests` immediately
+> after an ingest is racing this background job. It has already caused a
+> flaky test in this repo's own API suite (plan 027, `admin.test.ts`, fixed
+> with a bounded poll — never a fixed `sleep`). Plan 026's E2E global setup
+> (`apps/dashboard/e2e/global-setup.ts`) polls for the same reason. If you
+> need to observe post-ingest flakiness state, poll `flaky_tests` for the
+> expected row rather than reading it immediately.
+
 ### 4. Muting Flaky Tests
 
 `flaky_tests.status` is `active`, `resolved`, or `ignored` (muted).
@@ -177,11 +202,95 @@ failing the ingest request.
 
 `GET /metrics` (`apps/api/src/metrics.ts`, mounted in `index.ts`) exposes
 `flackyness_reports_ingested_total`, `flackyness_report_parse_failures_total`,
-`flackyness_flaky_tests_active`, plus default Node process metrics. Off by
-default: the route 404s unless `METRICS_TOKEN` is set; once set, it requires
-a matching Bearer token (401 otherwise), checked with the same
-constant-time comparison as admin auth. Only `flakyTestsActive` is labeled
-by project — the counters stay unlabeled to keep cardinality flat.
+`flackyness_flaky_tests_active`, `flackyness_test_runs_total`, plus default
+Node process metrics. Off by default: the route 404s unless `METRICS_TOKEN`
+is set; once set, it requires a matching Bearer token (401 otherwise),
+checked with the same constant-time comparison as admin auth.
+`reportsIngestedTotal`, `flakyTestsActive`, and `testRunsTotal` are all
+labeled by project; only `reportParseFailuresTotal` is deliberately
+unlabeled, to keep cardinality flat on failures that can occur before a
+project is resolved.
+
+### 7. Quarantine List for CI
+
+`GET /api/v1/projects/:id/quarantine` (`routes/projects.ts`) is a
+machine-readable list for CI to consume, splitting a project's flaky-test
+rows into two sets that must never be conflated:
+- `muted` (`status: 'ignored'`) — an operator explicitly muted it. Safe to skip.
+- `flaky` (`status: 'active'`) — auto-detected. Advisory only: retry or
+  annotate, never auto-skip.
+
+`grepInvert` is a ready-to-use Playwright `--grep-invert` pattern built from
+`muted` **only** — auto-skipping a machine-detected test without human
+sign-off would silently hide a real regression. It is `""` (not `null`, not
+a match-everything regex) when there are no muted tests, so a CI job piping
+it into `--grep-invert` runs the full suite rather than zero tests.
+`?format=playwright` returns the raw pattern as `text/plain` instead of the
+JSON envelope. Capped at 1000 rows (`truncated: true` signals the cap was
+hit) — see plan 020.
+
+### 8. Per-Project Data Retention + Admin Prune
+
+`projects.retention_days` (migration `0006`, nullable — NULL means "keep
+forever") configures how long `test_runs` (and, via FK cascade,
+`test_results`) are kept. `POST /api/v1/admin/projects/:id/prune`
+(`routes/admin.ts`) deletes rows older than the cutoff, **dry-run by
+default** — it reports the counts it would delete and deletes nothing unless
+called with `?confirm=true`. `retention_days` must be `>=` the project's
+resolved `window_days`, checked at both config-write time and prune time, so
+a prune can never delete history the flakiness window still depends on.
+`flaky_tests` is never touched by this route — it has no FK to `test_runs`
+and is the product's memory of past flakiness, so it survives a prune
+(including `ignored` mutes) automatically. See plan 021.
+
+### 9. Per-Test Flake Trend
+
+`GET /api/v1/tests/:testName/trend` (`routes/tests.ts`) returns a
+zero-filled daily bucket series over `[now - days, now]`, derived on demand
+from `test_results` — **no snapshot table, no migration** (recon during plan
+025 found `test_results.created_at` already sufficient). A day with zero
+qualifying runs reports `flakeRate: null`, **never `0`** — "the test didn't
+run" and "the test ran and never flaked" are different facts, and
+collapsing them would draw a reassuring flat line through a gap in the data.
+Also returns a crude `direction` (`improving` / `worsening` / `stable` /
+`insufficient-data`) comparing the mean flake rate of the first vs. second
+half of the window, with a dead-band to avoid calling noise a trend.
+
+### 10. GitHub Action
+
+`action.yml` (repo root) + `.github/action-scripts/comment.sh` +
+`partition.jq`, documented in `docs/GITHUB_ACTION.md` (plan 024). Uploads a
+Playwright or JUnit report, fetches the quarantine list, and comments on the
+PR partitioning this run's failures into known-flaky (muted / auto-detected)
+vs. unknown. **It reports; it never fails the build** — the only exception
+is a missing required input (`api-url` / `token` / `project-id`), which is a
+config bug, not a Flackyness outage. Every other failure mode (upload fails,
+quarantine lookup fails, report missing/unparsable, PR comment API fails)
+prints a `::warning::` and exits 0. Uses `github.event.pull_request.head.sha`
+(not the ephemeral `pull_request` merge-commit `github.sha`) so the
+persisted `test_runs.commit_sha` can actually be traced back to a real
+commit.
+
+### 11. Playwright E2E Suite + Dogfooding
+
+`apps/dashboard/e2e/` holds 5 specs (`overview`, `runs`, `flaky`, `analysis`,
+`chart`) plus `global-setup.ts` (seeds one deterministic project + runs via
+the real API, polling for the flaky reconcile — see the sharp edge in §3)
+and `seed.ts`. `playwright.config.ts`: **`retries: 0`** (non-negotiable —
+this is a flaky-test tracker; retrying here would hide the exact class of
+bug the product exists to surface), Chromium only, and it builds + serves
+the **real production artifact** (`pnpm run build && node build`), not
+`vite dev`/`vite preview` — dev-mode SSR differs from what production
+actually runs (the gap that let the plan-008 SSR crash slip through). CI's
+`e2e` job (`.github/workflows/ci.yml`) runs the suite against a real
+Postgres service, then — as a non-blocking `continue-on-error` step —
+dogfoods the suite's own `report.json` back through `POST /api/v1/reports`
+using a token freshly minted via `rotate-token`, confirming the ingest path
+works end-to-end on the project's own CI. This is informational only: `e2e`
+is not yet a required branch-protection check (see the Toolchain section).
+The chart spec deliberately does **not** guard the ECharts-registration bug
+(plan 008) — it can't; see `chart-registration.test.ts` and the AGENTS.md
+convention instead.
 
 ---
 
@@ -195,9 +304,14 @@ by project — the counters stay unlabeled to keep cardinality flat.
 #    anything, so it fails outright if they're unset)
 cp .env.example .env
 
-# 1. Start PostgreSQL — scope to the `postgres` service. A bare
-#    `docker compose up -d` starts EVERY service, and the hard-coded
-#    container names collide with any other checkout on this machine.
+# 1. Start PostgreSQL — scope to the `postgres` service explicitly.
+#    `docker-compose.override.yml` already gates `api`/`dashboard` behind a
+#    `production` compose profile (so even a bare `docker compose up -d`
+#    only starts `postgres` too), but scope it anyway: container names
+#    (`flackyness-db`/`-api`/`-dashboard`) are hardcoded, so the moment that
+#    profile IS activated (`--profile production`, e.g. to test the prod
+#    compose path) an unscoped command collides with any other checkout on
+#    this machine.
 docker compose up -d postgres
 
 # 2. Run migrations
@@ -269,7 +383,8 @@ docker compose logs -f dashboard
 | Endpoint | Limit | Key |
 |----------|-------|-----|
 | `POST /api/v1/reports` | 60/min | Project ID |
-| Read APIs | 100/min | IP Address |
+| Read APIs (`/projects/*`, `/tests/*`) | 100/min | IP Address |
+| Admin APIs (`/admin/*`, incl. prune) | 5/min | IP Address |
 
 **Implementation:** `apps/api/src/middleware/rate-limit.ts`
 
@@ -445,7 +560,7 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 ### Medium Priority
 - ✅ ~~Admin API endpoints (create/rotate tokens)~~ (Complete — `routes/admin.ts`)
 - ✅ ~~Prometheus metrics endpoint~~ (Complete — `apps/api/src/metrics.ts`, `GET /metrics`, gated by `METRICS_TOKEN`; plan 018, PR #56)
-- ⏳ E2E tests (Playwright) — no `playwright.config` or spec files in the repo yet
+- ✅ ~~E2E tests (Playwright)~~ (Complete — `apps/dashboard/playwright.config.ts` + 5 specs under `apps/dashboard/e2e/`, `retries: 0`, dedicated `e2e` CI job that dogfoods its own report back into the API; plan 026, PR #69. Not yet a required branch-protection check. See §11.)
 
 ### Code review findings — status (June 4, 2026)
 Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-token `crypto.timingSafeEqual`, stream-aware body limit (`hono/body-limit`), graceful shutdown, FK `onDelete: cascade`, oxlint + CI.
@@ -468,7 +583,7 @@ Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-to
 - `main` is **branch-protected**: PRs + green CI (Lint, Type Check, Tests, Build, Docker Build) required to merge. `enforce_admins` is off, so the owner can bypass in emergencies — flip it on for strict enforcement.
 - Rate limiting (`hono-rate-limiter`) uses an **in-memory** store, so limits are per-instance. Move to a shared (Redis) store before running more than one API replica.
 - Read APIs (`/projects/*`, `/tests/*`) are unauthenticated by design (concept stage). For multi-tenant/SaaS: add an env-gated read token + per-project token scoping.
-- The Dependabot lockfile-sync workflow's commit/push path hasn't run live yet (needs an eligible npm PR that changes deps past cooldown) — sanity-check the first one.
+- The Dependabot lockfile-sync workflow (`dependabot-lockfile.yml`) has run live repeatedly since 2026-06-04 (27+ successful runs as of this writing, 1 failure) and has produced real `chore(deps): sync pnpm-lock.yaml` commits — the earlier "hasn't run live yet" note was stale even at the time it was written.
 
 ### Low Priority
 - ⏳ Table partitioning (for >1M test results)
@@ -556,8 +671,14 @@ export const load: PageServerLoad = async ({ parent }) => {
 - All tested with Vitest
 
 ### Integration Tests
-- API endpoints: `apps/api/src/routes/api.test.ts`
-- Skipped when DATABASE_URL not set (CI-friendly)
+- API route suites: `apps/api/src/routes/{api,admin,metrics,projects,reports,tests}.test.ts`
+- Skipped when `DATABASE_URL` is not set (CI-friendly); dashboard's own
+  Vitest suite has no such dependency and always runs.
+
+### End-to-End Tests
+- `apps/dashboard/e2e/` — 5 Playwright specs against a real Postgres + the
+  built dashboard. `pnpm --filter dashboard test:e2e`. See §11 and
+  AGENTS.md's command table.
 
 ### Manual Testing
 ```bash
@@ -576,8 +697,10 @@ open http://localhost:5173
 |----------|---------|
 | [IMPLEMENTATION_PLAN.md](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/IMPLEMENTATION_PLAN.md) | Full 6-phase roadmap |
 | [docs/API.md](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/docs/API.md) | API endpoint reference |
+| [docs/GETTING_STARTED.md](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/docs/GETTING_STARTED.md) | New-user setup + CI integration guide |
+| [docs/GITHUB_ACTION.md](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/docs/GITHUB_ACTION.md) | First-party GitHub Action (`action.yml`) usage |
 | [README.md](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/README.md) | User-facing setup guide |
-| [.gitlab-ci.yml.example](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/.gitlab-ci.yml.example) | CI integration example |
+| [.gitlab-ci.yml.example](file:///Users/jeremienehlil/Documents/Code/Personal/flackyness/.gitlab-ci.yml.example) | GitLab CI integration example |
 
 ### Key Brain Artifacts
 Historical review artifacts lived outside the repo and are no longer available.
@@ -599,7 +722,7 @@ pnpm db:studio              # Open DB GUI
 pnpm db:seed                # Seed sample data
 
 # Docker (needs DB_PASSWORD + ADMIN_TOKEN set, or compose won't even parse)
-docker compose up -d postgres  # Start PostgreSQL only (bare `up -d` starts EVERYTHING)
+docker compose up -d postgres  # Explicit scope; api/dashboard need --profile production anyway (docker-compose.override.yml)
 docker compose build        # Build all images
 docker compose --profile production up -d  # Full stack
 

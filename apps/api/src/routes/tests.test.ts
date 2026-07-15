@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { eq } from 'drizzle-orm';
 import { db, flakyTests, testRuns, testResults } from '../db';
 import { updateFlakyTests } from '../services/flakiness';
 import { buildTrend, type TrendRow } from './tests';
@@ -23,6 +24,65 @@ const sampleReport = JSON.parse(
 // (suite title path joined with ' › '; file-level suite titles are skipped).
 const KNOWN_TEST_NAME = 'Login flow › should login with valid credentials';
 
+/** Poll `predicate` until it resolves true, or give up after `timeoutMs`. */
+async function waitFor(
+  predicate: () => Promise<boolean>,
+  { timeoutMs = 5000, intervalMs = 100 }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
+// A test name that can never appear in fixtures/sample-report.json, so the
+// only thing that can ever touch this row is the background reconcile
+// triggered by the ingest below.
+const RECONCILE_SENTINEL_NAME = '__reports-reconcile-sentinel__';
+
+/**
+ * POST /api/v1/reports (reports.ts) fires updateFlakyTests() in the
+ * background, un-awaited — deliberate, so ingest returns 201 without
+ * blocking on recomputation. That reconcile sweeps *every* existing
+ * flaky_tests row for the project and resolves any 'active' one the fresh
+ * analysis doesn't call flaky (flakiness.ts).
+ *
+ * None of fixtures/sample-report.json's tests reach the default minRuns
+ * (3) in a single ingest, so this particular reconcile pass never has a
+ * test to *insert* into flaky_tests for this project — its only possible
+ * write here is to *resolve* a pre-existing 'active' row with no backing
+ * results. We plant exactly that kind of row (below, before triggering the
+ * ingest) and poll until the reconcile has flipped it to 'resolved' — a
+ * positive, observable signal that the background pass has fully landed.
+ *
+ * Without this wait, the nested `describe('PATCH /api/v1/tests/flaky/:id')`
+ * block's own beforeAll — which fabricates a similarly bare flaky_tests row
+ * for this same project — would be racing this same background pass: if it
+ * lands *after* that fabrication instead of before, it resolves that row
+ * out from under the tests. It hasn't been observed failing because the
+ * intervening `describe('GET .../history')` block's real HTTP round-trips
+ * happen to give the reconcile time to land first — luck, not a guarantee.
+ * See admin.test.ts's waitForFlakyReconcile() for the sibling fix (plan 027).
+ */
+async function waitForIngestReconcile(projectId: string): Promise<void> {
+  const settled = await waitFor(async () => {
+    const rows = await db.query.flakyTests.findMany({
+      where: eq(flakyTests.projectId, projectId),
+    });
+    const sentinel = rows.find((row) => row.testName === RECONCILE_SENTINEL_NAME);
+    return sentinel?.status === 'resolved';
+  });
+  if (!settled) {
+    throw new Error(
+      'background updateFlakyTests never resolved the reconcile sentinel — reports.ts fires it ' +
+        'un-awaited after POST /api/v1/reports; this suite must wait for it to land before ' +
+        'fabricating any other flaky_tests row for the same project'
+    );
+  }
+}
+
 beforeAll(async () => {
   if (hasDatabase && hasAdminToken) {
     const module = await import('../index');
@@ -43,6 +103,19 @@ beforeAll(async () => {
     testProjectId = body.project.id;
     testProjectToken = body.token;
 
+    // Plant the reconcile sentinel *before* triggering the ingest below, so
+    // the ingest's un-awaited background reconcile is guaranteed to observe
+    // it (see waitForIngestReconcile's comment for why this is necessary).
+    await db.insert(flakyTests).values({
+      projectId: testProjectId,
+      testName: RECONCILE_SENTINEL_NAME,
+      testFile: '__sentinel__.spec.ts',
+      status: 'active',
+      flakeCount: 0,
+      totalRuns: 0,
+      flakeRate: '0.0000',
+    });
+
     const uploadRes = await app.request('/api/v1/reports?commit=abc123', {
       method: 'POST',
       headers: {
@@ -52,6 +125,11 @@ beforeAll(async () => {
       body: JSON.stringify(sampleReport),
     });
     expect(uploadRes.status).toBe(201);
+
+    // Wait for the ingest's background reconcile to fully land before any
+    // other beforeAll in this file fabricates a flaky_tests row for the
+    // same project — see waitForIngestReconcile's comment.
+    await waitForIngestReconcile(testProjectId);
   }
 });
 

@@ -168,6 +168,21 @@ export interface ParsedTestResult {
   errorMessage: string | null;
   tags: string[];
   annotations: { type: string; description?: string }[];
+  failureDetail: FailureDetail | null;
+}
+
+/**
+ * Richer per-run failure detail, alongside (not replacing) `errorMessage`.
+ *
+ * Attachments are METADATA ONLY — `{ name, contentType, path }`. The base64
+ * `body` field (screenshots/videos/traces) is never copied through; that is
+ * a hard guarantee, not a size-tuning choice — see plan 037.
+ */
+export interface FailureDetail {
+  errors: Array<{ message?: string; stack?: string; snippet?: string; value?: string }>;
+  stdout?: string;
+  stderr?: string;
+  attachments?: Array<{ name: string; contentType: string; path?: string }>;
 }
 
 export interface ParsedReport {
@@ -318,6 +333,8 @@ const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 
 const MAX_TAGS = 20;
 const MAX_ANNOTATIONS = 20;
+const MAX_ERRORS = 10;
+const MAX_ATTACHMENTS = 25;
 
 /**
  * Merge case-level (spec) and entry-level (execution/attempt) annotations,
@@ -336,6 +353,87 @@ function mergeAnnotations(
     merged.push(annotation);
   }
   return merged;
+}
+
+/**
+ * Flatten a stdout/stderr chunk list into a single string. Real reporter
+ * output nests chunks as either a plain string or `{ text: string }`
+ * (Buffer-backed) objects; unrecognized shapes contribute nothing rather
+ * than throwing.
+ */
+function flattenChunks(chunks: unknown[]): string {
+  return chunks
+    .map((chunk) => (typeof chunk === 'string' ? chunk : ((chunk as { text?: string } | null | undefined)?.text ?? '')))
+    .join('');
+}
+
+/**
+ * Extract rich failure detail (stack/snippet/errors[]/stdout/stderr/
+ * attachment metadata) from a spec's results, across every attempt/retry.
+ * Returns `null` when there is nothing to report — a passing result with no
+ * errors, output, or attachments.
+ *
+ * Attachments are METADATA ONLY: `{ name, contentType, path }`. The base64
+ * `body` field (screenshots/videos/traces) is deliberately never copied
+ * through — a hard guarantee, not a size-tuning choice. See plan 037.
+ */
+function extractFailureDetail(results: TestResult[]): FailureDetail | null {
+  // Errors: every result's single `error`, then its `errors[]`, in order
+  // across all results — deduped by `message + stack`, capped to MAX_ERRORS.
+  const candidateErrors: NonNullable<TestResult['error']>[] = [];
+  for (const result of results) {
+    if (result.error) candidateErrors.push(result.error);
+    if (result.errors) candidateErrors.push(...result.errors);
+  }
+
+  const seenErrors = new Set<string>();
+  const errors: FailureDetail['errors'] = [];
+  for (const e of candidateErrors) {
+    const key = `${e.message ?? ''} ${e.stack ?? ''}`;
+    if (seenErrors.has(key)) continue;
+    seenErrors.add(key);
+
+    const entry: FailureDetail['errors'][number] = {};
+    if (e.message !== undefined) entry.message = clamp(e.message, 10_000);
+    if (e.stack !== undefined) entry.stack = clamp(e.stack, 10_000);
+    if (e.snippet !== undefined) entry.snippet = clamp(e.snippet, 10_000);
+    if (e.value !== undefined) entry.value = clamp(e.value, 10_000);
+    errors.push(entry);
+
+    if (errors.length >= MAX_ERRORS) break;
+  }
+
+  // stdout/stderr: flattened across all results, capped to 10k each.
+  const stdoutStr = clamp(flattenChunks(results.flatMap((r) => r.stdout ?? [])), 10_000);
+  const stderrStr = clamp(flattenChunks(results.flatMap((r) => r.stderr ?? [])), 10_000);
+
+  // Attachments: metadata only, across all results, capped to MAX_ATTACHMENTS.
+  const rawAttachments = results.flatMap((r) => r.attachments ?? []);
+  const attachments: NonNullable<FailureDetail['attachments']> = [];
+  for (const raw of rawAttachments) {
+    if (attachments.length >= MAX_ATTACHMENTS) break;
+    if (!raw || typeof raw !== 'object') continue;
+    const a = raw as Record<string, unknown>;
+    if (typeof a.name !== 'string' || !a.name) continue;
+
+    const entry: NonNullable<FailureDetail['attachments']>[number] = {
+      name: a.name,
+      contentType: typeof a.contentType === 'string' ? a.contentType : '',
+    };
+    if (typeof a.path === 'string') entry.path = a.path;
+    attachments.push(entry);
+  }
+
+  if (errors.length === 0 && !stdoutStr && !stderrStr && attachments.length === 0) {
+    return null;
+  }
+
+  return {
+    errors,
+    ...(stdoutStr ? { stdout: stdoutStr } : {}),
+    ...(stderrStr ? { stderr: stderrStr } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+  };
 }
 
 /**
@@ -405,6 +503,7 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
       errorMessage: errorMessage ? clamp(errorMessage, 10_000) : null,
       tags,
       annotations,
+      failureDetail: extractFailureDetail(results),
     });
   }
 

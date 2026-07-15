@@ -272,6 +272,104 @@ describeWithDb('Reports API Integration Tests', () => {
     });
   });
 
+  describe('Failure detail persistence', () => {
+    it('round-trips failureDetail through jsonb intact and stores NULL for a passing result', async () => {
+      const reportWithFailureDetail = {
+        config: {},
+        suites: [
+          {
+            title: 'failure-detail.spec.ts',
+            file: 'failure-detail.spec.ts',
+            specs: [
+              {
+                title: 'fails with rich detail',
+                ok: false,
+                tags: [],
+                file: 'failure-detail.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        error: {
+                          message: 'expect(received).toBe(expected)',
+                          stack: 'Error: expect(received).toBe(expected)\n    at failure-detail.spec.ts:5:1',
+                          snippet: '> 5 | expect(a).toBe(b)',
+                        },
+                        stdout: ['stdout line\n'],
+                        stderr: ['stderr line\n'],
+                        attachments: [
+                          { name: 'screenshot', contentType: 'image/png', path: 'test-results/failure-detail/screenshot.png' },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                title: 'passes with no detail',
+                ok: true,
+                tags: [],
+                file: 'failure-detail.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 20, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const res = await app.request('/api/v1/reports?branch=main&commit=faildetail123', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testProjectToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(reportWithFailureDetail),
+      });
+      expect(res.status).toBe(201);
+      const runId = (await res.json()).testRun.id;
+
+      const rows = await db
+        .select({
+          testName: testResults.testName,
+          failureDetail: testResults.failureDetail,
+        })
+        .from(testResults)
+        .where(eq(testResults.testRunId, runId));
+
+      const failed = rows.find((r) => r.testName.includes('fails with rich detail'));
+      expect(failed?.failureDetail).toEqual({
+        errors: [
+          {
+            message: 'expect(received).toBe(expected)',
+            stack: 'Error: expect(received).toBe(expected)\n    at failure-detail.spec.ts:5:1',
+            snippet: '> 5 | expect(a).toBe(b)',
+          },
+        ],
+        stdout: 'stdout line\n',
+        stderr: 'stderr line\n',
+        attachments: [
+          { name: 'screenshot', contentType: 'image/png', path: 'test-results/failure-detail/screenshot.png' },
+        ],
+      });
+
+      const passed = rows.find((r) => r.testName.includes('passes with no detail'));
+      expect(passed?.failureDetail).toBeNull();
+    });
+  });
+
   describe('JUnit XML ingestion', () => {
     it('should accept a JUnit XML report and return correct summary counts', async () => {
       const res = await app.request('/api/v1/reports?branch=main&commit=junit001', {

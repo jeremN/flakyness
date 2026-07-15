@@ -334,6 +334,7 @@ projectsRouter.get('/:id/runs/:runId', async (c) => {
       errorMessage: testResults.errorMessage,
       tags: testResults.tags,
       annotations: testResults.annotations,
+      failureDetail: testResults.failureDetail,
     })
     .from(testResults)
     .where(and(eq(testResults.testRunId, runId), statusFilter))

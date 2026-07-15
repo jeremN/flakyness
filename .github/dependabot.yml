@@ -33,6 +33,15 @@ updates:
     ignore:
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript majors are ignored HERE too, not just in the apps/dashboard
+      # entry below. This entry's "/" root fans out across the whole pnpm
+      # workspace — including apps/dashboard — so without this rule, "/" re-opens
+      # the dashboard's TS 6->7 bump that the dashboard entry's ignore is meant
+      # to block (exactly what happened in PR #86). apps/api's TS major is
+      # adopted manually anyway (see plan 023 / AGENTS.md). See the apps/dashboard
+      # entry below for the full TS 7.1 / svelte-check rationale and recheck trigger.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     # Batch low-risk updates into a few PRs instead of one-per-package.
     groups:
       dev-dependencies:

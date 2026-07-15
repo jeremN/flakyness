@@ -69,6 +69,12 @@ services:
       PUBLIC_API_URL: http://localhost:8080
       PORT: 3000
       HOST: 0.0.0.0
+      # Optional — gates every dashboard route behind HTTP Basic Auth
+      # (apps/dashboard/src/hooks.server.ts). Unset by default here so a
+      # fresh `docker compose up` doesn't lock anyone out; set it in `.env`
+      # before exposing this dashboard beyond a trusted network. See
+      # docs/GETTING_STARTED.md.
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
     ports:
       - "3000:3000"
     healthcheck:

@@ -102,7 +102,7 @@ if [ "$DO_COMMENT" != "true" ]; then
 fi
 
 # --- 4. Extract this run's failures, partition, render ----------------------
-first_nonspace_char="$(grep -m1 -o '[^[:space:]]' "$REPORT_PATH" 2>/dev/null || true)"
+first_nonspace_char="$(grep -m1 -o '[^[:space:]]' "$REPORT_PATH" 2>/dev/null | head -n1 || true)"
 if [ "$first_nonspace_char" = "<" ]; then
   warn "'$REPORT_PATH' looks like JUnit XML, not Playwright JSON — skipping the PR comment (upload already completed)."
   exit 0

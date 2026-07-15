@@ -299,4 +299,47 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(body.threshold).toBe(0.1);
     });
   });
+
+  describe('GET /api/v1/projects/:id/trend', () => {
+    // testProjectId (from the top-level beforeAll) never has any testRuns
+    // rows inserted anywhere in this suite — the quarantine block seeds
+    // flakyTests directly, and nothing else touches testRuns. So every
+    // bucket in its trend is guaranteed to be a genuine no-run day.
+
+    it('falls back to the default 7-entry series when days is not a number ("abc")', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/trend?days=abc`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      // Not empty: a NaN that slipped through the clamp would produce a
+      // zero-length series (see plan 028 problem 2).
+      expect(body.days.length).toBe(7);
+      expect(body.rates.length).toBe(7);
+    });
+
+    it('clamps days=999 down to the 90-entry cap, not an unbounded series', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/trend?days=999`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.days.length).toBe(90);
+      expect(body.rates.length).toBe(90);
+    });
+
+    it('reports null — not 0 — for every day, since this project has zero runs', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/trend?days=7`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.rates.length).toBe(7);
+      for (const rate of body.rates) {
+        // Explicit === null, not a falsy/toBeNull()-only check on the whole
+        // array — the point is distinguishing "no data" (null) from
+        // "0% flake rate" (0), and those are both falsy-adjacent in loose
+        // comparisons. This assertion fails if the endpoint reverts to `0`.
+        expect(rate === null).toBe(true);
+        expect(rate).not.toBe(0);
+      }
+    });
+  });
 });

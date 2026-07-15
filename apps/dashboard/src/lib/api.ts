@@ -6,6 +6,7 @@ import type {
   FlakyTest,
   TestRun,
   TestHistory,
+  TestTrend,
   AnalysisResponse,
 } from '../app.d';
 
@@ -86,9 +87,20 @@ export async function getTestHistory(
 export async function getFlakeTrend(
   projectId: string,
   days: number = 7
-): Promise<{ days: string[]; rates: number[] }> {
-  return fetchJson<{ days: string[]; rates: number[] }>(
+): Promise<{ days: string[]; rates: (number | null)[] }> {
+  return fetchJson<{ days: string[]; rates: (number | null)[] }>(
     `/api/v1/projects/${projectId}/trend?days=${days}`
+  );
+}
+
+export async function getTestTrend(
+  testName: string,
+  projectId: string,
+  days: number = 30
+): Promise<TestTrend> {
+  const encodedName = encodeURIComponent(testName);
+  return fetchJson<TestTrend>(
+    `/api/v1/tests/${encodedName}/trend?project=${projectId}&days=${days}`
   );
 }
 

@@ -1,5 +1,10 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import Chart from '$lib/components/Chart.svelte';
+  import ErrorState from '$lib/components/ErrorState.svelte';
+  import { invalidateAll } from '$app/navigation';
+  import type { EChartsOption } from 'echarts';
+  import type { TrendDirection } from '../../../app.d';
 
   interface Props {
     data: PageData;
@@ -40,6 +45,86 @@
     { label: 'Skipped', value: data.testHistory.stats.skipped, color: 'gray' },
     { label: 'Avg Duration', value: formatDuration(data.testHistory.stats.avgDuration), color: 'blue' },
   ]);
+
+  // Rendered honestly, including 'insufficient-data' — it is not the same
+  // claim as 'stable' (see plans/028-honest-visible-trends.md design
+  // decision 4) and must never be disguised as one.
+  const DIRECTION_LABEL: Record<TrendDirection, string> = {
+    improving: '↓ Improving',
+    worsening: '↑ Worsening',
+    stable: '→ Stable',
+    'insufficient-data': 'Insufficient data',
+  };
+
+  const DIRECTION_BADGE_CLASS: Record<TrendDirection, string> = {
+    improving: 'badge-green',
+    worsening: 'badge-red',
+    stable: 'badge-gray',
+    'insufficient-data': 'badge-gray',
+  };
+
+  // A day with no runs (`flakeRate: null`) must render as a gap in the
+  // line, not a flat 0% — that flat line is exactly the lie plan 028 exists
+  // to remove. `connectNulls` is left at its default (false/unset) so
+  // ECharts breaks the line across the gap instead of bridging it.
+  const trendChartOptions: EChartsOption = $derived(data.testTrend ? {
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#fff',
+      borderColor: '#e5e7eb',
+      textStyle: { color: '#1f2937' },
+      formatter: (params: unknown) => {
+        const p = params as Array<{ name: string; value: number | null }>;
+        const value = p[0]?.value ?? null;
+        return `${p[0].name}<br/>Flake Rate: <b>${value === null ? 'no runs' : `${value}%`}</b>`;
+      },
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '3%',
+      top: '10%',
+      containLabel: true,
+    },
+    xAxis: {
+      type: 'category',
+      data: data.testTrend.trend.map((bucket) => bucket.date),
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#e5e7eb' } },
+      axisLabel: { color: '#6b7280' },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: {
+        formatter: '{value}%',
+        color: '#6b7280',
+      },
+      axisLine: { show: false },
+      splitLine: { lineStyle: { color: '#f3f4f6' } },
+      min: 0,
+    },
+    series: [
+      {
+        name: 'Flake Rate',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        lineStyle: {
+          color: '#f97316',
+          width: 3,
+        },
+        itemStyle: {
+          color: '#f97316',
+          borderColor: '#fff',
+          borderWidth: 2,
+        },
+        data: data.testTrend.trend.map((bucket) =>
+          bucket.flakeRate === null ? null : Math.round(bucket.flakeRate * 1000) / 10
+        ),
+      },
+    ],
+  } : {});
 </script>
 
 <svelte:head>
@@ -73,6 +158,26 @@
     </div>
   {/each}
 </div>
+
+<!-- Flake Rate Trend -->
+{#if data.testTrend}
+  <div class="card p-6 mb-8">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-sm font-semibold text-muted uppercase tracking-wider">
+        Flake Rate Trend ({data.testTrend.days} Days)
+      </h2>
+      <span class="badge {DIRECTION_BADGE_CLASS[data.testTrend.direction]}">
+        {DIRECTION_LABEL[data.testTrend.direction]}
+      </span>
+    </div>
+    <Chart options={trendChartOptions} height="240px" />
+  </div>
+{:else if data.trendFailed}
+  <div class="card p-6 mb-8">
+    <h2 class="text-sm font-semibold text-muted uppercase tracking-wider mb-4">Flake Rate Trend</h2>
+    <ErrorState message="Couldn't load the flake-rate trend." onRetry={() => invalidateAll()} />
+  </div>
+{/if}
 
 <!-- Flaky Info -->
 {#if data.testHistory.flakyInfo}

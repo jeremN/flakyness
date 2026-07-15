@@ -1,5 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getProjects, getFlakyTests, getProjectRuns, getTestHistory, getAnalysis } from './api';
+import {
+  getProjects,
+  getFlakyTests,
+  getProjectRuns,
+  getTestHistory,
+  getTestTrend,
+  getFlakeTrend,
+  getAnalysis,
+} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -120,5 +128,59 @@ describe('lib/api', () => {
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/analysis?days=14&threshold=0.05');
+  });
+
+  it('getFlakeTrend passes a null entry in `rates` straight through (no coercion to 0)', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(JSON.stringify({ days: ['Jul 12', 'Jul 13'], rates: [null, 1.2] }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await getFlakeTrend('p1', 7);
+
+    // Explicit === null: a fetcher that JSON.parse'd `null` into `0` (or a
+    // type cast that silently widened it) would pass a `toEqual` check with
+    // loose equality but fail this one.
+    expect(result.rates[0] === null).toBe(true);
+    expect(result.rates[1]).toBe(1.2);
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain('/projects/p1/trend?days=7');
+  });
+
+  it('getTestTrend encodes the test name and builds the URL with project and days', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(
+        JSON.stringify({
+          testName: 'loads 100% of items',
+          projectId: 'p1',
+          days: 30,
+          direction: 'stable',
+          trend: [],
+        }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getTestTrend('loads 100% of items', 'p1', 30);
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain('/tests/loads%20100%25%20of%20items/trend?project=p1&days=30');
+  });
+
+  it('getTestTrend defaults to a 30-day window', async () => {
+    const fetchMock = vi.fn(async (_url: string) =>
+      new Response(
+        JSON.stringify({ testName: 't', projectId: 'p1', days: 30, direction: 'stable', trend: [] }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getTestTrend('t', 'p1');
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string;
+    expect(calledUrl).toContain('&days=30');
   });
 });

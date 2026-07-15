@@ -294,11 +294,25 @@ Daily flake rate aggregation for the requested window.
 ```json
 {
   "days": ["Jul 4", "Jul 5", "Jul 6", "Jul 7", "Jul 8", "Jul 9", "Jul 10"],
-  "rates": [1.2, 0.0, 2.5, 1.8, 0.0, 3.1, 1.2]
+  "rates": [1.2, null, 2.5, 1.8, 0.0, 3.1, 1.2]
 }
 ```
 
 `rates` are flake percentages (0–100) per day, computed as `(flaky + failed) / total * 100`.
+
+**`rates[i]` is `null` — not `0` — for a day with zero runs.** "CI never ran
+that day" and "CI ran and nothing flaked" are different facts; collapsing
+them into `0` draws a confident flat line through a hole in the data (a
+weekend, an outage, a paused pipeline) — precisely the case where this
+endpoint actually knows nothing. A day with at least one run always reports
+a plain number, including a genuine `0.0`. This mirrors the identical
+`flakeRate: null` rule on [Get Per-Test Flake-Rate Trend](#get-per-test-flake-rate-trend);
+a consumer (chart, alert) must not treat `null` as "healthy" and should
+render it as a gap, not a zero.
+
+The `days` query parameter is clamped to `[1, 90]`; an unparseable value
+(e.g. `days=abc`) falls back to the default of `7` rather than producing an
+empty series.
 
 ---
 

@@ -29,8 +29,12 @@
       borderColor: '#e5e7eb',
       textStyle: { color: '#1f2937' },
       formatter: (params: unknown) => {
-        const p = params as Array<{ name: string; value: number }>;
-        return `${p[0].name}<br/>Flake Rate: <b>${p[0].value}%</b>`;
+        const p = params as Array<{ name: string; value: number | null }>;
+        // A gap day (`value: null` — no runs, not "0% flaky") must not
+        // render as "null%"; say so honestly instead. See
+        // plans/028-honest-visible-trends.md.
+        const value = p[0]?.value ?? null;
+        return `${p[0].name}<br/>Flake Rate: <b>${value === null ? 'no runs' : `${value}%`}</b>`;
       },
     },
     grid: {
@@ -64,6 +68,11 @@
         smooth: true,
         symbol: 'circle',
         symbolSize: 8,
+        // `connectNulls` is deliberately left at its default (false): a
+        // no-run day is `null` in `rates` (see apps/api/src/routes/projects.ts
+        // `/:id/trend`), and the line must break across it rather than
+        // bridge the gap — a connected line would re-tell the same "0%"
+        // lie this endpoint was fixed to stop telling.
         lineStyle: {
           color: '#f97316',
           width: 3,

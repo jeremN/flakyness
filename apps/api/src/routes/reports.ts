@@ -13,6 +13,14 @@ import { reportsIngestedTotal, reportParseFailuresTotal } from '../metrics';
 
 const BATCH_SIZE = 1000;
 
+// Bound for the `?wait=true` reconcile below. `updateFlakyTests` is DB-bound
+// and normally fast, but a pathologically slow DB must not hang the request
+// forever — past this many ms, the response's `reconcile` field reports a
+// timeout error instead of blocking. The reconcile itself keeps running in
+// the background regardless of which side of the race wins (same fate as
+// the default, un-awaited path).
+const RECONCILE_WAIT_TIMEOUT_MS = 10_000;
+
 const reports = new Hono<{
   Variables: {
     project: Project;
@@ -25,6 +33,30 @@ const reportQuerySchema = z.object({
   commit: z.string().min(1).max(40),
   pipeline: z.string().max(100).optional(),
 });
+
+/**
+ * Race `promise` against a timeout without cancelling `promise` itself — any
+ * other consumer already attached to it (the fire-and-forget webhook chain)
+ * keeps observing its eventual outcome regardless of which side wins here.
+ *
+ * Exported (only) so `reports.test.ts` can unit-test the bounded-wait
+ * semantics directly, without needing to fault-inject a real DB failure.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Reconcile timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 // Apply auth and rate limiting to all routes
 reports.use('*', projectAuth());
@@ -41,10 +73,18 @@ reports.use('*', reportRateLimit);
  *   - branch: Git branch name (default: "main")
  *   - commit: Git commit SHA (required)
  *   - pipeline: CI pipeline ID (optional)
+ *   - wait: "true" to await flakiness reconciliation before responding (see below)
  *
  * Body: Playwright JSON report, or a JUnit XML report
  *
- * Returns: Created test run with summary
+ * Returns: Created test run with summary. By default, flakiness
+ * reconciliation runs in the background and the response is sent before it
+ * completes — `flaky_tests` is NOT guaranteed consistent yet when the
+ * response arrives. Pass `?wait=true` to await it instead: the response is
+ * only sent after `flaky_tests` reflects this ingest, and the response body
+ * gains a `reconcile: { newlyFlaky, newlyResolved }` field reporting what
+ * changed (or `reconcile: { error }` if the reconcile failed/timed out —
+ * the ingest itself still succeeds and still returns 201).
  */
 reports.post(
   '/',
@@ -52,6 +92,10 @@ reports.post(
   async (c) => {
     const project = c.get('project');
     const { branch, commit, pipeline } = c.req.valid('query');
+    // Strict `=== 'true'` match, same idiom as the codebase's other boolean
+    // query params — anything else (absent, "1", "yes") takes the default,
+    // un-awaited path.
+    const wait = c.req.query('wait') === 'true';
 
     // Read the body once as text, then dispatch by content — not Content-Type,
     // since CI uploaders can send an inaccurate header. A body that (after
@@ -129,10 +173,19 @@ reports.post(
 
     reportsIngestedTotal.inc({ project: project.name });
 
-    // Trigger flakiness detection in background (don't await). If it surfaces
-    // a newly-flaky or newly-resolved test and the project has a webhook
-    // configured, deliver one best-effort notification for this ingest.
-    updateFlakyTests(project.id, resolveProjectConfig(project))
+    // Trigger flakiness detection exactly ONCE per ingest — this single
+    // promise is the source of truth for both the fire-and-forget webhook
+    // branch below and the optional `?wait=true` await further down. Do not
+    // call updateFlakyTests a second time for the waited path: that would
+    // double every ingest's DB work.
+    const reconcilePromise = updateFlakyTests(project.id, resolveProjectConfig(project));
+
+    // Deliver a best-effort webhook notification off the same result, in
+    // BOTH modes, always fire-and-forget: awaiting a network POST here (which
+    // can hang on a slow/unreachable receiver) would turn `?wait=true` into
+    // an unbounded-latency request. `wait=true` only waits for the reconcile
+    // itself (below), never for webhook delivery.
+    reconcilePromise
       .then(async ({ newlyFlaky, newlyResolved }) => {
         if (!project.webhookUrl || (newlyFlaky.length === 0 && newlyResolved.length === 0)) {
           return;
@@ -166,6 +219,25 @@ reports.post(
         });
       });
 
+    // `reconcile` is present in the response ONLY when `?wait=true` — the
+    // default (fire-and-forget) response shape below is otherwise unchanged.
+    let reconcile: { newlyFlaky: string[]; newlyResolved: string[] } | { error: string } | undefined;
+    if (wait) {
+      try {
+        const { newlyFlaky, newlyResolved } = await withTimeout(
+          reconcilePromise,
+          RECONCILE_WAIT_TIMEOUT_MS
+        );
+        reconcile = { newlyFlaky, newlyResolved };
+      } catch (err) {
+        // The ingest itself already committed successfully — a reconcile
+        // failure or timeout under `wait=true` is reported in the body, it
+        // never turns a successful upload into a 500.
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        reconcile = { error: message };
+      }
+    }
+
     return c.json({
       success: true,
       testRun: {
@@ -182,6 +254,7 @@ reports.post(
           skipped: parsed.skipped,
         },
       },
+      ...(reconcile !== undefined ? { reconcile } : {}),
     }, 201);
   }
 );

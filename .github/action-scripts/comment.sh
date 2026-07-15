@@ -52,7 +52,14 @@ fi
 # --- 1. Upload the report --------------------------------------------------
 enc() { jq -rn --arg v "$1" '$v | @uri'; }
 
-upload_url="${API_URL%/}/api/v1/reports?branch=$(enc "$BRANCH")&commit=$(enc "$COMMIT")"
+# `&wait=true`: this action fetches the quarantine list (step 2) immediately
+# after this upload — without it, `POST /reports` returns before flakiness
+# reconciliation finishes, so a test that crosses the flake threshold on
+# THIS run would still read back as "unknown" a moment later instead of
+# "auto-detected flaky" (see docs/API.md's `?wait=true` section, and plan
+# 032). The upload is already a single request per run, so the extra
+# reconcile latency here is a non-issue.
+upload_url="${API_URL%/}/api/v1/reports?branch=$(enc "$BRANCH")&commit=$(enc "$COMMIT")&wait=true"
 if [ -n "$PIPELINE" ]; then
   upload_url="${upload_url}&pipeline=$(enc "$PIPELINE")"
 fi

@@ -32,8 +32,14 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 - **TypeScript is split across the workspace**: `apps/api` is on **TS 7**;
   `apps/dashboard` is pinned to **TS 6** because `svelte-check` 4.x crashes
   under TS 7 (it reads `ts.default.sys`, which the native rewrite removed).
-  `.github/dependabot.yml` ignores TS majors for the dashboard only — lift
-  that pin when svelte-check supports TS 7.
+  Root cause (verified 2026-07-15): TS 7.0 ships no stable *programmatic*
+  API, which Svelte's template type-checking needs — so `svelte-check`
+  can't run against `tsgo` at all (not just this crash), and Svelte/Vue/
+  Astro/MDX are all blocked the same way. Unblocks at **TS 7.1
+  (~Oct 2026, upstream estimate)** — stay on TS 6 until then.
+  `.github/dependabot.yml` ignores TS majors for the dashboard only; only
+  lift that pin once BOTH TS 7.1 has shipped AND a `svelte-check` release
+  supports it (latest is still 4.7.2). Track `sveltejs/language-tools#2733`.
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under

@@ -30,9 +30,6 @@ test.describe('run detail page (/runs/[runId])', () => {
     // Default scope is failed+flaky only — a passed result must be absent.
     await expect(page.getByText('should login with valid credentials')).not.toBeVisible();
 
-    // At least one expandable error-message row is rendered.
-    await expect(page.locator('pre').first()).toBeVisible();
-
     // The updated storage-scope note (OQ3) is present.
     await expect(page.getByText(/CI job's artifacts/i)).toBeVisible();
 

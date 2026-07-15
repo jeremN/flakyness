@@ -38,6 +38,16 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under
   `suites[].specs[].tests[].results[]` — see `apps/api/src/parsers/`.
+- **`POST /api/v1/reports` returns `201` before flakiness is recomputed.**
+  `routes/reports.ts` fires `updateFlakyTests()` un-awaited, by design, so
+  ingest never blocks on recomputation — and `updateFlakyTests` sweeps
+  *every* existing `flaky_tests` row for the project (not just names in the
+  latest report), so it can resolve an `active` row that has no backing
+  `test_results` yet. Any consumer — test, dashboard, or E2E suite — that
+  reads `flaky_tests` immediately after an ingest is racing it. This has
+  already caused a flaky test in this repo's own suite (plan 027; see its
+  `waitFor`-based fix in `apps/api/src/routes/admin.test.ts`). Poll for the
+  reconcile to land; never `sleep`.
 
 ## Conventions
 
@@ -47,6 +57,14 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 - New `projects` child tables need `onDelete: 'cascade'` (project deletion
   relies on FK cascades).
 - New dashboard chart types must be registered in `Chart.svelte`'s
-  `echarts.use([...])` or they render blank (modular ECharts imports).
+  `echarts.use([...])` or they render blank (modular ECharts imports). An
+  unregistered series type is a **silent no-op** — no throw, no dev warning
+  (compiled out of production builds), axes still paint. Guarded by
+  `apps/dashboard/src/lib/components/chart-registration.test.ts` (a static
+  scan, not a rendered assertion); the E2E chart spec explicitly cannot
+  catch this class of bug.
+- **Time-series buckets: no data is `null`, never `0`.** "It didn't run" and
+  "it ran and nothing flaked" are different facts — see
+  `GET /api/v1/tests/:testName/trend` in `routes/tests.ts`.
 - Commits: single-line conventional-commit subject. NO `Co-Authored-By`
   trailers. `main` is branch-protected — work on branches, PRs need green CI.

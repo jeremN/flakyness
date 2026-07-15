@@ -5,6 +5,7 @@
   import { invalidateAll } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
   import type { TrendDirection } from '../../../app.d';
+  import { statusBadgeClass as getStatusBadgeClass } from '$lib/status';
 
   interface Props {
     data: PageData;
@@ -20,16 +21,6 @@
       hour: '2-digit',
       minute: '2-digit',
     });
-  }
-
-  function getStatusBadgeClass(status: string): string {
-    switch (status) {
-      case 'passed': return 'badge-green';
-      case 'failed': return 'badge-red';
-      case 'flaky': return 'badge-orange';
-      case 'skipped': return 'badge-gray';
-      default: return 'badge-gray';
-    }
   }
 
   function formatDuration(ms: number): string {

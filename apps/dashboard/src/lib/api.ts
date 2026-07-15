@@ -5,6 +5,7 @@ import type {
   ProjectStats,
   FlakyTest,
   TestRun,
+  RunDetail,
   TestHistory,
   TestTrend,
   AnalysisResponse,
@@ -72,6 +73,17 @@ export async function getProjectRuns(
     `/api/v1/projects/${projectId}/runs?limit=${limit}`
   );
   return data.runs;
+}
+
+export async function getRunDetail(
+  projectId: string,
+  runId: string,
+  status?: string
+): Promise<RunDetail> {
+  const query = status !== undefined ? `?status=${status}` : '';
+  return fetchJson<RunDetail>(
+    `/api/v1/projects/${projectId}/runs/${runId}${query}`
+  );
 }
 
 export async function getTestHistory(

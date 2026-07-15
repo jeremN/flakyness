@@ -223,6 +223,70 @@ GET /api/v1/projects/:id/runs?limit=20
 }
 ```
 
+#### Get Run Detail (per-run results)
+
+```http
+GET /api/v1/projects/:id/runs/:runId
+GET /api/v1/projects/:id/runs/:runId?status=all
+```
+
+Returns one run's summary plus its individual test results. The run lookup
+is scoped by **both** `:id` and `:runId` (`WHERE test_runs.id = :runId AND
+test_runs.project_id = :id`) — a well-formed `runId` that belongs to a
+*different* project returns `404`, not that project's data.
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `status` | string | `failed`+`flaky` | `all` returns every result; `failed`, `flaky`, `passed`, or `skipped` returns only that one status; omitted (or unparseable) defaults to `failed`+`flaky` results only — the default view is "what needs attention", not the full suite. |
+
+Results are ordered `failed`, then `flaky`, then `skipped`, then `passed`;
+within a status, alphabetically by `testName`. Capped at 2000 rows —
+the default scope will essentially never hit this, but `?status=all` on a
+large suite could otherwise return an unbounded payload; `truncated: true`
+signals the cap was hit (same semantics as the quarantine endpoint's flag).
+
+**Response:**
+```json
+{
+  "run": {
+    "id": "uuid",
+    "branch": "main",
+    "commitSha": "abc123def456",
+    "pipelineId": "12345",
+    "startedAt": "2024-12-11T12:00:00.000Z",
+    "finishedAt": "2024-12-11T12:05:00.000Z",
+    "createdAt": "2024-12-11T12:00:00.000Z",
+    "totalTests": 100,
+    "passed": 95,
+    "failed": 3,
+    "skipped": 1,
+    "flaky": 1
+  },
+  "results": [
+    {
+      "testName": "checkout should redirect after payment",
+      "testFile": "tests/checkout.spec.ts",
+      "status": "failed",
+      "durationMs": 4200,
+      "retryCount": 1,
+      "errorMessage": "Expected redirect to /success, got /checkout",
+      "tags": [],
+      "annotations": []
+    }
+  ],
+  "truncated": false
+}
+```
+
+**Note:** `errorMessage` is only the first error's message text, truncated
+to 10,000 characters — Flackyness does not store stack traces, stdout/stderr,
+or screenshots/attachments from the CI run. For those, consult the CI job's
+own logs/artifacts.
+
+A malformed `:id` or `:runId` returns `400`. A well-formed `:runId` that
+doesn't exist, or belongs to a different project than `:id`, returns `404`.
+
 #### Get Real-Time Flakiness Analysis
 
 ```http

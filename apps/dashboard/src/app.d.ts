@@ -85,6 +85,27 @@ export interface TestTrend {
   trend: TestTrendBucket[];
 }
 
+// One row from GET /api/v1/projects/:id/runs/:runId's `results` array — a
+// single test's outcome within that one run. `id` is deliberately omitted:
+// the API doesn't expose `test_results.id` here (testName is unique within
+// a run, so index-based keying is sufficient — see runs/[runId]/+page.svelte).
+export interface RunResult {
+  testName: string;
+  testFile: string | null;
+  status: string;
+  durationMs: number | null;
+  retryCount: number | null;
+  errorMessage: string | null;
+  tags: string[] | null;
+  annotations: { type: string; description?: string }[] | null;
+}
+
+export interface RunDetail {
+  run: TestRun;
+  results: RunResult[];
+  truncated: boolean;
+}
+
 export interface TestHistory {
   testName: string;
   flakyInfo: FlakyTest | null;

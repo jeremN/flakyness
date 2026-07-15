@@ -33,8 +33,20 @@ test.describe('run detail page (/runs/[runId])', () => {
     // At least one expandable error-message row is rendered.
     await expect(page.locator('pre').first()).toBeVisible();
 
-    // The "not captured" note (OQ3) is present.
-    await expect(page.getByText(/aren't captured/i)).toBeVisible();
+    // The updated storage-scope note (OQ3) is present.
+    await expect(page.getByText(/CI job's artifacts/i)).toBeVisible();
+
+    // "should retry after transient failure" fails its first attempt with a
+    // stack ("Error: Expected X\n    at auth.spec.ts:20:5" — see
+    // apps/api/fixtures/real-report.json), so the new failure-detail panel
+    // must render a collapsed "Stack trace" disclosure for it.
+    await expect(page.locator('summary', { hasText: 'Stack trace' }).first()).toBeVisible();
+
+    // "should handle flaky network response"'s second attempt carries a bare
+    // `{ message: 'real message' }` error (no stack/snippet) — its headline
+    // message must still render directly (no snippet assertion: this
+    // fixture has none).
+    await expect(page.getByText('real message')).toBeVisible();
   });
 
   test('a /runs row links to its run detail page', async ({ page }) => {

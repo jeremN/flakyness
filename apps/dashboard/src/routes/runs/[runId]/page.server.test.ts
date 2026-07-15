@@ -27,8 +27,8 @@ const runDetail: RunDetail = {
     createdAt: '2026-07-01T10:00:00.000Z',
   },
   results: [
-    { testName: 'fails consistently', testFile: 'a.spec.ts', status: 'failed', durationMs: 50, retryCount: 0, errorMessage: 'boom', tags: [], annotations: [] },
-    { testName: 'flakes on retry', testFile: 'a.spec.ts', status: 'flaky', durationMs: 85, retryCount: 1, errorMessage: null, tags: [], annotations: [] },
+    { testName: 'fails consistently', testFile: 'a.spec.ts', status: 'failed', durationMs: 50, retryCount: 0, errorMessage: 'boom', tags: [], annotations: [], failureDetail: null },
+    { testName: 'flakes on retry', testFile: 'a.spec.ts', status: 'flaky', durationMs: 85, retryCount: 1, errorMessage: null, tags: [], annotations: [], failureDetail: null },
   ],
   truncated: false,
 };

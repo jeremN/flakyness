@@ -140,10 +140,53 @@
               <td class="py-4 px-4 text-muted">{formatDuration(result.durationMs)}</td>
               <td class="py-4 px-4 text-muted">{result.retryCount ?? 0}</td>
             </tr>
-            {#if result.errorMessage}
+            {#if result.failureDetail || result.errorMessage}
               <tr class="bg-red-50">
                 <td colspan="5" class="py-3 px-4">
-                  <pre class="text-red-600 text-xs font-mono whitespace-pre-wrap">{result.errorMessage}</pre>
+                  {#if result.failureDetail}
+                    {#each result.failureDetail.errors as err, ei (ei)}
+                      <div class="mb-2 last:mb-0">
+                        {#if err.message || err.value}
+                          <p class="text-red-600 text-xs font-mono whitespace-pre-wrap">{err.message || err.value}</p>
+                        {/if}
+                        {#if err.snippet}
+                          <pre class="text-red-600 text-xs font-mono whitespace-pre-wrap mt-1">{err.snippet}</pre>
+                        {/if}
+                        {#if err.stack}
+                          <details class="mt-1">
+                            <summary class="text-xs text-muted cursor-pointer">Stack trace</summary>
+                            <pre class="text-red-600 text-xs font-mono whitespace-pre-wrap mt-1">{err.stack}</pre>
+                          </details>
+                        {/if}
+                      </div>
+                    {/each}
+                    {#if result.failureDetail.stdout}
+                      <details class="mt-1">
+                        <summary class="text-xs text-muted cursor-pointer">stdout</summary>
+                        <pre class="text-muted text-xs font-mono whitespace-pre-wrap mt-1">{result.failureDetail.stdout}</pre>
+                      </details>
+                    {/if}
+                    {#if result.failureDetail.stderr}
+                      <details class="mt-1">
+                        <summary class="text-xs text-muted cursor-pointer">stderr</summary>
+                        <pre class="text-muted text-xs font-mono whitespace-pre-wrap mt-1">{result.failureDetail.stderr}</pre>
+                      </details>
+                    {/if}
+                    {#if result.failureDetail.attachments && result.failureDetail.attachments.length > 0}
+                      <div class="mt-2 text-xs text-muted">
+                        <p class="font-medium mb-1">
+                          Attachments (metadata only — the files themselves live in the CI job's artifacts):
+                        </p>
+                        <ul class="list-disc list-inside">
+                          {#each result.failureDetail.attachments as att}
+                            <li>{att.name} · {att.contentType}{att.path ? ` · ${att.path}` : ''}</li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
+                  {:else}
+                    <pre class="text-red-600 text-xs font-mono whitespace-pre-wrap">{result.errorMessage}</pre>
+                  {/if}
                 </td>
               </tr>
             {/if}
@@ -171,7 +214,9 @@
   {/if}
 
   <p class="text-muted text-xs mt-4">
-    Flackyness stores the first error message only — stack traces, stdout/stderr, and
-    screenshots or other attachments aren't captured. Consult the CI job's own logs for those.
+    Flackyness stores each failure's error message, stack trace, code snippet, and captured
+    stdout/stderr, plus attachment metadata (name, type, path) — but not the attachment files
+    themselves; screenshots, videos, and traces still live in the CI job's artifacts. Runs
+    recorded before this feature only have the error message shown above.
   </p>
 {/if}

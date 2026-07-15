@@ -98,6 +98,12 @@ export interface RunResult {
   errorMessage: string | null;
   tags: string[] | null;
   annotations: { type: string; description?: string }[] | null;
+  failureDetail: {
+    errors: { message?: string; stack?: string; snippet?: string; value?: string }[];
+    stdout?: string;
+    stderr?: string;
+    attachments?: { name: string; contentType: string; path?: string }[];
+  } | null;
 }
 
 export interface RunDetail {

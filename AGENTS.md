@@ -60,6 +60,10 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 - Structured logger (`apps/api/src/middleware/logger.ts`), never `console.log`.
 - zod-validate every input; Drizzle query builder only (no raw SQL with input).
 - New endpoints: apply rate limiting, update `docs/API.md`, add a route test.
+  New **read** endpoints must also mount `readAuth()` — see plan 041. Guarded
+  by `apps/api/src/routes-auth-coverage.test.ts`, which fails CI if a `GET`
+  under `/api/v1` has no `readAuth` mounted, and which carries a hard-coded
+  route count you must bump deliberately.
 - New `projects` child tables need `onDelete: 'cascade'` (project deletion
   relies on FK cascades).
 - New dashboard chart types must be registered in `Chart.svelte`'s

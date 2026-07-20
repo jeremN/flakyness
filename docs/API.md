@@ -10,6 +10,21 @@ All write endpoints require Bearer token authentication:
 Authorization: Bearer your-project-token
 ```
 
+**Read endpoints** (`GET /api/v1/projects/*`, `GET /api/v1/tests/*`) are open
+by default. If the server sets `READ_TOKEN`, they require a Bearer token that
+is **either**:
+
+| Token | Scope |
+|---|---|
+| `READ_TOKEN` | every project on the instance |
+| a project token | that project only |
+
+`GET /api/v1/projects` and `GET /api/v1/tests/flaky/:id` accept `READ_TOKEN`
+only — they are not scoped to a single project.
+
+A project token presented for a *different* project gets `401`, so a project
+token can never read another project's data.
+
 Tokens are generated per-project and should be stored securely (e.g., GitLab CI/CD variables).
 
 ---

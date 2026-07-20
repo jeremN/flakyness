@@ -586,10 +586,26 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(res.status).toBe(200);
 
       const body = await res.json();
-      expect(body.windowDays).toBeDefined();
-      expect(body.threshold).toBeDefined();
-      expect(body.flakyTests).toBeDefined();
-      expect(body.allTests).toBeDefined();
+
+      // windowDays and threshold are clamped by the handler (projects.ts:387-399).
+      expect(typeof body.windowDays).toBe('number');
+      expect(body.windowDays).toBeGreaterThanOrEqual(1);
+      expect(body.windowDays).toBeLessThanOrEqual(90);
+
+      expect(typeof body.threshold).toBe('number');
+      expect(body.threshold).toBeGreaterThanOrEqual(0);
+      expect(body.threshold).toBeLessThanOrEqual(1);
+
+      expect(Array.isArray(body.flakyTests)).toBe(true);
+      expect(Array.isArray(body.allTests)).toBe(true);
+
+      // The endpoint defines flakyTests as allTests.filter(t => t.isFlaky),
+      // so both of these hold by construction — and break if that filter does.
+      expect(body.flakyTests.every((t: { isFlaky: boolean }) => t.isFlaky)).toBe(true);
+      const allNames = new Set(body.allTests.map((t: { testName: string }) => t.testName));
+      expect(
+        body.flakyTests.every((t: { testName: string }) => allNames.has(t.testName))
+      ).toBe(true);
     });
 
     it('should accept custom window and threshold', async () => {

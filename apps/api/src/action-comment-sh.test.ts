@@ -27,7 +27,10 @@ const COMMENT_SH = path.resolve(
 // request — comment.sh distinguishes "request failed to even complete"
 // from "server returned an error status" via curl's own exit code, but we
 // only need to exercise the latter here). Driven by env vars so each test
-// can pick its own response.
+// can pick its own response. When $MOCK_CURL_LOG is set, also logs every
+// invocation's full argv to that file — same mechanism as the `gh` mock
+// below — so a test can prove which headers/flags a specific curl call
+// actually received (e.g. the quarantine request's Authorization header).
 const MOCK_CURL_LINES = [
   '#!/usr/bin/env bash',
   'set -u',
@@ -40,6 +43,14 @@ const MOCK_CURL_LINES = [
   '    http*://*) url="${args[$i]}" ;;',
   '  esac',
   'done',
+  '',
+  'if [ -n "${MOCK_CURL_LOG:-}" ]; then',
+  '  {',
+  "    printf 'ARGS:'",
+  '    for a in "$@"; do printf \' [%s]\' "$a"; done',
+  "    printf '\\n'",
+  '  } >> "$MOCK_CURL_LOG"',
+  'fi',
   '',
   'if [[ "$url" == *"/api/v1/reports"* ]]; then',
   '  status="${MOCK_REPORTS_STATUS:-201}"',
@@ -332,6 +343,32 @@ describe('comment.sh', () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('report uploaded');
       expect(result.stdout).toContain('quarantine lookup failed');
+    });
+  });
+
+  describe('quarantine request carries the project token as a Bearer credential', () => {
+    it('the quarantine curl call includes Authorization: Bearer <token>', () => {
+      const dir = newTempDir('flackyness-comment-work-');
+      const reportPath = writeReportFile(dir, 'report.json', SAMPLE_REPORT_JSON);
+      const curlLog = path.join(dir, 'curl.log');
+
+      const result = runCommentSh({
+        FLACKYNESS_API_URL: 'https://mock.example',
+        FLACKYNESS_TOKEN: 'super-secret-project-token',
+        FLACKYNESS_PROJECT_ID: 'p',
+        FLACKYNESS_REPORT_PATH: reportPath,
+        FLACKYNESS_COMMENT: 'false',
+        MOCK_CURL_LOG: curlLog,
+      });
+
+      expect(result.status).toBe(0);
+
+      const curlLogLines = readFileSync(curlLog, 'utf8').split('\n').filter(Boolean);
+      const quarantineCall = curlLogLines.find((line) => line.includes('/quarantine'));
+      // Guards against a vacuous pass: if this ever comes back undefined,
+      // the mock stopped seeing the quarantine request at all.
+      expect(quarantineCall).toBeDefined();
+      expect(quarantineCall).toContain('[Authorization: Bearer super-secret-project-token]');
     });
   });
 

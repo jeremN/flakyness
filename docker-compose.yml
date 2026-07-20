@@ -42,6 +42,7 @@ services:
       API_HOST: 0.0.0.0
       DASHBOARD_URL: http://localhost:3000
       ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN environment variable is required}
+      READ_TOKEN: ${READ_TOKEN:-}
     ports:
       - "8080:8080"
     healthcheck:
@@ -75,6 +76,11 @@ services:
       # before exposing this dashboard beyond a trusted network. See
       # docs/GETTING_STARTED.md.
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      # Presented as a Bearer credential on every SSR call to the API (see
+      # apps/dashboard/src/lib/server/api.ts). Must match the API's
+      # READ_TOKEN above — set both or neither. If the API's is set and this
+      # one isn't, every dashboard page 500s instead of loading.
+      READ_TOKEN: ${READ_TOKEN:-}
     ports:
       - "3000:3000"
     healthcheck:

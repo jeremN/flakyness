@@ -40,8 +40,17 @@ never reached. **Measured, not inferred** — 20 requests with an invalid token:
 | auth → limiter (current `admin.ts`) | 20× 401, **0× 429** |
 | limiter → auth (fixed) | 5× 401, **15× 429** |
 
-The advertised brute-force protection does not exist. That is worse than no
-protection, because the operator believes it is there.
+The advertised protection does not exist. That is worse than no protection,
+because the operator believes it is there.
+
+*A note on what the limiter actually buys.* `ADMIN_TOKEN` is 256-bit
+(`openssl rand -hex 32`), so credential brute-force is infeasible with or
+without a limiter — see D4. The real value of the fix is **flood/DoS
+protection**: without it, an unauthenticated client can fire unbounded requests
+at the admin endpoint (each a cheap constant-time hash compare, but unbounded),
+and the control that was meant to cap that never runs. "Brute force" is the
+control's own wording (kept in the commit subject for continuity); read it as
+"unauthenticated request flood", which is the threat this actually closes.
 
 ### Root cause: untestable by construction
 

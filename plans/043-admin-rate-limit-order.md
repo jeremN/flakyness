@@ -344,13 +344,11 @@ Expected: 6 passed, 0 skipped.
 In `rate-limit.ts`, change `ADMIN_RATE_LIMIT` to `{ windowMs: 60 * 1000, limit: 500 }`.
 
 Run: `pnpm --filter api exec vitest run src/middleware/rate-limit.test.ts`
-Expected: **`ADMIN_RATE_LIMIT is 5 requests per 60s` FAILS**, and the
-enforcement test fails too (only `limit+2` = 502 requests sent, `allowed`
-would be 502 not 500... it sends `limit+2`, so with limit 500 it sends 502,
-allowed=500? no — it sends `ADMIN_RATE_LIMIT.limit + 2`, which now reads 502,
-so both sides move together and the enforcement test may still pass). Record
-which assertions fired. The **value-pin** test is the guaranteed catch here;
-that is why it exists separately from the enforcement test.
+Expected: **`ADMIN_RATE_LIMIT is 5 requests per 60s` FAILS.** The enforcement
+test may still *pass*, because it drives its loop from `ADMIN_RATE_LIMIT.limit`
+too — both sides move together (it sends `limit + 2` = 502, allows 500, blocks
+2). That is exactly why the value-pin is a **separate** test: it is the
+guaranteed catch for a loosened limit. Record which assertions fired.
 
 Revert: `git checkout -- apps/api/src/middleware/rate-limit.ts`
 

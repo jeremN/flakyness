@@ -578,10 +578,25 @@ describeWithDb('Projects API Integration Tests', () => {
       const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${randomUUID()}`);
       expect(res.status).toBe(404);
     });
+
   });
 
   describe('GET /api/v1/projects/:id/analysis', () => {
-    it('should return real-time flakiness analysis', async () => {
+    // `testProjectId` never ingests a report, so its analysis is empty. That is
+    // a real case worth pinning (an empty project is a valid, empty answer —
+    // not a 404), but it CANNOT prove the endpoint's subset invariant
+    // (`flakyTests === allTests.filter(t => t.isFlaky)`): on an empty array
+    // `every(...)` is vacuously true, so such an assertion would pass even with
+    // the filter deleted. Asserting emptiness outright is what IS provable here.
+    //
+    // COVERAGE GAP, deliberately left for A2: no fixture in this file can prove
+    // that invariant. `analyzeFlakiness` drops any test with fewer than
+    // `minRuns` runs (flakiness.ts:16 sets minRuns=3; the filter is at
+    // flakiness.ts:119), and the only populated project here ingests a single
+    // report — one run per test — so its analysis is empty too (verified, not
+    // assumed). Proving the invariant needs a project with >= 3 ingests, which
+    // is new fixture setup and belongs in its own reviewed change.
+    it('returns a well-formed, empty analysis for a project with no runs', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/analysis`);
       expect(res.status).toBe(200);
 
@@ -596,16 +611,11 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(body.threshold).toBeGreaterThanOrEqual(0);
       expect(body.threshold).toBeLessThanOrEqual(1);
 
-      expect(Array.isArray(body.flakyTests)).toBe(true);
-      expect(Array.isArray(body.allTests)).toBe(true);
-
-      // The endpoint defines flakyTests as allTests.filter(t => t.isFlaky),
-      // so both of these hold by construction — and break if that filter does.
-      expect(body.flakyTests.every((t: { isFlaky: boolean }) => t.isFlaky)).toBe(true);
-      const allNames = new Set(body.allTests.map((t: { testName: string }) => t.testName));
-      expect(
-        body.flakyTests.every((t: { testName: string }) => allNames.has(t.testName))
-      ).toBe(true);
+      // Explicitly empty, not merely "an array". If this project ever starts
+      // carrying runs, this assertion fails loudly and points at the comment
+      // above rather than silently turning the sibling test vacuous.
+      expect(body.allTests).toEqual([]);
+      expect(body.flakyTests).toEqual([]);
     });
 
     it('should accept custom window and threshold', async () => {

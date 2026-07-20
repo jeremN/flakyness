@@ -40,14 +40,32 @@ describeWithDb('API Integration Tests', () => {
   });
 
   describe('CORS', () => {
-    it('should include CORS headers', async () => {
+    // The allowed origin is `process.env.DASHBOARD_URL || 'http://localhost:5173'`
+    // (index.ts:26), read at module load. DASHBOARD_URL is set only in
+    // docker-compose.yml and never in CI, so the literal below is what the
+    // suite sees. Asserting the expression itself would mirror the
+    // implementation and survive any mutation of it.
+    const ALLOWED_ORIGIN = 'http://localhost:5173';
+
+    it('echoes the configured origin back to an allowed origin', async () => {
       const res = await app.request('/health', {
-        headers: {
-          'Origin': 'http://localhost:5173',
-        },
+        headers: { Origin: ALLOWED_ORIGIN },
       });
-      
-      expect(res.headers.get('access-control-allow-origin')).toBeDefined();
+
+      expect(
+        res.headers.get('access-control-allow-origin'),
+        `expected the CORS middleware to allow ${ALLOWED_ORIGIN}; if DASHBOARD_URL is exported in your shell, unset it`
+      ).toBe(ALLOWED_ORIGIN);
+    });
+
+    it('sends no allow-origin header for a foreign origin', async () => {
+      const res = await app.request('/health', {
+        headers: { Origin: 'https://evil.test' },
+      });
+
+      // Absent, not '*'. A wildcard here would let any site read authenticated
+      // responses from a browser.
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
     });
   });
 
@@ -108,6 +126,6 @@ describeWithDb('Security Headers', () => {
     // Check for common security headers added by secureHeaders middleware
     const headers = res.headers;
     expect(headers.get('x-content-type-options')).toBe('nosniff');
-    expect(headers.get('x-frame-options')).toBeDefined();
+    expect(headers.get('x-frame-options')).toBe('SAMEORIGIN');
   });
 });

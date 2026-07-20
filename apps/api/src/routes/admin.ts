@@ -12,9 +12,11 @@ const adminRouter = new Hono();
 
 const uuidSchema = z.string().uuid();
 
-// Apply admin auth and rate limiting to all routes
-adminRouter.use('*', adminAuth());
+// Rate limiting MUST come before auth: a brute-force flood of bad tokens has to
+// be throttled here, not waved through to adminAuth (which would 401 each
+// attempt and never reach the limiter). Guarded by rate-limit.test.ts.
 adminRouter.use('*', adminRateLimit);
+adminRouter.use('*', adminAuth());
 
 // Schemas
 const createProjectSchema = z.object({

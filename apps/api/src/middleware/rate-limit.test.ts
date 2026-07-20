@@ -82,3 +82,44 @@ describe('rate limiter enforcement', () => {
     }
   });
 });
+
+describe('admin router mounts the limiter before auth (regression guard)', () => {
+  it('rate-limits a bad-token flood instead of only 401-ing it', async () => {
+    const { Hono } = await import('hono');
+    const { HTTPException } = await import('hono/http-exception');
+    const { default: adminRouter } = await import('../routes/admin'); // export default
+    const { ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'correct-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      app.route('/api/v1/admin', adminRouter);
+
+      const codes: number[] = [];
+      // No socket under app.request -> getClientIp returns 'unknown' for all,
+      // one shared bucket. With the limiter FIRST, requests past the limit are
+      // 429; with the limiter after auth, every bad token is 401 and 429 never
+      // appears.
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/admin/projects', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer WRONG' },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early ones are auth rejections, proving the limiter let
+      // them reach auth rather than the endpoint doing something else.
+      expect(codes[0]).toBe(401);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});

@@ -485,10 +485,11 @@ import app from '../index';
  * readAuth is MOUNTED, this one asserts it WORKS. Neither subsumes the other
  * — a mounted middleware with inverted logic passes the coverage guard.
  *
- * No database needed: every assertion here is about the 401 path, which
- * READ_TOKEN short-circuits before any query. The 200 paths and the
- * project-token fallback are covered by auth.test.ts (unit) and by the
- * existing route suites (which run in open mode).
+ * The blocks below need no database: every assertion is about the 401 path,
+ * which READ_TOKEN short-circuits before any query. The project-token
+ * fallback — including the cross-project rejection, which is the security
+ * property this whole plan exists to establish — is DB-backed and lives in
+ * the describeWithDb block at the bottom of this file.
  */
 
 const PROBE = '/api/v1/projects/00000000-0000-0000-0000-000000000000/stats';
@@ -544,6 +545,120 @@ describe('read endpoint gating', () => {
     expect(res.status).toBe(401);
   });
 });
+```
+
+- [ ] **Step 5b: Le test du rejet inter-projets (adossé à la base)**
+
+C'est **la** propriété de sécurité du plan : un token projet valide, présenté pour un *autre* projet, doit être refusé. Sans ce test, le critère de réussite n°2 n'est adossé à rien.
+
+Ajouter à la fin de `apps/api/src/routes/read-auth.test.ts` :
+
+```typescript
+// The admin API returns a project's token exactly once, at creation
+// (admin.ts:155) — that is why both projects are created here rather than
+// reusing a fixture.
+const hasDatabase = !!process.env.DATABASE_URL;
+const hasAdminToken = !!process.env.ADMIN_TOKEN;
+const describeWithDb = hasDatabase && hasAdminToken ? describe : describe.skip;
+
+describeWithDb('read endpoint gating — project-token fallback', () => {
+  let adminToken: string;
+  let projectA: { id: string; token: string };
+  let projectB: { id: string; token: string };
+
+  async function createProject(name: string) {
+    const res = await app.request('/api/v1/admin/projects', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    return { id: body.project.id, token: body.project.token };
+  }
+
+  beforeAll(async () => {
+    adminToken = process.env.ADMIN_TOKEN!;
+    projectA = await createProject(`read-auth-a-${Date.now()}`);
+    projectB = await createProject(`read-auth-b-${Date.now()}`);
+  });
+
+  afterAll(async () => {
+    for (const p of [projectA, projectB]) {
+      if (!p?.id) continue;
+      const res = await app.request(`/api/v1/admin/projects/${p.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      // Assert so cleanup failures are visible instead of leaking rows.
+      expect(res.status).toBe(200);
+    }
+  });
+
+  afterEach(() => {
+    delete process.env.READ_TOKEN;
+  });
+
+  it('accepte le token du projet visé', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const res = await app.request(`/api/v1/projects/${projectA.id}/stats`, {
+      headers: { Authorization: `Bearer ${projectA.token}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('REJETTE le token d’un autre projet (propriété centrale du plan)', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const res = await app.request(`/api/v1/projects/${projectA.id}/stats`, {
+      headers: { Authorization: `Bearer ${projectB.token}` },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('refuse un token projet sur l’énumération (READ_TOKEN seul, D6)', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const res = await app.request('/api/v1/projects', {
+      headers: { Authorization: `Bearer ${projectA.token}` },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('scope par la query ?project= sur les routes /tests/*', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const ok = await app.request(
+      `/api/v1/tests/some-test/history?project=${projectA.id}`,
+      { headers: { Authorization: `Bearer ${projectA.token}` } }
+    );
+    expect(ok.status).toBe(200);
+
+    const denied = await app.request(
+      `/api/v1/tests/some-test/history?project=${projectA.id}`,
+      { headers: { Authorization: `Bearer ${projectB.token}` } }
+    );
+    expect(denied.status).toBe(401);
+  });
+});
+```
+
+Ajouter `beforeAll` et `afterAll` à l'import vitest en tête du fichier.
+
+Run: `pnpm --filter api exec vitest run src/routes/read-auth.test.ts`
+Expected sans `DATABASE_URL` : le bloc `describeWithDb` se skippe, les 6 tests sans base passent.
+Expected **avec** `DATABASE_URL` et `ADMIN_TOKEN` : tout passe, dont les 4 tests du fallback.
+
+**Ce bloc doit être exécuté au moins une fois contre une vraie base avant de considérer la task terminée.** Un conteneur jetable suffit :
+
+```bash
+docker run -d --name flackyness-test-pg-041 -e POSTGRES_PASSWORD=test_password \
+  -e POSTGRES_DB=flackyness_test -p 5439:5432 postgres:16-alpine
+touch .env
+DATABASE_URL=postgres://postgres:test_password@localhost:5439/flackyness_test pnpm db:migrate
+DATABASE_URL=postgres://postgres:test_password@localhost:5439/flackyness_test \
+  ADMIN_TOKEN=test-admin-token pnpm --filter api exec vitest run src/routes/read-auth.test.ts
+docker rm -f flackyness-test-pg-041
 ```
 
 - [ ] **Step 6: Lancer toute la suite API**

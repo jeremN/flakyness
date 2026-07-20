@@ -92,12 +92,24 @@ describeWithDb('API Integration Tests', () => {
 
 describeWithDb('Reports Route Authentication', () => {
   // reports.ts:62 mounts `reports.use('*', projectAuth())` ahead of the
-  // handler, so an unauthenticated request is rejected before validation or
-  // JSON parsing runs. These are smoke checks that the guard is still mounted.
-  // Real input-validation coverage lives in reports.test.ts:120-171, which
-  // sends a valid project token.
+  // handler, so an unauthenticated request is rejected before query validation
+  // or JSON parsing runs. Real input-validation coverage lives in
+  // reports.test.ts:120-174, which sends a valid project token.
+  //
+  // The two tests below are NOT redundant, though they look it — both assert
+  // 401 and differ only in their input. They pin the guard's *position* in the
+  // chain, and each covers a different half:
+  //
+  //   test 1 sends an INVALID query (no `commit`) -> 401 proves auth runs
+  //          before zValidator('query', ...)
+  //   test 2 sends a VALID query and an unparseable body -> 401 proves auth
+  //          runs before JSON.parse
+  //
+  // Verified by mutation: moving projectAuth() to after the zValidator in the
+  // route chain makes test 1 fail with 400 while test 2 still passes. Deleting
+  // either one silently drops half of that ordering guarantee.
   describe('POST /api/v1/reports', () => {
-    it('rejects an unauthenticated request before validating the body', async () => {
+    it('rejects an unauthenticated request before validating the query', async () => {
       const res = await app.request('/api/v1/reports', {
         method: 'POST',
         headers: {
@@ -115,8 +127,10 @@ describeWithDb('Reports Route Authentication', () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        // Deliberately unparseable. A 401 proves the auth guard runs first;
-        // a 500 would mean the body reached a parser that crashed on it.
+        // Deliberately unparseable, behind a deliberately VALID query string —
+        // so a 401 can only mean auth preceded the body parse. (The old
+        // assertion here also admitted 500; that branch was unreachable —
+        // reports.ts wraps JSON.parse in a try/catch that returns 400.)
         body: 'invalid json',
       });
 

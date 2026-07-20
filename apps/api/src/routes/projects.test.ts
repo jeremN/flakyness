@@ -588,14 +588,15 @@ describeWithDb('Projects API Integration Tests', () => {
     // `every(...)` is vacuously true, so such an assertion would pass even with
     // the filter deleted. Asserting emptiness outright is what IS provable here.
     //
-    // COVERAGE GAP, deliberately left for A2: no fixture in this file can prove
+    // Why this empty case cannot prove the endpoint's subset invariant: no
     // that invariant. `analyzeFlakiness` drops any test with fewer than
     // `minRuns` runs (flakiness.ts:16 sets minRuns=3; the filter is at
     // flakiness.ts:119). The only populated project, `runDetailProjectId`,
     // ingests two reports (:379 and :535) — two runs per test, still under the
     // threshold — so its analysis is empty too; probed live, 0 entries.
-    // Proving the invariant needs a project with >= 3 ingests, which is new
-    // fixture setup and belongs in its own reviewed change.
+    // Proving the invariant needs a project carrying >= minRuns runs of both a
+    // flaky and a non-flaky test; that is the dedicated sibling describe below
+    // (plan 044), not this empty case.
     it('returns a well-formed, empty analysis for a project with no runs', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/analysis`);
       expect(res.status).toBe(200);
@@ -641,6 +642,78 @@ describeWithDb('Projects API Integration Tests', () => {
       // through unclamped, so only out-of-range values catch a deleted clamp.
       expect(body.windowDays).toBe(90);
       expect(body.threshold).toBe(1);
+    });
+  });
+
+  describe('GET /api/v1/projects/:id/analysis — flaky-subset invariant (populated)', () => {
+    let subsetProjectId: string;
+
+    beforeAll(async () => {
+      if (!(hasDatabase && hasAdminToken)) return;
+      const createRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `subset-invariant-${randomUUID()}` }),
+      });
+      const createBody = await createRes.json();
+      subsetProjectId = createBody.project.id;
+      const token = createBody.token;
+
+      // One upload, two specs, each with THREE `tests[]` entries so both reach
+      // minRuns=3 in a single ingest (the shape reports.test.ts documents; three
+      // results[] in ONE tests[] entry would collapse to one row). Probed:
+      // A-flaky -> isFlaky true (2 passed, 1 failed), B-stable -> isFlaky false.
+      const exec = (status: string, sec: string) => ({
+        results: [{ workerIndex: 0, status, duration: 1, retry: 0, startTime: `2026-07-15T10:00:0${sec}.000Z` }],
+      });
+      const report = {
+        config: {},
+        suites: [{
+          title: 's',
+          file: 's.spec.ts',
+          specs: [
+            { title: 'A-flaky', ok: false, tests: [exec('passed', '0'), exec('passed', '1'), exec('failed', '2')] },
+            { title: 'B-stable', ok: true, tests: [exec('passed', '0'), exec('passed', '1'), exec('passed', '2')] },
+          ],
+        }],
+      };
+      const ingest = await app.request('/api/v1/reports?branch=main&commit=subset001', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(report),
+      });
+      expect(ingest.status).toBe(201);
+    });
+
+    afterAll(async () => {
+      if (subsetProjectId) {
+        await app.request(`/api/v1/admin/projects/${subsetProjectId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+      }
+    });
+
+    it('flakyTests is exactly the flaky subset of allTests', async () => {
+      const res = await app.request(`/api/v1/projects/${subsetProjectId}/analysis`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      // analyzeFlakiness reads test_results (written synchronously during
+      // ingest), not flaky_tests, so this does not race the un-awaited
+      // updateFlakyTests() reconcile described in AGENTS.md.
+
+      // Anti-vacuity: BOTH a flaky and a non-flaky test must be present, or the
+      // every()/subset checks below are trivially true on a degenerate set (the
+      // trap A1 fell into with an empty analysis).
+      expect(body.allTests.length).toBeGreaterThanOrEqual(2);
+      expect(body.allTests.some((t: { isFlaky: boolean }) => t.isFlaky === false)).toBe(true);
+      expect(body.flakyTests.length).toBeGreaterThanOrEqual(1);
+
+      // The endpoint defines flakyTests as allTests.filter(t => t.isFlaky).
+      expect(body.flakyTests.every((t: { isFlaky: boolean }) => t.isFlaky)).toBe(true);
+      const allNames = new Set(body.allTests.map((t: { testName: string }) => t.testName));
+      expect(body.flakyTests.every((t: { testName: string }) => allNames.has(t.testName))).toBe(true);
     });
   });
 

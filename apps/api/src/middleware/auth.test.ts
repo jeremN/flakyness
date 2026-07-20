@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { hashToken, generateToken, adminAuth, projectAuth } from '../middleware/auth';
+import { hashToken, generateToken, adminAuth, projectAuth, readAuth } from '../middleware/auth';
 
 describe('Auth Utilities', () => {
   describe('hashToken', () => {
@@ -177,5 +177,63 @@ describe('projectAuth middleware', () => {
       headers: { Authorization: 'Bearer' },
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('readAuth', () => {
+  afterEach(() => {
+    delete process.env.READ_TOKEN;
+    vi.restoreAllMocks();
+  });
+
+  function appWith(mw: ReturnType<typeof readAuth>) {
+    const app = new Hono();
+    app.get('/p/:id', mw, (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('passe sans credential quand READ_TOKEN est absent (mode ouvert)', async () => {
+    const app = appWith(readAuth((c) => c.req.param('id')));
+    const res = await app.request('/p/abc');
+    expect(res.status).toBe(200);
+  });
+
+  it('passe avec un READ_TOKEN valide', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const app = appWith(readAuth((c) => c.req.param('id')));
+    const res = await app.request('/p/abc', {
+      headers: { Authorization: 'Bearer read-secret' },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejette en 401 sans header quand READ_TOKEN est défini', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const app = appWith(readAuth((c) => c.req.param('id')));
+    const res = await app.request('/p/abc');
+    expect(res.status).toBe(401);
+  });
+
+  it('rejette en 401 sur un format non-Bearer', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const app = appWith(readAuth((c) => c.req.param('id')));
+    const res = await app.request('/p/abc', {
+      headers: { Authorization: 'read-secret' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejette en 401 un mauvais token sans résolveur de projet', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const app = appWith(readAuth());
+    const res = await app.request('/p/abc', {
+      headers: { Authorization: 'Bearer wrong' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('marque le middleware retourné pour la garde de couverture', () => {
+    expect(readAuth().isReadAuth).toBe(true);
+    expect(readAuth((c) => c.req.param('id')).isReadAuth).toBe(true);
   });
 });

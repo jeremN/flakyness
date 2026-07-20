@@ -130,10 +130,16 @@ en pratique — enregistrement ECharts, couverture Dependabot — ont toutes deu
 démontrée du projet à une convention violée est de cesser de s'appuyer sur la
 convention.
 
-Le risque est réel et mesuré : **5 des 11 routes de lecture actuelles sont
-postérieures au commit initial, et les deux dernières ont été ajoutées le même
-jour (2026-07-15) par deux plans différents.** L'ajout de routes est continu et
+Le risque est réel et mesuré : **4 des 11 routes de lecture actuelles sont
+postérieures au commit initial, et deux d'entre elles ont été ajoutées le même
+jour (2026-07-13) par deux plans différents.** L'ajout de routes est continu et
 par rafales.
+
+(Chiffre corrigé le 2026-07-20 : une première recherche annonçait 5 routes et la
+date du 2026-07-15. Vérification par `git log -S` route par route pendant la
+revue de la Task 3 : 7 routes datent du commit initial `b057d79`, et les 4
+ajouts sont `/:id/trend` le 2026-02-05, `/:id/quarantine` et
+`/:testName/trend` le 2026-07-13, `/:id/runs/:runId` le 2026-07-15.)
 
 ## Composants
 

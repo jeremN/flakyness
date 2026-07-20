@@ -18,9 +18,9 @@ import app from './index';
  * reviewer mutating the source by hand. Both were fixed the same way: stop
  * relying on the convention, and make the gap fail CI. This is that guard.
  *
- * The risk is measured, not hypothetical: 5 of the 11 read routes postdate
- * the initial commit, and the two most recent landed on the same day
- * (2026-07-15) from two different plans.
+ * The risk is measured, not hypothetical: 4 of the 11 read routes postdate
+ * the initial commit (verified with git log -S per route), and two of those
+ * landed on the same day, 2026-07-13, from two different plans.
  */
 
 // Read routes deliberately mounted WITHOUT a project resolver — they accept

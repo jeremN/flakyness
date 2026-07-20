@@ -45,3 +45,40 @@ describe('getClientIp', () => {
     expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '9.9.9.9' }))).toBe('1.2.3.4');
   });
 });
+
+describe('rate limiter enforcement', () => {
+  // The documented "very restrictive" admin policy. Pinned so a loosening
+  // (e.g. limit: 5 -> 500) reds here, not silently in production.
+  it('ADMIN_RATE_LIMIT is 5 requests per 60s', async () => {
+    const { ADMIN_RATE_LIMIT } = await import('./rate-limit');
+    expect(ADMIN_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 5 });
+  });
+
+  it('a factory-built limiter 429s once its limit is exceeded', async () => {
+    const { Hono } = await import('hono');
+    const { createRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      // Fresh limiter -> fresh in-memory store; key by header for isolation.
+      app.use('*', createRateLimit(ADMIN_RATE_LIMIT, (c) => c.req.header('x-key') ?? 'k', 'nope'));
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 2; i++) {
+        codes.push((await app.request('/x', { headers: { 'x-key': 'a' } })).status);
+      }
+      const allowed = codes.filter((s) => s === 200).length;
+      const blocked = codes.filter((s) => s === 429).length;
+      expect(allowed).toBe(ADMIN_RATE_LIMIT.limit);
+      expect(blocked).toBe(2);
+
+      // A different key is unaffected by the first key's exhaustion.
+      const other = await app.request('/x', { headers: { 'x-key': 'b' } });
+      expect(other.status).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+});

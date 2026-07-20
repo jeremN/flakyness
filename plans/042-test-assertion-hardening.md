@@ -72,9 +72,14 @@ entirely absent.
 | `http://localhost:5173` | *(none)* | *absent* (`null`) |
 | `*` | `https://evil.test` | `*` |
 
-Both a matching-origin and a foreign-origin assertion are required: the first
-alone would not catch widening to `origin: '*'`; the second alone would not
-catch `cors()` being deleted (a bare app also returns `null`).
+Both a matching-origin and a foreign-origin assertion are kept. The
+matching-origin one fails if `cors()` is deleted (a bare app returns `null`).
+The foreign-origin one is what catches an **over-broad allowlist** that still
+echoes the legitimate origin correctly while also echoing an attacker's —
+e.g. `origin: ['http://localhost:5173', 'https://evil.test']`, or a loose
+regex. Note a bare `origin: '*'` is caught redundantly by *both*, since strict
+equality rejects `'*'` too; the allowlist case is the one only the
+foreign-origin assertion covers.
 
 - [ ] **Step 1: Replace the CORS test**
 

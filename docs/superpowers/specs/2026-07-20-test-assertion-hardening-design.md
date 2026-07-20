@@ -139,13 +139,29 @@ assertion:
 | `http://localhost:5173` | *(none)* | *absent* (`null`) |
 | `*` | `https://evil.test` | `*` |
 
-A **matching-origin** assertion alone would not catch a widening to
-`origin: '*'`. A **foreign-origin** assertion alone would not catch `cors()`
-being deleted (a bare app also returns `null`). Both are required; the pair is
-falsifiable against either mutation:
+Both assertions are kept:
 
 - matching origin → `toBe('http://localhost:5173')` — fails if `cors()` is removed
-- foreign origin → `toBeNull()` — fails if `origin` is widened to `'*'`
+- foreign origin → `toBeNull()` — fails if the allowlist admits a foreign origin
+
+> **Correction (post-review, Task 1).** An earlier draft of this spec justified
+> the pair by claiming a matching-origin assertion alone would not catch a
+> widening to `origin: '*'`. **That reasoning was wrong**, and the Task 1
+> mutation transcript disproves it: under `origin: '*'`, *both* tests failed,
+> because `toBe('http://localhost:5173')` rejects `'*'` on strict equality just
+> as readily. The bare-wildcard mutation is redundantly covered.
+>
+> The pair's real non-overlapping value lies elsewhere: an **over-broad
+> allowlist** that still echoes the legitimate origin correctly *and* echoes
+> the attacker's — `origin: ['http://localhost:5173', 'https://evil.test']`, or
+> a regex matcher with a loose anchor. There the matching-origin assertion
+> passes and only the foreign-origin assertion bites. That is the case worth
+> defending against, and it is a more realistic regression than someone typing
+> `'*'`.
+>
+> The conclusion (keep both) survived; the argument for it did not. Recorded
+> rather than quietly rewritten, because a spec is a reasoning record and a
+> silently corrected rationale teaches nothing.
 
 `x-frame-options` → `toBe('SAMEORIGIN')` (probed value of bare
 `secureHeaders()`), mirroring the correct `nosniff` assertion beside it.

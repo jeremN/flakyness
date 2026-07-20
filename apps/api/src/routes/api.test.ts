@@ -90,9 +90,14 @@ describeWithDb('API Integration Tests', () => {
   });
 });
 
-describeWithDb('Request Validation', () => {
+describeWithDb('Reports Route Authentication', () => {
+  // reports.ts:62 mounts `reports.use('*', projectAuth())` ahead of the
+  // handler, so an unauthenticated request is rejected before validation or
+  // JSON parsing runs. These are smoke checks that the guard is still mounted.
+  // Real input-validation coverage lives in reports.test.ts:120-171, which
+  // sends a valid project token.
   describe('POST /api/v1/reports', () => {
-    it('should reject request without required params', async () => {
+    it('rejects an unauthenticated request before validating the body', async () => {
       const res = await app.request('/api/v1/reports', {
         method: 'POST',
         headers: {
@@ -100,21 +105,22 @@ describeWithDb('Request Validation', () => {
         },
         body: JSON.stringify({}),
       });
-      
-      // Should fail validation - either 400 or 401 (auth required)
-      expect([400, 401]).toContain(res.status);
+
+      expect(res.status).toBe(401);
     });
 
-    it('should reject invalid JSON body', async () => {
+    it('rejects an unauthenticated request before parsing the body', async () => {
       const res = await app.request('/api/v1/reports?project=test&branch=main&commit=abc', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        // Deliberately unparseable. A 401 proves the auth guard runs first;
+        // a 500 would mean the body reached a parser that crashed on it.
         body: 'invalid json',
       });
-      
-      expect([400, 401, 500]).toContain(res.status);
+
+      expect(res.status).toBe(401);
     });
   });
 });

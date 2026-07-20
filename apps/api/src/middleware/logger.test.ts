@@ -42,7 +42,10 @@ describe('requestLogger', () => {
     let capturedId: unknown;
     const app = new Hono();
     app.use('*', requestLogger());
-    app.get('/x', (c) => {
+    // Annotate as bare `Context` (Env = any) so `c.get('requestId')` type-checks
+    // the same way it does in logger.ts itself; a concrete `new Hono()` env
+    // narrows the valid keys to Hono's ContextVariableMap and rejects it.
+    app.get('/x', (c: Context) => {
       capturedId = c.get('requestId');
       return c.json({});
     });

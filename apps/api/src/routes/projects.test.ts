@@ -605,8 +605,8 @@ describeWithDb('Projects API Integration Tests', () => {
       // These pin the RANGE of the returned values, not the clamp that produces
       // it. This request sends no `days` or `threshold`, so it reads the
       // resolved defaults (14 / 0.05) — comfortably mid-range. Deleting both
-      // clamps in projects.ts leaves this test green (verified). Proving the
-      // clamp needs a request with out-of-range params -> A2.
+      // clamps in projects.ts leaves this test green (verified). The clamp
+      // itself is proven by the out-of-range sibling test below (plan 044).
       expect(typeof body.windowDays).toBe('number');
       expect(body.windowDays).toBeGreaterThanOrEqual(1);
       expect(body.windowDays).toBeLessThanOrEqual(90);
@@ -629,6 +629,18 @@ describeWithDb('Projects API Integration Tests', () => {
       const body = await res.json();
       expect(body.windowDays).toBe(7);
       expect(body.threshold).toBe(0.1);
+    });
+
+    it('clamps out-of-range window and threshold', async () => {
+      const res = await app.request(`/api/v1/projects/${testProjectId}/analysis?days=999&threshold=5`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      // days clamped to the 90 cap, threshold to the 1.0 ceiling
+      // (projects.ts:387-397). The in-range sibling test (7 / 0.1) passes those
+      // through unclamped, so only out-of-range values catch a deleted clamp.
+      expect(body.windowDays).toBe(90);
+      expect(body.threshold).toBe(1);
     });
   });
 

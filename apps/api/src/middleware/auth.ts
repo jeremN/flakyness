@@ -163,14 +163,14 @@ export function readAuth(
 ): ReadAuthMiddleware {
   const mw: MiddlewareHandler = async (c, next) => {
     const readToken = process.env.READ_TOKEN;
-    if (!readToken) return next();
+    if (!readToken) return await next();
 
     const token = extractBearerToken(c.req.header('Authorization'));
     if (!token) {
       throw new HTTPException(401, { message: 'Authorization header required' });
     }
 
-    if (tokensMatch(token, readToken)) return next();
+    if (tokensMatch(token, readToken)) return await next();
 
     if (resolveProjectId) {
       const wanted = resolveProjectId(c);
@@ -184,7 +184,7 @@ export function readAuth(
         // handler to remember.
         if (project && project.id === wanted) {
           c.set('project', project);
-          return next();
+          return await next();
         }
       }
     }

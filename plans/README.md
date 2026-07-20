@@ -210,6 +210,158 @@ that breaks pipelines when its own backend is down is a tool that gets ripped ou
 
 **Batch 2 complete (2026-07-13):** all 8 direction plans landed via PRs #49–#56.
 
+### Batch 8 — direction feature: per-run failure view (planned 2026-07-15 at commit `186c1a3`)
+
+Takes up direction finding **F3** — the last real feature on the board and the closest thing to
+the roadmap work the original `/improve next` invocation asked for. Written as a **design plan**
+(design decisions + rationale + open questions), not a bare build ticket, because the *shape*
+carried genuine choices even though the data and patterns already exist.
+
+| Plan | Title | Priority | Effort | Follow-up it closes | Status |
+|------|-------|----------|--------|---------------------|--------|
+| 035 | "What failed on this run?" — per-run failure view (API endpoint + dashboard route) | P2 | M | F3 (no per-run "what failed" view) | DONE (merged via PR #78) |
+| 036 | Order run-detail results in SQL before the cap (truncation drops passed, never failures) | P3 | S | #9 (cap-before-sort, found in 035 review) | DONE (merged via PR #79) |
+| 037 | Capture & surface richer per-run failure detail (stack, snippet, stdout/stderr, attachment metadata) — DESIGN | P2 | M–L | Deferred richer-failure-detail follow-up (flagged by 035's honesty note) | DONE — Pass A (storage+API) PR #80, Pass B (dashboard) PR #81 |
+| 038 | Fail-loud guard: a test that every workspace package dir is covered by `.github/dependabot.yml` (do NOT glob — the dashboard's TS-major ignore needs a separate entry) | P3 | S | #6 (new apps silently unwatched by Dependabot) | DONE (merged via PR #82) |
+| 039 | Sharpen the "dashboard TS 6 pin" docs with the dated blocker status (TS 7.0 has no programmatic API; unblocks at TS 7.1 ~Oct 2026) — investigation outcome of #7 | P4 | XS | #7 (investigated: still blocked, not liftable yet) | DONE (merged via PR #87) |
+| 040 | Stop Dependabot's root `/` entry from re-opening the dashboard TS-7 bump (add `typescript` semver-major ignore to entry 1, symmetric with `@types/node`) | P3 | XS | #10 (dashboard TS-major ignore bypassed by root fan-out — found closing #86) | DONE (merged via PR #88, commit `21e8c38`) |
+
+**Grounding that shaped the design** (verified via recon, not assumed): the per-run failure data
+is **already stored** (`test_results` keyed by `testRunId`, indexed) — so **no schema change, no
+migration**. There is **no per-run detail endpoint** today (`GET /projects/:id/runs` returns
+aggregate counts only) and the `/runs` page rows **aren't clickable** — so the work is a new
+`GET /projects/:id/runs/:runId` + a `/runs/[runId]` dashboard route + link wiring. A real
+**data-fidelity ceiling** is baked into the design: the parser stores only the first error
+message (≤10k chars) and **drops** stack traces, stdout/stderr, and attachments — richer detail
+is a deliberately-deferred parser+schema follow-up, and the UI must say so honestly rather than
+imply the tool is hiding data.
+
+**Open questions for the maintainer** (in the plan; recommendations given, none block building):
+default result scope (failures-only, recommended, vs. all-results-with-filter); whether the UI
+v1 ships a `?status=all` toggle; whether to surface an explicit "stack traces & screenshots not
+captured" affordance.
+
+**035 build + review (2026-07-15): DONE, merged via PR #78; main at `8c19cc4`.** Maintainer chose all three recommended
+answers (failures-first default, ship the toggle, show the note); built accordingly. 271 API +
+58 dashboard tests, E2E 8/8, tsc/svelte-check/lint clean, **no schema change**. Reviewer
+independently confirmed the two load-bearing properties bite (cross-project 404; failures-first
+default) via source mutations. `statusBadgeClass` extracted to `$lib/status.ts` and — good call
+by the executor — deliberately NOT applied to `flaky/+page.svelte` (its active/resolved/ignored
+status domain would silently mis-color under the per-result mapping). One follow-up recorded
+(#9, now DONE via 036). The un-stored richer failure detail (stack/stdout/screenshots) is now
+**spec'd as design plan 037** (2026-07-15, at `cb12646`): the parser already *parses* stack/
+snippet/errors[]/stdout/stderr/attachments and throws them away, and `test_results` has no column
+for them — so 037 adds a nullable `failure_detail jsonb` (additive migration 0007), stops the
+parser discarding, exposes the field on the run-detail endpoint, and renders it in the dashboard.
+Two genuine product decisions are flagged as open questions (OQ1: attachment metadata-only vs.
+inline base64 bytes; OQ2: include stdout/stderr) with recommended defaults.
+
+**037 build + review (2026-07-15): DONE, built in two passes; main at `38544ef`.** Maintainer
+locked OQ1 = attachment **metadata-only** (a hard "never store the base64 `body`" guarantee) and
+OQ2 = **include** stdout/stderr (capped 10k). **Pass A** (storage + API, PR #80): new nullable
+`failure_detail jsonb` (migration `0007`, additive `ADD COLUMN`, no backfill), parser
+`extractFailureDetail` (dedup errors, cap 10, clamp 10k, flatten stdout/stderr, attachment metadata
+only), ingest + run-detail endpoint expose it additively; `errorMessage` untouched. The executor
+caught a real trap — JUnit's internal `ParsedTestResultSchema` (zod) strips unknown keys, so it
+added `failureDetail: z.null()` or the field would be silently dropped on every JUnit result.
+Reviewer independently reproduced the metadata-only **bite** (injecting a `body` copy fails the
+`not.toHaveProperty('body')` test); 277 API tests green. **Pass B** (dashboard, PR #81): renders
+per-error message/snippet/collapsed-stack + collapsed stdout/stderr + attachment list, with the
+`errorMessage` `<pre>` fallback preserved for pre-upgrade rows; honesty note rewritten.
+**One REVISE**: Pass B moved messages from `<pre>` to `<p>` and stacks into collapsed `<details>`,
+which invalidated a pre-existing E2E assertion (`page.locator('pre').first()` → hidden). CI's E2E
+job (not a required check, but caught it) went red; the executor was sent back and dropped the
+stale assertion (the new "Stack trace" summary + "real message" assertions already cover the panel
+render). Re-ran green. Lesson: a pure-markup change can pass svelte-check + 58 unit tests yet break
+a real-render assertion — only E2E catches "in the DOM but collapsed." Richer attachment **bytes**
+(inline screenshots) remain out of scope by decision (OQ1).
+
+### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
+
+Provenance: the direction audit run mid–batch-5 surfaced three deferred findings beyond the
+plans that shipped — **F2** (the GitHub Action has zero tests), **F3** (no per-run "what
+actually failed on this run?" view), and **F6** (webhook docs promise Slack compatibility the
+generic payload can't deliver). Batch 7 takes up **F2**, which is the clear standout: it is the
+code Flackyness ships into *other people's* CI, it has no automated tests at all, and plan 032
+just modified `comment.sh` (added `&wait=true`) with no regression net.
+
+| Plan | Title | Priority | Effort | Follow-up it closes | Status |
+|------|-------|----------|--------|---------------------|--------|
+| 033 | Put a test harness around the shipped GitHub Action (`partition.jq` + `comment.sh`) | P1 | M | F2 (Action has zero tests) | DONE (merged via PR #76) |
+| 034 | Fix comment.sh's dead JUnit-XML detection (flip its test from pinning the bug to pinning the fix) | P3 | S | #8 (JUnit sniff dead code, found in 033 review) | DONE (merged via PR #77) |
+
+**Batch 7 complete (2026-07-15):** 033 (#76) then 034 (#77) merged; main at `186c1a3`. 033 put
+29 hermetic tests around the Action; its review found the JUnit-sniff dead-code bug (follow-up
+#8), which 034 then fixed in a one-line change with the test flipped from pinning the bug to
+pinning the fix. Both reviewed with independent bite-checks (a mutated `html_escape` ordering
+caught by 033's case 8; the reverted `head -n1` fix caught by 034's realistic-XML test).
+
+**Why not the other two audit findings:**
+- **F6 (webhook Slack docs) — reassessed as a non-issue, no plan.** The webhook posts a
+  *generic* JSON payload (`{event, project, newlyFlaky, newlyResolved, run, dashboardUrl}` —
+  `services/notifications.ts`). No **user-facing** doc tells anyone to point it at a Slack
+  incoming webhook; the only "Slack/Discord/Mattermost-compatible" language lives in the
+  `plans/016` backlog doc and a `🔮 Slack/Discord notifications` roadmap bullet in
+  `.agent/CONTEXT.md` — both correctly framed as future/generic. Slack-specific formatting was
+  explicitly deferred to v2 in plan 016. Nothing to fix; recorded here so it isn't re-audited.
+- **F3 (per-run "what failed?" view) — now PLANNED as plan 035 (batch 8, 2026-07-15).** Was
+  deferred here as needing a design plan; that design plan is now written (a new dashboard view +
+  `GET /projects/:id/runs/:runId`, no schema change). See the batch-8 section above.
+
+**Scope note for 033**: tests only — it touches **no** action script and **no** product code.
+Both layers are hermetic: `partition.jq` is a pure `(report, quarantine) → result` function
+tested through real `jq`; `comment.sh`'s "never fail the build" contract is tested with mock
+`curl`/`gh` on `PATH`. No Postgres, no network. The suites run in the existing `Tests` CI job
+and — unlike the route suites — do **not** self-skip without `DATABASE_URL`.
+
+**033 review (2026-07-15): APPROVED, PR #76.** 29/29 tests, both suites confirmed to *run*
+(not self-skip) with `DATABASE_URL` unset. Reviewer independently confirmed the suites bite:
+mutated `html_escape` ordering → case 8 caught the resulting double-escape; both of the
+executor's embedded mutation proofs (the `$e`-capture prefix drop, the upload-fail contract)
+pass. **A genuine bug surfaced and was reported, not fixed** (per the plan's "report, don't
+fix" rule) — see follow-up #8 below.
+
+### Batch 6 — pay down what batch 5's review surfaced (planned 2026-07-15 at commit `376ff26`)
+
+Batch 5's reviews left a numbered "Open follow-ups" list (below). Batch 6 takes up the
+top four, in two waves — wave 1 fixes correctness/CI debt in disjoint files (parallel-safe);
+wave 2 addresses the one **P0 security** hole plus the DX root cause behind the recurring
+ingest races.
+
+| Plan | Title | Priority | Effort | Follow-up it closes | Status |
+|------|-------|----------|--------|---------------------|--------|
+| 028 | Honest, visible trends: `null` (not `0`) for no-run days + NaN-clamp guard + per-test trend in dashboard | P1 | M | #1 (`projects.ts` NaN-through-clamp) | DONE (merged via PR #72) |
+| 029 | Kill the second latent test race; stop dogfooding a phantom merge SHA | P1/P2 | S | #2 (latent race), #3 (dogfood `github.sha`) | DONE (merged via PR #71) |
+| 030 | Make the agent-facing docs true again (CONTEXT.md, AGENTS.md) | P2 | S | — (doc drift caught in review) | DONE (merged via PR #73) |
+| 031 | Close the confused deputy: gate the dashboard mute write behind HTTP Basic Auth | **P0** | M | — (security hole found in direction audit) | DONE (merged via PR #74) |
+| 032 | Give ingest a completion signal (`?wait=true`), so nobody has to race the reconcile | P2 | M | #4 (no way to know reconcile finished) | DONE (merged via PR #75) |
+
+**Wave 1 complete (2026-07-15):** 028/029/030 landed via PRs #71–#73; main at `376ff26`.
+Each addressed a batch-5 review finding of the same recurring species — *something that
+looks green while quietly telling you nothing*: a `0%` trend that means "didn't run", a
+race that can't yet fail (so 029's part 1 was relabeled **hardening**, not a bug fix — it
+could not be made to fail at any injected delay), and a phantom merge-commit SHA in our own
+dogfood step.
+
+**Wave 2 complete (2026-07-15):** 031 (#74) then 032 (#75) merged; main at `12bda5b`. Both
+reviewed, APPROVED, and merged in that order (031 first as the P0; 032's branch was updated
+against main before merge, CI re-run green).
+- **031 (P0 security)** — the dashboard's `setStatus` gated the mute write on
+  `if (!env.ADMIN_TOKEN)`, which checks whether *the server* holds a token, not whether the
+  *requester* is authorized. Result: an anonymous POST could mute a test → the CI
+  `grepInvert` quarantine pattern picks it up → the downstream pipeline **skips that test**.
+  A confused deputy that ends in a disabled test is not a cosmetic bug. Fix: env-gated HTTP
+  Basic Auth in `hooks.server.ts` keyed on `DASHBOARD_PASSWORD`, `crypto.timingSafeEqual`,
+  fail-closed; unset password leaves behavior unchanged but logs a one-time loud warning if
+  `ADMIN_TOKEN` is set. Reviewer independently reproduced the attack (no-creds POST with a
+  valid Origin → 401 + row unchanged; correct creds → mute succeeds).
+- **032 (DX root cause)** — the un-awaited `updateFlakyTests` on the ingest path is the
+  single root cause behind three symptoms (the Action's misclassification, plans 027/029's
+  flaky tests, 026's E2E poll). Opt-in `?wait=true` awaits the reconcile and returns its
+  result; default path byte-for-byte unchanged; `updateFlakyTests` called **once**; webhook
+  stays fire-and-forget. Reviewer confirmed the synchronicity test **bites deterministically**
+  (removing the await fails it at the `reconcile`-present assertion; restored → 21/21 green).
+
 **Batch 1 complete (2026-07-10):** all 11 plans landed via PRs #36–#42, #44, #46–#48.
 Notable extras found during execution: pre-existing `Chart.svelte` SSR crash
 (fixed in #47); `pnpm db:migrate` requires root `.env` to exist (documented in
@@ -328,11 +480,13 @@ future audit should not re-derive it from scratch.
   CI *and ingesting its own report into Flackyness* is coverage, a live validation of
   the ingest path, and the most honest demo the project could have. Effort M.
 
-## Open follow-ups (found during batch 5, no plan yet)
+## Open follow-ups (found during batch 5)
 
-Recorded so they don't evaporate. Roughly in priority order.
+Recorded so they don't evaporate. Roughly in priority order. **Items 1–4 were taken up in
+batch 6** (plans 028/029/032 — see the batch-6 table above); they're kept here as the
+rationale. Items 5–7 remain unplanned.
 
-1. **`projects.ts:295` has the identical `NaN`-through-the-clamp bug that 025 fixed.**
+1. **[PLANNED → 028, DONE #72] `projects.ts:295` has the identical `NaN`-through-the-clamp bug that 025 fixed.**
    `Math.min(Math.max(parseInt(c.req.query('days') || '7', 10), 1), 90)` — `?days=abc`
    yields `NaN`, and `GET /projects/:id/trend?days=abc` returns an empty chart rather
    than defaulting or 400ing. 025 fixed only its own endpoint (scope); this is where the
@@ -340,7 +494,7 @@ Recorded so they don't evaporate. Roughly in priority order.
    `days` scalar to assert on, so its test asserts on the `days`/`rates` array lengths.
    Same bug also exists at `index.ts:96` (`parseInt(process.env.API_PORT || '8080', 10)`),
    though a garbage `API_PORT` is a far less likely input.
-2. **A second latent race of exactly 027's shape, in `tests.test.ts:145-161`.** A top-level
+2. **[PLANNED → 029 part 1, DONE #71] A second latent race of exactly 027's shape, in `tests.test.ts:145-161`.** A top-level
    `beforeAll` ingests a report (firing the un-awaited reconcile); a nested `beforeAll`
    later fabricates a `patch-route-flaky-test` row for the **same project**.
    `updateFlakyTests` sweeps *all* existing rows for a project, not just names in the
@@ -348,13 +502,13 @@ Recorded so they don't evaporate. Roughly in priority order.
    observed failing — there's a natural buffer (a whole `describe` block with four HTTP
    round-trips runs in between). **Deliberately reported and not fixed**: speculatively
    "fixing" a race you have never seen fail is how one flake becomes two.
-3. **026's dogfood CI step reproduces the very bug 024 was made to fix.** The `e2e` job
+3. **[PLANNED → 029 part 2, DONE #71] 026's dogfood CI step reproduces the very bug 024 was made to fix.** The `e2e` job
    passes `REF_NAME: ${{ github.ref_name }}` and `COMMIT_SHA: ${{ github.sha }}`, so on a
    PR the dogfooded run is recorded with branch `69/merge` and the phantom merge-commit
    SHA — confirmed in the CI log of PR #69. The action we *ship* (`action.yml`) now does
    this correctly; our own CI step does not. Low severity (it's demo data), but the
    inconsistency is exactly the kind of thing that erodes trust in the tool.
-4. **There is no way for an API client to know when flakiness reconciliation finished.**
+4. **[PLANNED → 032, DONE #75] There is no way for an API client to know when flakiness reconciliation finished.**
    `POST /api/v1/reports` returns `201` *before* `updateFlakyTests` has run. Every consumer
    that reads `flaky_tests` straight after an ingest must poll — plan 026's E2E global
    setup does, plan 027 now makes the API suite do, and any third-party integrator will hit
@@ -365,13 +519,69 @@ Recorded so they don't evaporate. Roughly in priority order.
    no tsup config, despite `declaration: true` in the root tsconfig. Harmless for an app
    with no consumers, but the long-standing tsconfig comment blaming "baseUrl injected by
    tsup's d.ts builder" describes something that does not happen.
-6. **Dependabot maintenance obligation**: the npm entry lists `/` and `/apps/api`
-   explicitly instead of an `/apps/*` glob (a glob would overlap the dashboard entry and
-   double-open its PRs). **A new app under `apps/` must be added to that list by hand, or
-   it silently gets no dependency updates.**
-7. **The dashboard TS 6 pin is temporary.** Lift it when `svelte-check` supports TS 7:
-   bump the dashboard's TypeScript and delete the `typescript` majors ignore from its
-   Dependabot entry.
+6. **[DONE — plan 038, merged via PR #82, 2026-07-15] Dependabot maintenance obligation**:
+   the npm entry lists `/` and `/apps/api` explicitly instead of an `/apps/*` glob (a glob
+   would overlap the dashboard entry and double-open its PRs). A new app under `apps/` used
+   to silently get no dependency updates if omitted. Now `apps/api/src/dependabot-coverage.test.ts`
+   makes it *loud* — a static scan that fails CI if any on-disk workspace package dir (apps/* or
+   packages/* with a package.json, plus root) isn't listed (quoted) in `dependabot.yml`. The glob
+   was rejected as the fix: it defeats the dashboard's separate TS-major ignore. Bite-proof: a
+   throwaway `apps/_bite_app` turns the test red.
+7. **The dashboard TS 6 pin is temporary — but still BLOCKED as of 2026-07-15 (investigated).**
+   Root cause is deeper than the old `ts.default.sys` crash note: **TypeScript 7.0 GA (July 2026)
+   deliberately ships no stable *programmatic* API**, and Svelte's template type-checking (what
+   `svelte-check` does) needs it — so Svelte/Vue/Astro/MDX can't type-check on TS 7.0 at all. The
+   API is expected in **TS 7.1 (~Oct 2026)**; official Svelte guidance is *stay on TS 6 until then*.
+   `svelte-check` latest is still **4.7.2** (no TS-7-compatible release). **Do NOT attempt to lift
+   the pin before both (a) TS 7.1 GA and (b) a `svelte-check` release that supports it.** Tracking:
+   `sveltejs/language-tools#2733`. Doc references (AGENTS.md, `.agent/CONTEXT.md`, `dependabot.yml`)
+   sharpened with this dated status in plan 039. Recheck at the next `reconcile` after ~Oct 2026.
+8. **[DONE — fixed in plan 034, PR #77, 2026-07-15] `comment.sh`'s JUnit-XML sniff was dead code.**
+   `first_nonspace_char="$(grep -m1 -o '[^[:space:]]' "$REPORT_PATH")"` then `[ "$first_nonspace_char" = "<" ]`
+   — `grep -m1` limits to the first matching *line* and `-o` prints every match on it, so for
+   any realistic `<?xml …?>` first line the variable holds ~36 characters, never the literal
+   `<`. The intended friendly "looks like JUnit XML — skipping the PR comment" warning never
+   fires; execution falls through to the generic `jq` parse-failure branch a few lines later.
+   **Severity LOW**: that fallthrough *also* warns-and-exits-0, so the build-safety contract is
+   intact — the only user-visible effect is a raw jq parse error in the log instead of the
+   friendlier message. Confirmed identical on BSD grep and GNU grep 3.12 (the CI runner). A
+   correct fix is a one-liner (e.g. `grep -m1 -o '[^[:space:]]' | head -n1`, or read the first
+   byte differently). **Note**: `action-comment-sh.test.ts` currently *pins this buggy
+   behavior* (the `BUG:` test asserts the fallthrough), so a fix PR must update that test — it
+   is deliberately labeled so the next person knows.
+
+9. **[DONE — plan 036, merged via PR #79, 2026-07-15] `GET /projects/:id/runs/:runId?status=all` caps
+   results before sorting.** The handler fetches `RUN_RESULTS_CAP + 1` rows with **no SQL
+   `ORDER BY`**, slices to the cap, then sorts in JS (failed→flaky→skipped→passed). So a single
+   run with >2000 results under `?status=all` could truncate *failures* (kept in the dropped
+   tail) rather than passed rows — the opposite of the "failures first" intent. **Severity LOW**:
+   the default (failures-only) scope never realistically hits the cap, `truncated:true` already
+   signals a capped set, and Postgres's insertion-order heap scan means failures are usually
+   interleaved (not all in the tail). **Fix**: add a SQL `ORDER BY` on a status-priority `CASE`
+   (+ `testName`) *before* `LIMIT`, so truncation drops passed rows first; the JS sort then
+   becomes a redundant tiebreak. One-liner; deferred as not worth a REVISE round for a
+   pathological-suite + opt-in-`all` edge.
+
+10. **[DONE — plan 040, merged via PR #88, 2026-07-15] Dependabot's dashboard `typescript`-major
+    ignore was bypassed by the root `/` entry's pnpm fan-out.** Found 2026-07-15 while closing
+    Dependabot PR **#86**, which
+    proposed bumping **`apps/dashboard`**'s `typescript` 6→7 — the exact bump the dashboard's TS-6
+    pin (follow-up #7) exists to block. **Confirmed root cause:** the FIRST `npm` `updates` entry
+    (`directories: ["/", "/apps/api"]`) ignores only `@types/node` majors, not `typescript` majors.
+    Its `/` root fans out across the whole pnpm workspace — including `apps/dashboard` (root
+    `package.json` declares no `typescript` of its own, so #86 can only be the fan-out) — so it
+    re-opens the dashboard TS-major bump that the *second* entry's `typescript` ignore is meant to
+    stop. **Discriminating proof:** `@types/node` (ignored in BOTH entries) has never leaked;
+    `typescript` (ignored only in entry 2) did. Also #86's branch was `…/typescript-7.0.2` with no
+    directory suffix — the signature of a `/` entry, not the scoped dashboard entry. **Fix (plan
+    040):** add the `typescript` semver-major ignore to entry 1, symmetric with `@types/node`.
+    Interim protection already in place: #86 is CLOSED and carries `@dependabot ignore this major
+    version` (persistent block); CI's Type Check job independently reds any dashboard TS-7 bump.
+    **Deferred alternative (kept as a future follow-up):** collapse the two `npm` entries into a
+    single root `/` entry (Dependabot's recommended pnpm-workspace shape) — would auto-cover new
+    apps (dissolving #6) but restructures the config, forces a rewrite of plan 038's coverage guard,
+    and relies on pnpm root-fan-out lockfile behaviour with open dependabot-core bugs (#11135,
+    #10203); needs a Dependabot dry-run to de-risk before adopting. Do NOT do it in plan 040.
 
 ## Findings considered and rejected
 

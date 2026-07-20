@@ -6,14 +6,34 @@ import app from '../index';
  * readAuth is MOUNTED, this one asserts it WORKS. Neither subsumes the other
  * — a mounted middleware with inverted logic passes the coverage guard.
  *
- * The blocks below need no database: every assertion is about the 401 path,
- * which READ_TOKEN short-circuits before any query. The project-token
- * fallback — including the cross-project rejection, which is the security
- * property this whole plan exists to establish — is DB-backed and lives in
- * the describeWithDb block at the bottom of this file.
+ * Most of the block below needs no database: READ_TOKEN's own comparison is
+ * constant-time and in-memory, so the "no token" / "correct token" cases
+ * short-circuit before any query. Two assertions do not, and are gated
+ * accordingly via `it.skipIf`:
+ *   - "401 avec un mauvais token" sends a non-matching Bearer token to a
+ *     project-scoped route, which falls through readAuth to its
+ *     project-token fallback and calls db.query.projects.findFirst. Without
+ *     DATABASE_URL, the lazy `db` Proxy (db/index.ts) throws synchronously
+ *     and the request 500s instead of 401ing — skipped unless `hasDatabase`.
+ *   - "le PATCH admin reste gouverné par ADMIN_TOKEN" hits adminAuth(),
+ *     which itself 500s when ADMIN_TOKEN is unset, before ever comparing
+ *     tokens — skipped unless `hasAdminToken`.
+ * Both stay in this describe (rather than moving to describeWithDb below)
+ * because they only need the bare env var, not the fixture projects that
+ * block creates.
+ *
+ * The project-token fallback's remaining behaviour — including the
+ * cross-project rejection, which is the security property this whole plan
+ * exists to establish — is DB-backed and lives in the describeWithDb block
+ * at the bottom of this file.
  */
 
 const PROBE = '/api/v1/projects/00000000-0000-0000-0000-000000000000/stats';
+
+// Declared here, not just below describeWithDb, because two assertions in
+// the block immediately below use `it.skipIf` against these same flags.
+const hasDatabase = !!process.env.DATABASE_URL;
+const hasAdminToken = !!process.env.ADMIN_TOKEN;
 
 describe('read endpoint gating', () => {
   afterEach(() => {
@@ -32,7 +52,7 @@ describe('read endpoint gating', () => {
     expect(res.status).toBe(401);
   });
 
-  it('401 avec un mauvais token', async () => {
+  it.skipIf(!hasDatabase)('401 avec un mauvais token', async () => {
     process.env.READ_TOKEN = 'read-secret';
     const res = await app.request(PROBE, {
       headers: { Authorization: 'Bearer nope' },
@@ -54,7 +74,7 @@ describe('read endpoint gating', () => {
     expect(res.status).toBe(401);
   });
 
-  it('le PATCH admin reste gouverné par ADMIN_TOKEN, pas par READ_TOKEN', async () => {
+  it.skipIf(!hasAdminToken)('le PATCH admin reste gouverné par ADMIN_TOKEN, pas par READ_TOKEN', async () => {
     process.env.READ_TOKEN = 'read-secret';
     const res = await app.request('/api/v1/tests/flaky/00000000-0000-0000-0000-000000000000', {
       method: 'PATCH',
@@ -70,8 +90,6 @@ describe('read endpoint gating', () => {
 // The admin API returns a project's token exactly once, at creation
 // (admin.ts:155) — that is why both projects are created here rather than
 // reusing a fixture.
-const hasDatabase = !!process.env.DATABASE_URL;
-const hasAdminToken = !!process.env.ADMIN_TOKEN;
 const describeWithDb = hasDatabase && hasAdminToken ? describe : describe.skip;
 
 describeWithDb('read endpoint gating — project-token fallback', () => {

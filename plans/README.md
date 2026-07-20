@@ -286,6 +286,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 |------|-------|----------|--------|---------------------|--------|
 | 041 | Gate the 11 read endpoints behind an optional `READ_TOKEN`, with a project-token fallback and a route-auth coverage guard | P2 | M | Roadmap item #0 (`docs/STRATEGY.md`); `.agent/CONTEXT.md:575-576` « revisit if commercialised » | DONE (merged via PR #95, commit `2f51679`) |
 | 042 | Replace four classes of non-biting assertions in the API suite with assertions a source mutation breaks (A1 of the mutation-testing effort) | P3 | S | — | TODO |
+| 043 | Fix the inert admin brute-force limiter (mounted after the auth it protects) and make rate-limit.ts testable; A2a of the mutation-testing effort | P2 | S | A1 (plan 042); security finding | TODO |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 

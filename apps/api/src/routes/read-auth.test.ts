@@ -243,4 +243,87 @@ describeWithDb('read endpoint gating — project-token fallback', () => {
       expect(res.status).toBe(401);
     }
   );
+
+  // Companion matrix to CROSS_PROJECT_ROUTES above, testing the opposite
+  // direction: project A's OWN token must be accepted on all 9 scoped
+  // routes. Only 2 of the 9 (/stats and /tests/*/history) previously had any
+  // acceptance coverage — a resolver-wiring mistake that fails CLOSED (e.g.
+  // a resolver that always returns a constant, or one that reads the wrong
+  // field and lands on `undefined`) would 401 every legitimate caller too,
+  // and the REJECT-only matrix above would stay green throughout, since it
+  // never sends a token that's supposed to succeed. That failure mode is the
+  // dangerous one for /projects/:id/quarantine specifically: it's the one
+  // route the GitHub Action calls with a project token in production, and
+  // comment.sh degrades silently (`warn` + `exit 0`) on any non-200 — so a
+  // fail-closed break here would ship green and stay invisible in both CI
+  // and prod.
+  //
+  // We assert `not.toBe(401)`, not `toBe(200)`: the property under test is
+  // "this credential was accepted by readAuth", not "this route found data"
+  // — /runs/:runId legitimately 404s for a synthetic run id even with a
+  // fully valid credential, and that must not fail this matrix.
+  //
+  // Query-parameter choice per row (deliberately NOT copied from the reject
+  // matrix):
+  //
+  // - `/projects/:id/*` rows carry NO `?project=` query string. Those
+  //   routes' resolver is `(c) => c.req.param('id')` — it never looks at the
+  //   query string at all, so appending one would be inert for the real
+  //   code path and wouldn't strengthen anything. More importantly, adding
+  //   one here would risk the same masking problem the reject matrix had to
+  //   solve, just mirrored: the reject matrix had to ADD a query param
+  //   because omitting it let a broken "reads query instead of param"
+  //   resolver coincidentally land on the SAME result (401) as the correct
+  //   one. In the accept direction that ambiguity doesn't exist — omitting
+  //   the query param means a resolver that mistakenly reads
+  //   `query('project')` instead of `param('id')` sees `undefined` (nothing
+  //   was sent), which readAuth treats as "no project to check against" and
+  //   401s — immediately DIFFERENT from the expected non-401, so the bug is
+  //   still caught, with a simpler request. A constant/wrong-field resolver
+  //   (this task's mutation example) is caught the same way regardless of
+  //   the query string, since it never matches the real project id either
+  //   way.
+  // - The two `/tests/:testName/*` rows MUST carry `?project=<projectA.id>`
+  //   — not as a defensive choice but because it's structurally required:
+  //   those routes' resolver IS `(c) => c.req.query('project') ?? null`,
+  //   there is no separate path param to fall back to, and the handler
+  //   itself 400s without a `project` query param before readAuth is even
+  //   reached in some code paths. Omitting it would make `wanted` resolve to
+  //   `null`, which readAuth treats as "route is not project-scoped" and
+  //   401s even for a fully legitimate token — a false failure that would
+  //   prove nothing about the resolver's wiring, only that the test forgot
+  //   the one query param these two routes actually depend on.
+  //
+  // A failure names the offending route via `$name`.
+  const ACCEPT_ROUTES: Array<{ name: string; path: (idA: string) => string }> = [
+    { name: '/projects/:id/stats', path: (a) => `/api/v1/projects/${a}/stats` },
+    { name: '/projects/:id/flaky-tests', path: (a) => `/api/v1/projects/${a}/flaky-tests` },
+    { name: '/projects/:id/quarantine', path: (a) => `/api/v1/projects/${a}/quarantine` },
+    { name: '/projects/:id/runs', path: (a) => `/api/v1/projects/${a}/runs` },
+    {
+      name: '/projects/:id/runs/:runId',
+      path: (a) => `/api/v1/projects/${a}/runs/${FAKE_RUN_ID}`,
+    },
+    { name: '/projects/:id/analysis', path: (a) => `/api/v1/projects/${a}/analysis` },
+    { name: '/projects/:id/trend', path: (a) => `/api/v1/projects/${a}/trend` },
+    {
+      name: '/tests/:testName/history?project=',
+      path: (a) => `/api/v1/tests/some-test/history?project=${a}`,
+    },
+    {
+      name: '/tests/:testName/trend?project=',
+      path: (a) => `/api/v1/tests/some-test/trend?project=${a}`,
+    },
+  ];
+
+  it.each(ACCEPT_ROUTES)(
+    'ACCEPTE le token du projet A sur $name (matrice accept des 9 routes scoped)',
+    async ({ path }) => {
+      process.env.READ_TOKEN = 'read-secret';
+      const res = await app.request(path(projectA.id), {
+        headers: { Authorization: `Bearer ${projectA.token}` },
+      });
+      expect(res.status).not.toBe(401);
+    }
+  );
 });

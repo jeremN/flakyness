@@ -588,10 +588,10 @@ describeWithDb('Projects API Integration Tests', () => {
     // `every(...)` is vacuously true, so such an assertion would pass even with
     // the filter deleted. Asserting emptiness outright is what IS provable here.
     //
-    // Why this empty case cannot prove the endpoint's subset invariant: no
-    // that invariant. `analyzeFlakiness` drops any test with fewer than
+    // No fixture in this describe's shared projects can prove that invariant
+    // either: `analyzeFlakiness` drops any test with fewer than
     // `minRuns` runs (flakiness.ts:16 sets minRuns=3; the filter is at
-    // flakiness.ts:119). The only populated project, `runDetailProjectId`,
+    // flakiness.ts:119). The only pre-existing populated project, `runDetailProjectId`,
     // ingests two reports (:379 and :535) — two runs per test, still under the
     // threshold — so its analysis is empty too; probed live, 0 entries.
     // Proving the invariant needs a project carrying >= minRuns runs of both a

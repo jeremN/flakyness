@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, ProjectStats, FlakyTest, TestRun } from '../app.d';
 
-vi.mock('$lib/api', () => ({
+vi.mock('$lib/server/api', () => ({
   getProjectStats: vi.fn(),
   getFlakyTests: vi.fn(),
   getProjectRuns: vi.fn(),
   getFlakeTrend: vi.fn(),
 }));
 
-import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/api';
+import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/server/api';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01' };

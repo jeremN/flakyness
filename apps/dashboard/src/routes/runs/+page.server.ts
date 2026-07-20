@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types';
-import { getProjectRuns } from '$lib/api';
+import { getProjectRuns } from '$lib/server/api';
 
 export const load: PageServerLoad = async ({ parent }) => {
   const { selectedProject } = await parent();

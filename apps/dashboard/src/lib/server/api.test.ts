@@ -27,7 +27,9 @@ describe('lib/api', () => {
     const projects = await getProjects();
 
     expect(projects).toEqual([{ id: 'a', name: 'x', createdAt: '2024-01-01' }]);
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects');
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
+      headers: {},
+    });
   });
 
   it('throws a kit HttpError with the upstream status on a non-OK response', async () => {
@@ -69,6 +71,20 @@ describe('lib/api', () => {
       expect((err as { status: number }).status).toBe(503);
       expect((err as { body: { message: string } }).body.message).toContain('http://localhost:8080');
     }
+  });
+
+  it('surfaces a configuration message, not a network message, on 401', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('Unauthorized', { status: 401 }))
+    );
+
+    await expect(getProjects()).rejects.toMatchObject({
+      status: 500,
+      body: { message: expect.stringContaining('READ_TOKEN') },
+    });
+
+    vi.unstubAllGlobals();
   });
 
   it('getFlakyTests builds the URL with the given status', async () => {

@@ -1,4 +1,4 @@
-import { getRunDetail } from '$lib/api';
+import { getRunDetail } from '$lib/server/api';
 import { isHttpError } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 

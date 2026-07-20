@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/public';
+import { env as privateEnv } from '$env/dynamic/private';
 import { error, isHttpError } from '@sveltejs/kit';
 import type {
   Project,
@@ -9,7 +10,7 @@ import type {
   TestHistory,
   TestTrend,
   AnalysisResponse,
-} from '../app.d';
+} from '../../app.d';
 
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -26,7 +27,29 @@ export class APIError extends Error {
 
 async function fetchJson<T>(path: string): Promise<T> {
   try {
-    const response = await fetch(`${API_URL}${path}`);
+    // Server-only by construction: this module lives under $lib/server, which
+    // SvelteKit refuses to bundle into client code. READ_TOKEN must never be
+    // exposed to the browser, which is also why it is NOT prefixed PUBLIC_
+    // (unlike PUBLIC_API_URL above).
+    const headers: Record<string, string> = {};
+    if (privateEnv.READ_TOKEN) {
+      headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
+    }
+
+    const response = await fetch(`${API_URL}${path}`, { headers });
+
+    // A 401 here means the API has READ_TOKEN set and this dashboard either
+    // has none or has the wrong one. Without this branch the generic message
+    // below would blame the network, sending the operator to debug
+    // connectivity for a configuration problem.
+    if (response.status === 401) {
+      throw error(
+        500,
+        `The Flackyness API rejected this dashboard's read credentials for ${path}. ` +
+          'The API has READ_TOKEN set; set the same value as READ_TOKEN in the ' +
+          "dashboard's environment."
+      );
+    }
 
     if (!response.ok) {
       throw error(

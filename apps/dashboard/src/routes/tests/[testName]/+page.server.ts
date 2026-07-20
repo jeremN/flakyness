@@ -1,4 +1,4 @@
-import { getTestHistory, getTestTrend } from '$lib/api';
+import { getTestHistory, getTestTrend } from '$lib/server/api';
 import { error } from '@sveltejs/kit';
 
 // Mirrors the API's own guard (apps/api/src/routes/tests.ts `/:testName/trend`

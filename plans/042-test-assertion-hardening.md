@@ -271,7 +271,7 @@ describeWithDb('Reports Route Authentication', () => {
   // reports.ts:62 mounts `reports.use('*', projectAuth())` ahead of the
   // handler, so an unauthenticated request is rejected before validation or
   // JSON parsing runs. These are smoke checks that the guard is still mounted.
-  // Real input-validation coverage lives in reports.test.ts:120-171, which
+  // Real input-validation coverage lives in reports.test.ts:120-174, which
   // sends a valid project token.
   describe('POST /api/v1/reports', () => {
     it('rejects an unauthenticated request before validating the body', async () => {

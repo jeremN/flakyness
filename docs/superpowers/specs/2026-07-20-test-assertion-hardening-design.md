@@ -186,7 +186,7 @@ deleting them would lose the smoke check that `projectAuth()` is still mounted,
 which is exactly the property their new name claims.
 
 They are **not** given valid tokens to test validation for real. That would
-duplicate `reports.test.ts:120-171` and drag a DB dependency into the one API
+duplicate `reports.test.ts:120-174` and drag a DB dependency into the one API
 suite that currently has none.
 
 ### F4 — assert invariants, not literals
@@ -210,14 +210,21 @@ semantic properties instead:
 > same defect class as F1, one level up: an assertion that looks like a check
 > and cannot fail.
 >
-> The obvious remedy — point the test at the one populated project
-> (`runDetailProjectId`, which ingests `mixedReport`) — was tried and also
-> fails: `analyzeFlakiness` drops any test with fewer than `minRuns` runs
-> (`flakiness.ts:16` sets `minRuns = 3`; the filter is `flakiness.ts:119`), and
-> that project ingests a single report, so every test has one run and the
-> analysis is empty too. An **anti-vacuity guard** (`allTests.length > 0`) is
-> what surfaced this: it failed before any mutation was applied, refusing to
-> let the test report green while asserting nothing.
+> The obvious remedy — point the test at the one populated project,
+> `runDetailProjectId` — was tried and also fails: `analyzeFlakiness` drops any
+> test with fewer than `minRuns` runs (`flakiness.ts:16` sets `minRuns = 3`;
+> the filter is `flakiness.ts:119`), and that project ingests **two** reports
+> (`projects.test.ts:379` and `:535`) — two runs per test, still under the
+> threshold — so its analysis is empty too. An **anti-vacuity guard**
+> (`allTests.length > 0`) is what surfaced this: it failed before any mutation
+> was applied, refusing to let the test report green while asserting nothing.
+>
+> *(Correction, final review: an earlier version of this note said that project
+> ingested a single report, and attached "verified, not assumed" to the claim.
+> The count was wrong — it ingests two — and the "verified" tag was not earned
+> for that detail. The mechanism and the conclusion are unchanged: 2 < 3, so
+> the analysis is empty either way. Recorded because a reasoning record that
+> overstates what was checked is the same defect this spec exists to remove.)*
 >
 > No fixture in the file can prove the invariant without ingesting ≥ 3 reports,
 > which is new fixture setup — explicitly excluded by this spec's own rule
@@ -229,9 +236,22 @@ semantic properties instead:
 > (`expected null to deeply equal []`). The invariant and its `minRuns`
 > reasoning are recorded as a code comment and routed to **A2**.
 >
+> **Second gap, same endpoint — the clamps are also unproven.** The shipped
+> test asserts `windowDays ∈ [1, 90]` and `threshold ∈ [0, 1]`, which are the
+> ranges the clamps at `projects.ts:387-399` enforce. But the request sends no
+> `days` or `threshold`, so it reads the resolved defaults (14 / 0.05) — both
+> mid-range. Deleting **both** clamps leaves the test green (verified at final
+> review). The assertions are still strictly stronger than the `toBeDefined()`
+> they replaced, so nothing regressed; but they pin the range, not the clamp.
+> Proving the clamp needs a request with out-of-range params — `days=999`,
+> `threshold=5` — which is a new test case, so it goes to **A2** alongside the
+> subset invariant. The code comment at the assertion says so, rather than
+> claiming coverage it does not have.
+>
 > This is the spec's governing principle applied to the spec itself: an
 > assertion that cannot be made to fail does not ship, even when it is the one
-> the author designed.
+> the author designed — and an assertion that is merely *weaker than its
+> comment implies* gets its comment corrected rather than its gap hidden.
 
 ## Scope
 
@@ -243,7 +263,7 @@ contract; any change to non-test source. If a mutation proof reveals a real
 product bug, it is reported, not fixed here.
 
 **Explicitly not in scope:** a repo-wide sweep for every `toBeDefined()`. The
-repo has **40** of them across 8 files (counted at `2f51679`). Most are on
+repo has **40** of them across 9 files (counted at `2f51679`). Most are on
 plain object properties, where `toBeDefined()` *can* fail and the assertion is
 merely weak — the F4 class. Triaging all 40 is an audit, and audits are what B
 (Stryker) exists to automate; doing it by hand here would be slow, unprovable,

@@ -85,6 +85,23 @@ app.get('/api/v1', (c) => {
   });
 });
 
+// Fires once, at module evaluation (server start), not per-request — loud
+// enough that an operator cannot miss it in the boot log, without spamming
+// every request. Mirrors the DASHBOARD_PASSWORD warning in the dashboard's
+// hooks.server.ts, and follows the same reasoning (plan 041, D1): leaving
+// reads open is a legitimate choice for a network-isolated deployment, so we
+// warn rather than hard-fail.
+if (!process.env.READ_TOKEN) {
+  logger.warn(
+    'READ_TOKEN is not set — all read endpoints are unauthenticated, and ' +
+      'GET /api/v1/projects enumerates every project on this instance. Anyone ' +
+      'who can reach this API can read every project\'s stats, runs, flaky ' +
+      'tests and quarantine list. Set READ_TOKEN to require a Bearer token on ' +
+      'read endpoints, or confirm this deployment is genuinely network-isolated. ' +
+      'See docs/API.md.'
+  );
+}
+
 // Mount routes
 app.route('/api/v1/reports', reports);
 app.route('/api/v1/projects', projectsRouter);

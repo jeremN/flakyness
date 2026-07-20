@@ -572,8 +572,8 @@ Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-to
 - ✅ `packages/shared` dead code — removed.
 - ✅ 14 Svelte `state_referenced_locally` warnings — converted to `$derived` (svelte-check now 0/0).
 
-**Accepted by design (revisit if commercialised / multi-tenant):**
-- 🔵 **Unauthenticated read APIs** (`/projects/*`, `/tests/*`) — intentional for the current internal/self-hosted use (concept validation). If sold, add an env-gated read token that the dashboard's server-side loads pass.
+**Resolved in branch `design/read-hardening` (plan 041):**
+- ✅ **Read APIs are now optionally token-gated.** An env-gated `READ_TOKEN` (`apps/api/src/middleware/auth.ts`'s `readAuth`) sits in front of all 11 read endpoints. Unset (the default, unchanged for existing installs): reads stay open, and the API logs a boot warning so the choice is conscious rather than accidental. Set: a request needs either `READ_TOKEN` itself (grants every project) or a project's own token (grants only that project) — the latter is how the GitHub Action reads its own quarantine list without a second secret. A route-table coverage guard (`routes-auth-coverage.test.ts`) fails CI if a new `GET` under `/api/v1` ships without `readAuth` mounted. The dashboard presents `READ_TOKEN` from `$env/dynamic/private` on every SSR call (`apps/dashboard/src/lib/server/api.ts`).
 
 **Open / optional:**
 - ✅ ~~TypeScript 7 for the API~~ (Complete — Plan 023: `apps/api` is on TS 7, `ignoreDeprecations` removed from root tsconfig since `tsc --noEmit` and `pnpm build` both pass clean under TS 7 without it; `apps/dashboard` stays on TS 6, fenced in `.github/dependabot.yml`, until svelte-check supports TS 7 — blocked on TS 7.1, ~Oct 2026, see AGENTS.md / `sveltejs/language-tools#2733`). Still open: consider `noUncheckedIndexedAccess`.
@@ -582,7 +582,7 @@ Resolved by `main`'s hardening pass (`d613f00`): UUID param validation, admin-to
 **Ops / scaling notes:**
 - `main` is **branch-protected**: PRs + green CI (Lint, Type Check, Tests, Build, Docker Build) required to merge. `enforce_admins` is off, so the owner can bypass in emergencies — flip it on for strict enforcement.
 - Rate limiting (`hono-rate-limiter`) uses an **in-memory** store, so limits are per-instance. Move to a shared (Redis) store before running more than one API replica.
-- Read APIs (`/projects/*`, `/tests/*`) are unauthenticated by design (concept stage). For multi-tenant/SaaS: add an env-gated read token + per-project token scoping.
+- Read APIs (`/projects/*`, `/tests/*`) support optional `READ_TOKEN` gating with per-project token scoping (see "Resolved in branch `design/read-hardening`" above). Still no orgs/users/roles — that's multi-tenant/SSO territory (see Open / optional above), unaffected by this.
 - The Dependabot lockfile-sync workflow (`dependabot-lockfile.yml`) has run live repeatedly since 2026-06-04 (27+ successful runs as of this writing, 1 failure) and has produced real `chore(deps): sync pnpm-lock.yaml` commits — the earlier "hasn't run live yet" note was stale even at the time it was written.
 
 ### Low Priority

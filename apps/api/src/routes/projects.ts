@@ -4,6 +4,7 @@ import { eq, desc, and, gte, inArray, sql } from 'drizzle-orm';
 import { db, projects, flakyTests, testRuns, testResults } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
+import { readAuth } from '../middleware/auth';
 
 const projectsRouter = new Hono();
 
@@ -59,7 +60,7 @@ export function buildGrepInvert(mutedTestNames: string[]): string {
  *
  * List all projects
  */
-projectsRouter.get('/', async (c) => {
+projectsRouter.get('/', readAuth(), async (c) => {
   const allProjects = await db
     .select({
       id: projects.id,
@@ -77,7 +78,7 @@ projectsRouter.get('/', async (c) => {
  *
  * Get project statistics
  */
-projectsRouter.get('/:id/stats', async (c) => {
+projectsRouter.get('/:id/stats', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -97,7 +98,7 @@ projectsRouter.get('/:id/stats', async (c) => {
  *
  * Get flaky tests for a project
  */
-projectsRouter.get('/:id/flaky-tests', async (c) => {
+projectsRouter.get('/:id/flaky-tests', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -150,7 +151,7 @@ projectsRouter.get('/:id/flaky-tests', async (c) => {
  * are no muted tests — a CI job passing an empty pattern to
  * `--grep-invert` must run the full suite, never zero tests.
  */
-projectsRouter.get('/:id/quarantine', async (c) => {
+projectsRouter.get('/:id/quarantine', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -206,7 +207,7 @@ projectsRouter.get('/:id/quarantine', async (c) => {
  *
  * Get recent test runs for a project
  */
-projectsRouter.get('/:id/runs', async (c) => {
+projectsRouter.get('/:id/runs', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -266,7 +267,7 @@ projectsRouter.get('/:id/runs', async (c) => {
  * unbounded payload; `truncated: true` signals the cap was hit (mirrors the
  * quarantine endpoint's flag).
  */
-projectsRouter.get('/:id/runs/:runId', async (c) => {
+projectsRouter.get('/:id/runs/:runId', readAuth((c) => c.req.param('id')), async (c) => {
   const parsedProjectId = uuidSchema.safeParse(c.req.param('id'));
   if (!parsedProjectId.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -363,7 +364,7 @@ projectsRouter.get('/:id/runs/:runId', async (c) => {
  *
  * Get real-time flakiness analysis (not cached)
  */
-projectsRouter.get('/:id/analysis', async (c) => {
+projectsRouter.get('/:id/analysis', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -416,7 +417,7 @@ projectsRouter.get('/:id/analysis', async (c) => {
  * with zero runs reports `null` in `rates`, never `0` — see the comment
  * below where `rates` is built for why.
  */
-projectsRouter.get('/:id/trend', async (c) => {
+projectsRouter.get('/:id/trend', readAuth((c) => c.req.param('id')), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);

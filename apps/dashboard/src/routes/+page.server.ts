@@ -1,4 +1,4 @@
-import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/api';
+import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/server/api';
 import type { Project } from '../app.d';
 
 // Typed locally (rather than via `./$types`' `PageServerLoad`) so that importing

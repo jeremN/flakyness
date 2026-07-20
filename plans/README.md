@@ -276,6 +276,16 @@ render). Re-ran green. Lesson: a pure-markup change can pass svelte-check + 58 u
 a real-render assertion — only E2E catches "in the DOM but collapsed." Richer attachment **bytes**
 (inline screenshots) remain out of scope by decision (OQ1).
 
+### Batch 9 — roadmap item #0: read-endpoint hardening (planned 2026-07-20 at commit `1607b01`)
+
+Premier item de `docs/STRATEGY.md` après la révision de la roadmap sur le code réel. Écrit comme
+un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que le choix de posture
+— ouvert par défaut plutôt que fermé — est une décision produit, pas un détail d'implémentation.
+
+| Plan | Title | Priority | Effort | Follow-up it closes | Status |
+|------|-------|----------|--------|---------------------|--------|
+| 041 | Gate the 11 read endpoints behind an optional `READ_TOKEN`, with a project-token fallback and a route-auth coverage guard | P2 | M | Roadmap item #0 (`docs/STRATEGY.md`); `.agent/CONTEXT.md:575-576` « revisit if commercialised » | TODO |
+
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
 Provenance: the direction audit run mid–batch-5 surfaced three deferred findings beyond the

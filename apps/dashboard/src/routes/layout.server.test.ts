@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project } from '../app.d';
 
-vi.mock('$lib/api', () => ({
+vi.mock('$lib/server/api', () => ({
   getProjects: vi.fn(),
 }));
 
-import { getProjects } from '$lib/api';
+import { getProjects } from '$lib/server/api';
 import { load } from './+layout.server';
 
 const projectA: Project = { id: 'a', name: 'Project A', createdAt: '2024-01-01' };

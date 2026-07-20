@@ -2,7 +2,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { fail } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
-import { getFlakyTests } from '$lib/api';
+import { getFlakyTests } from '$lib/server/api';
 
 export const load: PageServerLoad = async ({ url, parent }) => {
   const { selectedProject } = await parent();

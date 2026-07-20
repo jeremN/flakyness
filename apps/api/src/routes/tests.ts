@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq, desc, and, gte } from 'drizzle-orm';
 import { db, testResults, testRuns, flakyTests } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
-import { adminAuth } from '../middleware/auth';
+import { adminAuth, readAuth } from '../middleware/auth';
 
 const testsRouter = new Hono();
 
@@ -133,7 +133,7 @@ export function buildTrend(
  *
  * Get run history for a specific test (by test name, URL encoded)
  */
-testsRouter.get('/:testName/history', async (c) => {
+testsRouter.get('/:testName/history', readAuth((c) => c.req.query('project') ?? null), async (c) => {
   const testName = c.req.param('testName');
   const projectId = c.req.query('project');
   const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
@@ -219,7 +219,7 @@ testsRouter.get('/:testName/history', async (c) => {
  * The horizon is bounded by however much `test_results` history the
  * project's retention (plan 021) still has on disk.
  */
-testsRouter.get('/:testName/trend', async (c) => {
+testsRouter.get('/:testName/trend', readAuth((c) => c.req.query('project') ?? null), async (c) => {
   const testName = c.req.param('testName');
   const projectId = c.req.query('project');
 
@@ -284,7 +284,7 @@ testsRouter.get('/:testName/trend', async (c) => {
  *
  * Get details for a specific flaky test by ID
  */
-testsRouter.get('/flaky/:id', async (c) => {
+testsRouter.get('/flaky/:id', readAuth(), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid flaky test ID format' }, 400);

@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { error } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 
-vi.mock('$lib/api', () => ({
+vi.mock('$lib/server/api', () => ({
   getRunDetail: vi.fn(),
 }));
 
-import { getRunDetail } from '$lib/api';
+import { getRunDetail } from '$lib/server/api';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01' };

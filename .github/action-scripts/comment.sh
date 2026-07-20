@@ -83,7 +83,12 @@ info "report uploaded (HTTP $upload_status)."
 
 # --- 2. Fetch the quarantine list ------------------------------------------
 quarantine_body_file="$(mktemp)"
+# The project token is already in hand (it authenticated the upload above).
+# Sending it here lets a hardened API (READ_TOKEN set, plan 041) serve this
+# request without the Action gaining a new input. On an API that has NOT been
+# hardened the header is simply ignored, so this is safe to send always.
 quarantine_status=$(curl -sS -o "$quarantine_body_file" -w '%{http_code}' \
+  -H "Authorization: Bearer ${TOKEN}" \
   "${API_URL%/}/api/v1/projects/${PROJECT_ID}/quarantine" 2>/tmp/flackyness-quarantine-stderr.log)
 quarantine_curl_exit=$?
 

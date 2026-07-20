@@ -88,6 +88,17 @@ présentent), très loin des 3-5 j du SSO complet.
 
 C'est la principale raison de réordonner la roadmap.
 
+> **Statut (branche `design/read-hardening`) :** l'item #0 ci-dessous est
+> livré sur cette branche, pas encore mergé sur `main` au moment de cette
+> révision. Ce qui a changé : un `READ_TOKEN` optionnel (variable d'env)
+> gate désormais les 11 routes de lecture — absent = comportement inchangé
+> (lecture ouverte, avertissement au boot) ; présent = Bearer requis
+> (`READ_TOKEN` global ou le token du projet ciblé, qui ne donne accès qu'à
+> ce projet-là). Une garde de couverture (`routes-auth-coverage.test.ts`)
+> échoue en CI si une nouvelle route `GET` sous `/api/v1` est ajoutée sans
+> monter ce middleware. Le reste de cette section — écrite avant ce
+> correctif — est laissé tel quel : c'est l'état qui a motivé la décision.
+
 ### Contraintes techniques qui gouvernent le chiffrage « hébergement »
 
 Indépendantes des six capacités, mais bloquantes dès qu'on héberge pour

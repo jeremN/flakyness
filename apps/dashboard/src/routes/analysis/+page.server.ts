@@ -1,4 +1,4 @@
-import { getAnalysis } from '$lib/api';
+import { getAnalysis } from '$lib/server/api';
 import type { Project } from '../../app.d';
 
 // Mirror the API's own clamps (apps/api/src/routes/projects.ts `GET /:id/analysis`)

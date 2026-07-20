@@ -1,5 +1,5 @@
 import type { ServerLoadEvent } from '@sveltejs/kit';
-import { getProjects } from '$lib/api';
+import { getProjects } from '$lib/server/api';
 
 export async function load({ url }: ServerLoadEvent) {
   let projects: Awaited<ReturnType<typeof getProjects>> = [];

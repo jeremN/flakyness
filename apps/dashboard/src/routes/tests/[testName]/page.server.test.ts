@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TestHistory, TestTrend } from '../../../app.d';
 
-vi.mock('$lib/api', () => ({
+vi.mock('$lib/server/api', () => ({
   getTestHistory: vi.fn(),
   getTestTrend: vi.fn(),
 }));
 
-import { getTestHistory, getTestTrend } from '$lib/api';
+import { getTestHistory, getTestTrend } from '$lib/server/api';
 import { load } from './+page.server';
 
 const testHistory: TestHistory = {

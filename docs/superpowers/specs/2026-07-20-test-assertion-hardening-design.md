@@ -201,6 +201,38 @@ semantic properties instead:
 - **`flakyTests` is a subset of `allTests`** — the real invariant of the
   endpoint, and the one a logic mutation would break
 
+> **Outcome (post-implementation, Task 3). The subset invariant was designed
+> in, then removed, because it could not be proven.**
+>
+> The fixture the test uses (`testProjectId`) never ingests a report, so its
+> analysis is `[]` — and on an empty array `every(...)` is vacuously true. The
+> invariant assertion would have passed with the filter deleted. That is the
+> same defect class as F1, one level up: an assertion that looks like a check
+> and cannot fail.
+>
+> The obvious remedy — point the test at the one populated project
+> (`runDetailProjectId`, which ingests `mixedReport`) — was tried and also
+> fails: `analyzeFlakiness` drops any test with fewer than `minRuns` runs
+> (`flakiness.ts:16` sets `minRuns = 3`; the filter is `flakiness.ts:119`), and
+> that project ingests a single report, so every test has one run and the
+> analysis is empty too. An **anti-vacuity guard** (`allTests.length > 0`) is
+> what surfaced this: it failed before any mutation was applied, refusing to
+> let the test report green while asserting nothing.
+>
+> No fixture in the file can prove the invariant without ingesting ≥ 3 reports,
+> which is new fixture setup — explicitly excluded by this spec's own rule
+> against manufacturing data to fit a proof.
+>
+> **Shipped instead:** the empty analysis is asserted *outright*
+> (`toEqual([])`), which is what is actually provable here and still catches
+> the original `null` defect — proven by mutation
+> (`expected null to deeply equal []`). The invariant and its `minRuns`
+> reasoning are recorded as a code comment and routed to **A2**.
+>
+> This is the spec's governing principle applied to the spec itself: an
+> assertion that cannot be made to fail does not ship, even when it is the one
+> the author designed.
+
 ## Scope
 
 **In:** the assertions named in F1–F4, in `apps/api/src/routes/api.test.ts` and

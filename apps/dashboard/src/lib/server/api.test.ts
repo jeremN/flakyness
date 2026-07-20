@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { env as privateEnv } from '../../tests/env-private-stub';
 import {
   getProjects,
   getFlakyTests,
@@ -12,6 +13,12 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // api.ts reads privateEnv.READ_TOKEN fresh on every call (not cached at
+  // import time), so mutating the shared stub object here is enough — no
+  // vi.resetModules() needed. But it must be cleaned up, or a READ_TOKEN set
+  // by one test would leak into the next and break the `headers: {}`
+  // assertions above.
+  delete privateEnv.READ_TOKEN;
 });
 
 describe('lib/api', () => {
@@ -71,6 +78,20 @@ describe('lib/api', () => {
       expect((err as { status: number }).status).toBe(503);
       expect((err as { body: { message: string } }).body.message).toContain('http://localhost:8080');
     }
+  });
+
+  it('sends READ_TOKEN as a Bearer credential when set (proves the header is actually wired up)', async () => {
+    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ projects: [] }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getProjects();
+
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
+      headers: { Authorization: 'Bearer super-secret-read-token' },
+    });
   });
 
   it('surfaces a configuration message, not a network message, on 401', async () => {

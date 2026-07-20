@@ -123,3 +123,44 @@ describe('admin router mounts the limiter before auth (regression guard)', () =>
     }
   });
 });
+
+describe('mute route rate-limits before auth (regression guard)', () => {
+  it('a bad-token flood on PATCH /tests/flaky/:id is rate-limited, not only 401-ed', async () => {
+    const { Hono } = await import('hono');
+    const { HTTPException } = await import('hono/http-exception');
+    const { default: testsRouter } = await import('../routes/tests'); // export default
+    const { API_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'correct-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      app.route('/api/v1/tests', testsRouter);
+
+      let saw429 = false;
+      let saw401 = false;
+      // apiRateLimit is 100/min; send enough to cross it. All share the
+      // 'unknown' bucket (no socket under app.request). If apiRateLimit ran
+      // AFTER adminAuth, every bad token would 401 and 429 would never appear.
+      for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/tests/flaky/00000000-0000-0000-0000-000000000000', {
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer WRONG', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'ignored' }),
+        });
+        if (res.status === 429) saw429 = true;
+        if (res.status === 401) saw401 = true;
+      }
+      expect(saw401).toBe(true); // early requests reached auth
+      expect(saw429).toBe(true); // the limiter is upstream of auth
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});

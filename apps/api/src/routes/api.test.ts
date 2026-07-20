@@ -40,14 +40,32 @@ describeWithDb('API Integration Tests', () => {
   });
 
   describe('CORS', () => {
-    it('should include CORS headers', async () => {
+    // The allowed origin is `process.env.DASHBOARD_URL || 'http://localhost:5173'`
+    // (index.ts:26), read at module load. DASHBOARD_URL is set only in
+    // docker-compose.yml and never in CI, so the literal below is what the
+    // suite sees. Asserting the expression itself would mirror the
+    // implementation and survive any mutation of it.
+    const ALLOWED_ORIGIN = 'http://localhost:5173';
+
+    it('echoes the configured origin back to an allowed origin', async () => {
       const res = await app.request('/health', {
-        headers: {
-          'Origin': 'http://localhost:5173',
-        },
+        headers: { Origin: ALLOWED_ORIGIN },
       });
-      
-      expect(res.headers.get('access-control-allow-origin')).toBeDefined();
+
+      expect(
+        res.headers.get('access-control-allow-origin'),
+        `expected the CORS middleware to allow ${ALLOWED_ORIGIN}; if DASHBOARD_URL is exported in your shell, unset it`
+      ).toBe(ALLOWED_ORIGIN);
+    });
+
+    it('sends no allow-origin header for a foreign origin', async () => {
+      const res = await app.request('/health', {
+        headers: { Origin: 'https://evil.test' },
+      });
+
+      // Absent, not '*'. A wildcard here would let any site read authenticated
+      // responses from a browser.
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
     });
   });
 
@@ -72,9 +90,26 @@ describeWithDb('API Integration Tests', () => {
   });
 });
 
-describeWithDb('Request Validation', () => {
+describeWithDb('Reports Route Authentication', () => {
+  // reports.ts:62 mounts `reports.use('*', projectAuth())` ahead of the
+  // handler, so an unauthenticated request is rejected before query validation
+  // or JSON parsing runs. Real input-validation coverage lives in
+  // reports.test.ts:120-174, which sends a valid project token.
+  //
+  // The two tests below are NOT redundant, though they look it — both assert
+  // 401 and differ only in their input. They pin the guard's *position* in the
+  // chain, and each covers a different half:
+  //
+  //   test 1 sends an INVALID query (no `commit`) -> 401 proves auth runs
+  //          before zValidator('query', ...)
+  //   test 2 sends a VALID query and an unparseable body -> 401 proves auth
+  //          runs before JSON.parse
+  //
+  // Verified by mutation: moving projectAuth() to after the zValidator in the
+  // route chain makes test 1 fail with 400 while test 2 still passes. Deleting
+  // either one silently drops half of that ordering guarantee.
   describe('POST /api/v1/reports', () => {
-    it('should reject request without required params', async () => {
+    it('rejects an unauthenticated request before validating the query', async () => {
       const res = await app.request('/api/v1/reports', {
         method: 'POST',
         headers: {
@@ -82,21 +117,24 @@ describeWithDb('Request Validation', () => {
         },
         body: JSON.stringify({}),
       });
-      
-      // Should fail validation - either 400 or 401 (auth required)
-      expect([400, 401]).toContain(res.status);
+
+      expect(res.status).toBe(401);
     });
 
-    it('should reject invalid JSON body', async () => {
+    it('rejects an unauthenticated request before parsing the body', async () => {
       const res = await app.request('/api/v1/reports?project=test&branch=main&commit=abc', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        // Deliberately unparseable, behind a deliberately VALID query string —
+        // so a 401 can only mean auth preceded the body parse. (The old
+        // assertion here also admitted 500; that branch was unreachable —
+        // reports.ts wraps JSON.parse in a try/catch that returns 400.)
         body: 'invalid json',
       });
-      
-      expect([400, 401, 500]).toContain(res.status);
+
+      expect(res.status).toBe(401);
     });
   });
 });
@@ -108,6 +146,6 @@ describeWithDb('Security Headers', () => {
     // Check for common security headers added by secureHeaders middleware
     const headers = res.headers;
     expect(headers.get('x-content-type-options')).toBe('nosniff');
-    expect(headers.get('x-frame-options')).toBeDefined();
+    expect(headers.get('x-frame-options')).toBe('SAMEORIGIN');
   });
 });

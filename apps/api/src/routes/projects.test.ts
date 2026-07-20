@@ -581,15 +581,45 @@ describeWithDb('Projects API Integration Tests', () => {
   });
 
   describe('GET /api/v1/projects/:id/analysis', () => {
-    it('should return real-time flakiness analysis', async () => {
+    // `testProjectId` never ingests a report, so its analysis is empty. That is
+    // a real case worth pinning (an empty project is a valid, empty answer —
+    // not a 404), but it CANNOT prove the endpoint's subset invariant
+    // (`flakyTests === allTests.filter(t => t.isFlaky)`): on an empty array
+    // `every(...)` is vacuously true, so such an assertion would pass even with
+    // the filter deleted. Asserting emptiness outright is what IS provable here.
+    //
+    // COVERAGE GAP, deliberately left for A2: no fixture in this file can prove
+    // that invariant. `analyzeFlakiness` drops any test with fewer than
+    // `minRuns` runs (flakiness.ts:16 sets minRuns=3; the filter is at
+    // flakiness.ts:119). The only populated project, `runDetailProjectId`,
+    // ingests two reports (:379 and :535) — two runs per test, still under the
+    // threshold — so its analysis is empty too; probed live, 0 entries.
+    // Proving the invariant needs a project with >= 3 ingests, which is new
+    // fixture setup and belongs in its own reviewed change.
+    it('returns a well-formed, empty analysis for a project with no runs', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/analysis`);
       expect(res.status).toBe(200);
 
       const body = await res.json();
-      expect(body.windowDays).toBeDefined();
-      expect(body.threshold).toBeDefined();
-      expect(body.flakyTests).toBeDefined();
-      expect(body.allTests).toBeDefined();
+
+      // These pin the RANGE of the returned values, not the clamp that produces
+      // it. This request sends no `days` or `threshold`, so it reads the
+      // resolved defaults (14 / 0.05) — comfortably mid-range. Deleting both
+      // clamps in projects.ts leaves this test green (verified). Proving the
+      // clamp needs a request with out-of-range params -> A2.
+      expect(typeof body.windowDays).toBe('number');
+      expect(body.windowDays).toBeGreaterThanOrEqual(1);
+      expect(body.windowDays).toBeLessThanOrEqual(90);
+
+      expect(typeof body.threshold).toBe('number');
+      expect(body.threshold).toBeGreaterThanOrEqual(0);
+      expect(body.threshold).toBeLessThanOrEqual(1);
+
+      // Explicitly empty, not merely "an array". If this project ever starts
+      // carrying runs, this assertion fails loudly and points at the comment
+      // above rather than silently turning the sibling test vacuous.
+      expect(body.allTests).toEqual([]);
+      expect(body.flakyTests).toEqual([]);
     });
 
     it('should accept custom window and threshold', async () => {

@@ -21,6 +21,10 @@ import app from './index';
  * The risk is measured, not hypothetical: 4 of the 11 read routes postdate
  * the initial commit (verified with git log -S per route), and two of those
  * landed on the same day, 2026-07-13, from two different plans.
+ *
+ * Scope limit: the scan below filters on `method === 'GET'` and
+ * `path.startsWith('/api/v1/')` — a route registered via `router.all(...)`
+ * (any method) or mounted outside `/api/v1/` is invisible to this guard.
  */
 
 // Read routes deliberately mounted WITHOUT a project resolver — they accept

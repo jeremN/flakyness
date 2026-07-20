@@ -125,6 +125,7 @@ Create a `.env` file based on `.env.example`:
 | `PUBLIC_API_URL` | Dashboard → API URL | `http://localhost:8080` |
 | `DB_PASSWORD` | Database password (Docker) | `postgres` |
 | `ADMIN_TOKEN` | Admin API authentication token | (required for admin endpoints) |
+| `READ_TOKEN` | Gates the 11 read endpoints (`/projects/*`, `/tests/*`); unset = reads stay open | (unset — reads open) |
 
 > 💡 Generate a secure admin token: `openssl rand -hex 32`
 

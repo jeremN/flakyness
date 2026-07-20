@@ -236,6 +236,7 @@ cat > .env << EOF
 DATABASE_URL=postgres://postgres:secure-password@db:5432/flackyness
 ADMIN_TOKEN=$(openssl rand -hex 32)
 DASHBOARD_PASSWORD=$(openssl rand -hex 32)
+READ_TOKEN=$(openssl rand -hex 32)
 PUBLIC_API_URL=https://your-domain.com
 EOF
 
@@ -259,6 +260,18 @@ docker compose exec api pnpm db:migrate
 > (`apps/dashboard/src/hooks.server.ts`); leaving it unset is only a safe
 > choice for a dashboard that is genuinely reachable only on a trusted,
 > network-isolated segment.
+
+> 💡 **Also set `READ_TOKEN` once the API is reachable by anyone other than
+> you.** Unset, all 11 read endpoints (`/projects/*`, `/tests/*`) are open,
+> and `GET /api/v1/projects` enumerates every project on the instance — its
+> UUID is enough to read that project's stats, runs, and flaky tests. Set
+> `READ_TOKEN` on **both** the `api` and `dashboard` services with the
+> **same value** — the dashboard presents it as a Bearer credential on every
+> server-side call (`apps/dashboard/src/lib/server/api.ts`); setting it on
+> only one side either leaves reads open (API unset) or 500s every dashboard
+> page (dashboard unset). A project's own token also works for its own
+> project's reads — this is how the GitHub Action fetches its quarantine
+> list without a second secret.
 
 ### Option 2: Kubernetes / Cloud Run
 

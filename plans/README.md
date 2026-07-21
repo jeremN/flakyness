@@ -613,7 +613,7 @@ rationale. Items 5–7 remain unplanned.
     future task should assert on the active-nav class (class-based assertions are a weaker,
     more brittle class than the copy/behavior assertions A3b standardized on, hence not folded
     into the test-only A3b branch).
-13. **`projects.ts` / `rate-limit.ts`'s per-file mutation floors (53 / 57) are coarse
+13. **`projects.ts` / `rate-limit.ts`'s per-file mutation floors (48 / 57) are coarse
     regression guards, not full-coverage targets.** Found while proving Phase B's gate
     bites (plan 047): only `projects.ts`'s `/analysis` slice was hardened in A2b (plan
     044) — the file has 298 total mutants and ~17% land as `NoCoverage` (mostly zod

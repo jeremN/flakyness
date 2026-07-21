@@ -7,6 +7,8 @@ const reports = {
   'r-api.json': { files: {
     'src/middleware/logger.ts': { mutants: [{ status: 'Killed' }, { status: 'Killed' }, { status: 'Timeout' }] },
     'src/routes/projects.ts':   { mutants: [{ status: 'Killed' }, { status: 'Survived' }, { status: 'Ignored' }] },
+    'src/nocov.ts':             { mutants: [{ status: 'Killed' }, { status: 'NoCoverage' }] },
+    'src/errs.ts':              { mutants: [{ status: 'Killed' }, { status: 'CompileError' }, { status: 'RuntimeError' }] },
   } },
 };
 const readJson = (p) => reports[p];
@@ -35,4 +37,17 @@ test('a missing file entry is a hard error (ok false, error set)', () => {
   const { ok, error } = evaluate([{ report: 'r-api.json', file: 'src/nope.ts', floor: 90 }], readJson);
   assert.equal(ok, false);
   assert.match(error, /src\/nope\.ts/);
+});
+
+test('NoCoverage counts in the denominator but not as detected — drags the score down', () => {
+  const { results } = evaluate([{ report: 'r-api.json', file: 'src/nocov.ts', floor: 40 }], readJson);
+  assert.equal(results[0].valid, 2);   // NoCoverage IS valid (in the denominator)...
+  assert.equal(results[0].score, 50);  // ...but not detected: 1 Killed / (1 Killed + 1 NoCoverage)
+  assert.equal(results[0].pass, true); // 50 >= 40
+});
+
+test('CompileError and RuntimeError are excluded from BOTH numerator and denominator', () => {
+  const { results } = evaluate([{ report: 'r-api.json', file: 'src/errs.ts', floor: 90 }], readJson);
+  assert.equal(results[0].valid, 1);    // only the Killed mutant is valid; Compile/RuntimeError dropped
+  assert.equal(results[0].score, 100);  // 1 Killed / 1 valid — the two error statuses don't dilute it
 });

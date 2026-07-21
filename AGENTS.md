@@ -40,21 +40,31 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `.github/dependabot.yml` ignores TS majors for the dashboard only; only
   lift that pin once BOTH TS 7.1 has shipped AND a `svelte-check` release
   supports it (latest is still 4.7.2). Track `sveltejs/language-tools#2733`.
-- **Dashboard component tests are node-only (no rendered-DOM tests yet).**
-  Pure view-logic is extracted to `apps/dashboard/src/lib/` (`format.ts`,
-  `status.ts`, `error-page.ts`, `href.ts`) and unit-tested in the node env
-  (plain `*.test.ts`, run by `pnpm --filter dashboard test`); the `.svelte`
-  components import those helpers rather than inlining them. Rendered-DOM
-  tests (jsdom + `@testing-library/svelte`) are **deferred to A3b** — same
-  class of block as the TS7 pin above: `@sveltejs/vite-plugin-svelte@7.2.0`
-  (latest) does not apply its `.svelte` transform under **Vitest 4.1.10 +
-  Vite 8.1.4**, so a component never compiles and render queries find raw
-  source (`pnpm build`, dev, and the Playwright E2E suite all compile
-  `.svelte` fine — the gap is Vitest-specific). Reproduced across every
-  config variant. Unblocks when vite-plugin-svelte ships Vitest-4 support,
-  or via Vitest **browser mode** (reuses the working dev-server transform;
-  needs Chromium in CI). Until then, extract logic to `$lib` and node-test
-  it; template branching stays covered only by the E2E suite. See plan 045.
+- **Dashboard rendered-DOM tests run in Vitest browser mode; the default
+  `test` suite stays node-only.** Pure view-logic is extracted to
+  `apps/dashboard/src/lib/` (`format.ts`, `status.ts`, `error-page.ts`,
+  `href.ts`) and unit-tested in the node env (plain `*.test.ts`, run by
+  `pnpm --filter dashboard test`); the `.svelte` components import those
+  helpers rather than inlining them. Rendered-DOM tests now run too — but
+  via **Vitest browser mode** (isolated
+  `apps/dashboard/vitest.browser.config.ts`, `vitest-browser-svelte`,
+  headless Chromium), NOT jsdom: `@sveltejs/vite-plugin-svelte@7.2.0` still
+  does not apply its `.svelte` transform under **Vitest 4.1.10 + Vite 8.1.4**
+  (the jsdom two-project path never compiles the component — `pnpm build`,
+  dev, and the Playwright E2E suite all compile `.svelte` fine, the gap is
+  Vitest-specific), so browser mode reuses the working dev-server transform
+  instead. Run them with `pnpm --filter dashboard test:browser` (files are
+  `src/**/*.svelte.test.ts`); they run in the **advisory `component-tests`
+  CI job**, while the default `pnpm --filter dashboard test` stays node-only
+  / browser-free (`vitest.config.ts` excludes `*.svelte.test.ts`). Route
+  render-test files must NOT carry the `+` prefix
+  (`page.svelte.test.ts`/`layout.svelte.test.ts`/`error.svelte.test.ts`) —
+  SvelteKit's route scanner rejects `+`-prefixed non-reserved files; the
+  component imports keep the `+`. Chart pages stub `Chart.svelte`
+  (`Chart.stub.svelte`) in these tests, so a rendered assertion still cannot
+  catch the chart-registration no-op — that stays guarded by
+  `chart-registration.test.ts`. See plans 045 (extraction) and 046 (render
+  tests).
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under

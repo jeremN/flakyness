@@ -27,15 +27,15 @@
 | `apps/dashboard/package.json` | add `@vitest/browser`, `vitest-browser-svelte` (+ `playwright` if needed) devDeps; add `test:browser` script | 1 |
 | `apps/dashboard/vitest.browser.config.ts` *(new)* | isolated browser-mode Vitest config (Chromium, Playwright provider, `*.svelte.test.ts`) | 1 |
 | `apps/dashboard/src/lib/components/ErrorState.svelte.test.ts` *(new)* | render test — default/custom message, retry gate | 1 |
-| `apps/dashboard/src/routes/runs/+page.svelte.test.ts` *(new)* | render test — empty state, pass-rate row (proves `$app/navigation` mock) | 2 |
-| `apps/dashboard/src/routes/analysis/+page.svelte.test.ts` *(new)* | render test — no-project / empty / rows+flaky marker | 3 |
-| `apps/dashboard/src/routes/flaky/+page.svelte.test.ts` *(new)* | render test — empty variants, canMute gating, Mute/Unmute, status badge | 3 |
-| `apps/dashboard/src/routes/runs/[runId]/+page.svelte.test.ts` *(new)* | render test — load three-way, results empty, failureDetail, truncated | 4 |
+| `apps/dashboard/src/routes/runs/page.svelte.test.ts` *(new)* | render test — empty state, pass-rate row (proves `$app/navigation` mock) | 2 |
+| `apps/dashboard/src/routes/analysis/page.svelte.test.ts` *(new)* | render test — no-project / empty / rows+flaky marker | 3 |
+| `apps/dashboard/src/routes/flaky/page.svelte.test.ts` *(new)* | render test — empty variants, canMute gating, Mute/Unmute, status badge | 3 |
+| `apps/dashboard/src/routes/runs/[runId]/page.svelte.test.ts` *(new)* | render test — load three-way, results empty, failureDetail, truncated | 4 |
 | `apps/dashboard/src/lib/components/Chart.stub.svelte` *(new)* | chart stub (marker div) for render tests | 5 |
-| `apps/dashboard/src/routes/+page.svelte.test.ts` *(new)* | render test — overview: no-stats, stat cards, chart stub, slice(0,5) cap, recent runs | 5 |
-| `apps/dashboard/src/routes/tests/[testName]/+page.svelte.test.ts` *(new)* | render test — trend/failed, flaky-info, direction label | 5 |
-| `apps/dashboard/src/routes/+layout.svelte.test.ts` *(new)* | render test — switcher gating, apiError banner, active nav | 6 |
-| `apps/dashboard/src/routes/+error.svelte.test.ts` *(new)* | render test — status title/icon + message | 6 |
+| `apps/dashboard/src/routes/page.svelte.test.ts` *(new)* | render test — overview: no-stats, stat cards, chart stub, slice(0,5) cap, recent runs | 5 |
+| `apps/dashboard/src/routes/tests/[testName]/page.svelte.test.ts` *(new)* | render test — trend/failed, flaky-info, direction label | 5 |
+| `apps/dashboard/src/routes/layout.svelte.test.ts` *(new)* | render test — switcher gating, apiError banner, active nav | 6 |
+| `apps/dashboard/src/routes/error.svelte.test.ts` *(new)* | render test — status title/icon + message | 6 |
 | `.github/workflows/ci.yml` | new advisory `component-tests` job | 7 |
 | `AGENTS.md`, `plans/README.md` | flip A3b note; add plan 046, flip 045→DONE | 7 |
 
@@ -60,6 +60,7 @@ This task stands up the whole toolchain and proves it on the one component that 
 > 3. **Node config exclude:** `vitest.config.ts`'s `include: ['src/**/*.test.ts']` also matches `*.svelte.test.ts`, so `exclude: [...configDefaults.exclude, 'src/**/*.svelte.test.ts']` was added there to keep the default `pnpm test` browser-free. (Already committed — Tasks 2–6 do not touch it.)
 > 4. **`sveltekit()` works** as the browser-config plugin — the fallback config was NOT needed. `.svelte` compiles, `$lib`/`$app` resolve, `vi.mock('$app/*')` will be proven in Task 2.
 > 5. **Mutation-proof timing:** a browser-mode assertion that should red reds by **retry timeout (~15s)**, not instantly — `expect.element` retries until the condition holds or times out. A red mutation proof taking ~15s is normal, not a hang.
+> 6. **ROUTE-TEST FILENAME LAW (discovered Task 2, verified against `@sveltejs/kit@2.69.2`):** SvelteKit's route-manifest scanner (`create_manifest_data`) rejects **any** `+`-prefixed file under `src/routes/**` that is not a reserved route name, throwing during `svelte-kit sync` — which the `test:browser` script runs first, so a mis-named file breaks the whole browser suite. Therefore route-component render tests are named **`page.svelte.test.ts` / `layout.svelte.test.ts` / `error.svelte.test.ts` — WITHOUT the leading `+`** (co-located in the route dir, importing `./+page.svelte` etc. — the *component* keeps its `+`). The `include: ['src/**/*.svelte.test.ts']` glob still matches. Every route-test filename in Tasks 2–6 below already reflects this; do **not** re-add the `+`. `ErrorState.svelte.test.ts` (Task 1) is in `src/lib/`, outside the scanner, so it is unaffected.
 > The config, deps, script, node-exclude, and `ErrorState.svelte.test.ts` are already committed. Tasks 2–7 reuse the committed config as-is.
 
 - [ ] **Step 1: Add deps**
@@ -192,7 +193,7 @@ git commit -m "test(dashboard): stand up Vitest browser mode + ErrorState render
 `runs/+page.svelte` imports `goto` from `$app/navigation` (used in a row `onclick`). Mocking it proves per-file `$app/*` mocking works in browser mode. After this task the toolchain is fully de-risked.
 
 **Files:**
-- Create: `apps/dashboard/src/routes/runs/+page.svelte.test.ts`
+- Create: `apps/dashboard/src/routes/runs/page.svelte.test.ts`
 
 **Interfaces:**
 - Consumes: the render/assert pattern from Task 1.
@@ -203,7 +204,7 @@ git commit -m "test(dashboard): stand up Vitest browser mode + ErrorState render
 
 Verified copy (2026-07-21): empty state `<h3>No Test Runs Yet</h3>`; a run row renders `{passRate.toFixed(0)}%` with class `text-green-600` when `passRate >= 90`. `getPassRate({passed, totalTests})` = `passed/totalTests*100`.
 
-`apps/dashboard/src/routes/runs/+page.svelte.test.ts`:
+`apps/dashboard/src/routes/runs/page.svelte.test.ts`:
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
@@ -243,7 +244,7 @@ Expected: `runs/+page` 2/2 pass alongside `ErrorState` 4/4.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add apps/dashboard/src/routes/runs/+page.svelte.test.ts
+git add apps/dashboard/src/routes/runs/page.svelte.test.ts
 git commit -m "test(dashboard): render test for runs page (A3b)"
 ```
 
@@ -252,8 +253,8 @@ git commit -m "test(dashboard): render test for runs page (A3b)"
 ### Task 3: `analysis` + `flaky` render tests
 
 **Files:**
-- Create: `apps/dashboard/src/routes/analysis/+page.svelte.test.ts`,
-  `apps/dashboard/src/routes/flaky/+page.svelte.test.ts`
+- Create: `apps/dashboard/src/routes/analysis/page.svelte.test.ts`,
+  `apps/dashboard/src/routes/flaky/page.svelte.test.ts`
 
 `analysis/+page.svelte` imports no `$app`. `flaky/+page.svelte` imports `enhance` from `$app/forms` — mock it: `vi.mock('$app/forms', () => ({ enhance: () => ({ destroy() {} }) }))`.
 
@@ -352,8 +353,8 @@ Run: `pnpm --filter dashboard test:browser`
 - [ ] **Step 4: Commit**
 
 ```bash
-git add apps/dashboard/src/routes/analysis/+page.svelte.test.ts \
-  apps/dashboard/src/routes/flaky/+page.svelte.test.ts
+git add apps/dashboard/src/routes/analysis/page.svelte.test.ts \
+  apps/dashboard/src/routes/flaky/page.svelte.test.ts
 git commit -m "test(dashboard): render tests for analysis and flaky pages (A3b)"
 ```
 
@@ -362,7 +363,7 @@ git commit -m "test(dashboard): render tests for analysis and flaky pages (A3b)"
 ### Task 4: `runs/[runId]` render test
 
 **Files:**
-- Create: `apps/dashboard/src/routes/runs/[runId]/+page.svelte.test.ts`
+- Create: `apps/dashboard/src/routes/runs/[runId]/page.svelte.test.ts`
 
 Imports `invalidateAll` from `$app/navigation` (mock it), `ErrorState` (renders fine), `statusBadgeClass` from `$lib/status`. Branch structure (verified 2026-07-21): `{#if !data.projectId}` → missing-project branch; `{:else if data.loadFailed}` → `ErrorState message="Couldn't load this run."`; `{:else if data.runDetail}` → detail, with `{@const showingAll = data.statusFilter === 'all'}`, a `Show all results` / `Show failures only` toggle link, `{#if data.runDetail.results.length === 0}` empty branch, per-result `failureDetail`/`errorMessage`, and `{#if data.runDetail.truncated}` notice.
 
@@ -424,7 +425,7 @@ Run: `pnpm --filter dashboard test:browser`
 - [ ] **Step 3: Commit**
 
 ```bash
-git add "apps/dashboard/src/routes/runs/[runId]/+page.svelte.test.ts"
+git add "apps/dashboard/src/routes/runs/[runId]/page.svelte.test.ts"
 git commit -m "test(dashboard): render test for run-detail page (A3b)"
 ```
 
@@ -434,8 +435,8 @@ git commit -m "test(dashboard): render test for run-detail page (A3b)"
 
 **Files:**
 - Create: `apps/dashboard/src/lib/components/Chart.stub.svelte`,
-  `apps/dashboard/src/routes/+page.svelte.test.ts`,
-  `apps/dashboard/src/routes/tests/[testName]/+page.svelte.test.ts`
+  `apps/dashboard/src/routes/page.svelte.test.ts`,
+  `apps/dashboard/src/routes/tests/[testName]/page.svelte.test.ts`
 
 - [ ] **Step 1: Create the Chart stub**
 
@@ -533,8 +534,8 @@ Run: `pnpm --filter dashboard test:browser`
 
 ```bash
 git add apps/dashboard/src/lib/components/Chart.stub.svelte \
-  apps/dashboard/src/routes/+page.svelte.test.ts \
-  "apps/dashboard/src/routes/tests/[testName]/+page.svelte.test.ts"
+  apps/dashboard/src/routes/page.svelte.test.ts \
+  "apps/dashboard/src/routes/tests/[testName]/page.svelte.test.ts"
 git commit -m "test(dashboard): render tests for overview and test-detail pages, Chart stubbed (A3b)"
 ```
 
@@ -543,8 +544,8 @@ git commit -m "test(dashboard): render tests for overview and test-detail pages,
 ### Task 6: `+layout` + `+error` render tests (`$app/stores` mock)
 
 **Files:**
-- Create: `apps/dashboard/src/routes/+layout.svelte.test.ts`,
-  `apps/dashboard/src/routes/+error.svelte.test.ts`
+- Create: `apps/dashboard/src/routes/layout.svelte.test.ts`,
+  `apps/dashboard/src/routes/error.svelte.test.ts`
 
 Both read the `page` store from `$app/stores`. Mock it per file with a Svelte `readable` whose value the test controls.
 
@@ -614,8 +615,8 @@ Run: `pnpm --filter dashboard test:browser`
 - [ ] **Step 4: Commit**
 
 ```bash
-git add apps/dashboard/src/routes/+layout.svelte.test.ts \
-  apps/dashboard/src/routes/+error.svelte.test.ts
+git add apps/dashboard/src/routes/layout.svelte.test.ts \
+  apps/dashboard/src/routes/error.svelte.test.ts
 git commit -m "test(dashboard): render tests for layout and error pages (A3b)"
 ```
 

@@ -3,6 +3,7 @@
   import { enhance } from '$app/forms';
   import { formatDate } from '$lib/format';
   import { flakyStatusBadgeClass } from '$lib/status';
+  import { appendProjectParam } from '$lib/href';
 
   interface Props {
     data: PageData;
@@ -11,11 +12,7 @@
   let { data }: Props = $props();
 
   function getFilterHref(status: string): string {
-    const base = `/flaky?status=${status}`;
-    if (data.currentProject) {
-      return `${base}&project=${data.currentProject.id}`;
-    }
-    return base;
+    return appendProjectParam(`/flaky?status=${status}`, data.currentProject?.id);
   }
 </script>
 

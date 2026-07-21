@@ -289,7 +289,8 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 043 | Fix the inert admin brute-force limiter (mounted after the auth it protects) and make rate-limit.ts testable; A2a of the mutation-testing effort | P2 | S | A1 (plan 042); security finding | DONE (merged via PR #98) |
 | 044 | Cover `logger.ts` (status routing, prod stack-omission) and close A1's two `/analysis` IOUs (clamp + flaky-subset invariant); A2b of the mutation-testing effort | P3 | S | A1's recorded gaps (plan 042); follows A2a (plan 043) | DONE (merged via PR #99, commit `b10b4a0`) |
 | 045 | A3 of the mutation-testing effort: extract the dashboard's inlined pure view-logic to `$lib` (`format`/`status`/`error-page`/`href`) with node tests; components rewired behavior-preservingly. **Render half (jsdom) deferred to A3b** — upstream vite-plugin-svelte × Vitest 4 gap (see AGENTS.md) | P3 | M | A1/A2 (plans 042–044) | DONE (merged via PR #100, commit `1b605c9`; render half → plan 046) |
-| 046 | A3b of the mutation-testing effort: render-test the 8 route components + ErrorState in **Vitest browser mode** (isolated `vitest.browser.config.ts`, `vitest-browser-svelte`, headless Chromium; default `test` stays node-only), plus an advisory `component-tests` CI job; every assertion mutation-proven — closes A3's deferred render half via the documented browser-mode unblock path | P3 | M | A3 (plan 045) | OPEN (PR pending) |
+| 046 | A3b of the mutation-testing effort: render-test the 8 route components + ErrorState in **Vitest browser mode** (isolated `vitest.browser.config.ts`, `vitest-browser-svelte`, headless Chromium; default `test` stays node-only), plus an advisory `component-tests` CI job; every assertion mutation-proven — closes A3's deferred render half via the documented browser-mode unblock path | P3 | M | A3 (plan 045) | DONE (merged via PR #101, commit `905843f`) |
+| 047 | Phase B of the mutation-testing effort: nightly Stryker mutation testing — broad per-package run (apps/api + dashboard $lib), narrow per-file gate over the A1–A3b hardened set, isolated `pool:'threads'` Stryker vitest config, advisory nightly `Mutation` workflow | P3 | M | A1–A3b (plans 042–046) | OPEN (PR pending) |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -612,6 +613,42 @@ rationale. Items 5–7 remain unplanned.
     future task should assert on the active-nav class (class-based assertions are a weaker,
     more brittle class than the copy/behavior assertions A3b standardized on, hence not folded
     into the test-only A3b branch).
+13. **`projects.ts` / `rate-limit.ts`'s per-file mutation floors (53 / 57) are coarse
+    regression guards, not full-coverage targets.** Found while proving Phase B's gate
+    bites (plan 047): only `projects.ts`'s `/analysis` slice was hardened in A2b (plan
+    044) — the file has 298 total mutants and ~17% land as `NoCoverage` (mostly zod
+    `enum([...])` string-literal rejections nothing asserts against), so much of the
+    298-mutant route file is thinly covered; `rate-limit.ts` has a smaller but analogous
+    gap (~7 `NoCoverage` mutants of 50). A future hardening pass on either file would
+    raise its true mutation score, which should raise its recorded baseline and let the
+    floor be tightened — not a blocker at current coverage, since the floors are honest
+    guards against regression from *today's* baseline, not aspirational targets.
+14. **Promote `flakiness.ts` / `parsers/**` into the gated set once scored.** The broad
+    `apps/api` Stryker run (`pnpm --filter api test:mutation`) already mutates these
+    files, but `scripts/mutation-gate.mjs`'s hardened set only covers
+    `logger.ts`/`rate-limit.ts`/`projects.ts` — `flakiness.ts` and the parsers are
+    report-only today. Once a nightly run records their scores, evaluate adding them to
+    the `HARDENED` array in `mutation-gate.mjs` with baseline-calibrated floors,
+    following the same `floor(baseline) − 5` convention used for the current seven.
+15. **`logger.ts`'s per-file floor (74) is miscalibrated too high — it fails on a clean,
+    unmodified baseline.** Found while recording plan 047's gate-bite proof: the scoped
+    3-file API Stryker run (`--mutate
+    "src/middleware/logger.ts,src/middleware/rate-limit.ts,src/routes/projects.ts"`,
+    disposable Postgres, concurrency 2) reproducibly scores `logger.ts` at **72.06%** (49
+    killed / 0 timeout / 18 survived / 1 no-coverage of 68), confirmed across two
+    independent runs — matching plan 047 Task 1's own twice-reproduced isolated
+    measurement of the same number. The 74 floor was instead calibrated (plan 047 Task
+    4) from a *different*, concurrent 3-file run that recorded **79.41%** (49 killed /
+    **5 timeout** / 13 survived / 1 no-cov) — same killed count, but 5 mutants that are
+    deterministically `Survived` in isolation got misclassified as `Timeout` under that
+    run's contention (Postgres + two other files mutating concurrently). Since `Timeout`
+    counts the same as `Killed` in the gate's score formula, that inflated the baseline
+    by ~7 points before `floor(79.41) − 5 = 74` was derived — so the recorded floor was
+    never actually achievable by the deterministic score. **Recommended fix**:
+    recalibrate from the true isolated number, `floor(72.06) − 5 = 67`, and re-verify
+    it's stable across a couple of runs before landing. Left unfixed here deliberately —
+    plan 047's task scope is docs-only (no `scripts/mutation-gate.mjs` edits this task),
+    and choosing a new floor is a policy call, not something to sneak into a docs commit.
 
 ## Findings considered and rejected
 

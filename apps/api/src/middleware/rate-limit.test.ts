@@ -44,6 +44,29 @@ describe('getClientIp', () => {
     // X-Forwarded-For must be ignored and the real socket IP used.
     expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '9.9.9.9' }))).toBe('1.2.3.4');
   });
+
+  it('takes the first hop of a multi-value X-Forwarded-For and trims it', () => {
+    process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
+    // Whitespaced, multi-hop XFF — proves `.split(',')[0].trim()`, not the
+    // whole header and not the second hop.
+    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '  9.9.9.9 , 10.0.0.1' }))).toBe('9.9.9.9');
+  });
+
+  it('trims each entry of TRUSTED_PROXY_IPS when matching the socket IP', () => {
+    // '5.5.5.5' is the SECOND, space-prefixed entry — matching it requires the
+    // per-entry .trim() in the map (the existing test only hits the first,
+    // already-trimmed entry).
+    process.env.TRUSTED_PROXY_IPS = '1.2.3.4, 5.5.5.5';
+    expect(getClientIp(fakeCtx({ socketIp: '5.5.5.5', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('falls back to the socket IP when a trusted proxy sends an empty X-Forwarded-For', () => {
+    // Task-1 finding: `if (forwarded)` (rate-limit.ts:41) had no present-but-blank
+    // XFF test. An empty header must be treated as absent → return the socket IP,
+    // not ''. Mutating the guard to `if (true)` would return '' here.
+    process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
+    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '' }))).toBe('1.2.3.4');
+  });
 });
 
 describe('rate limiter enforcement', () => {
@@ -52,6 +75,12 @@ describe('rate limiter enforcement', () => {
   it('ADMIN_RATE_LIMIT is 5 requests per 60s', async () => {
     const { ADMIN_RATE_LIMIT } = await import('./rate-limit');
     expect(ADMIN_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 5 });
+  });
+
+  it('REPORT_RATE_LIMIT and API_RATE_LIMIT are the documented values', async () => {
+    const { REPORT_RATE_LIMIT, API_RATE_LIMIT } = await import('./rate-limit');
+    expect(REPORT_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 60 });
+    expect(API_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 100 });
   });
 
   it('a factory-built limiter 429s once its limit is exceeded', async () => {
@@ -76,6 +105,60 @@ describe('rate limiter enforcement', () => {
 
       // A different key is unaffected by the first key's exhaustion.
       const other = await app.request('/x', { headers: { 'x-key': 'b' } });
+      expect(other.status).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+
+  it('the 429 response body carries the message and retryAfter: 60', async () => {
+    const { Hono } = await import('hono');
+    const { createRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', createRateLimit(ADMIN_RATE_LIMIT, () => 'shared', 'slow down please'));
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      let last: Response | undefined;
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 1; i++) last = await app.request('/x');
+
+      expect(last!.status).toBe(429);
+      expect(await last!.json()).toEqual({ error: 'slow down please', retryAfter: 60 });
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+
+  it('reportRateLimit keys by the project id (separate buckets) and 429s with its own message', async () => {
+    const { Hono } = await import('hono');
+    const { reportRateLimit, REPORT_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      // Per-request project id (from a header) so two ids get two buckets. This
+      // proves the key generator actually reads `c.get('project')?.id`: if it
+      // were mutated to always return 'anonymous', project B below would share
+      // A's exhausted bucket and 429 instead of 200. Unique ids ('rl-a'/'rl-b')
+      // keep reportRateLimit's module-level store isolated from other tests.
+      app.use('*', async (c: Context, next) => { c.set('project', { id: c.req.header('x-proj') }); await next(); });
+      app.use('*', reportRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      let last: Response | undefined;
+      for (let i = 0; i < REPORT_RATE_LIMIT.limit + 1; i++) {
+        last = await app.request('/x', { headers: { 'x-proj': 'rl-a' } });
+      }
+      expect(last!.status).toBe(429);
+      expect(await last!.json()).toEqual({
+        error: 'Too many report uploads. Please wait before retrying.',
+        retryAfter: 60,
+      });
+
+      // A different project id is a different bucket → still allowed.
+      const other = await app.request('/x', { headers: { 'x-proj': 'rl-b' } });
       expect(other.status).toBe(200);
     } finally {
       __setRateLimitEnabled(false);

@@ -30,4 +30,13 @@ describe('+layout', () => {
     render(Layout, { props: { children, data: data({ apiError: 'API unreachable' }) } });
     await expect.element(vitestPage.getByText('API unreachable')).toBeInTheDocument();
   });
+
+  it('applies the active styling to the current-page nav link, not the others', async () => {
+    render(Layout, { props: { children, data: data() } });
+    // $app/stores is mocked to url=/flaky, so `isActive('/flaky')` is true and the
+    // 'Flaky Tests' nav link takes the active branch (`bg-purple-50 text-purple-700`).
+    await expect.element(vitestPage.getByRole('link', { name: /Flaky Tests/ })).toHaveClass('bg-purple-50');
+    // a non-active item must NOT get the active styling (guards the ternary discriminating).
+    await expect.element(vitestPage.getByRole('link', { name: /Overview/ })).not.toHaveClass('bg-purple-50');
+  });
 });

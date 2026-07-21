@@ -125,6 +125,18 @@ describeWithDb('Projects API Integration Tests', () => {
     });
   });
 
+  describe('malformed project id → 400 (shared uuid guard)', () => {
+    it('rejects a non-UUID id with 400 and the standard error on every id-guarded endpoint', async () => {
+      // The guard exists on every endpoint but is only asserted on /quarantine
+      // and /runs/:runId today. These five share the identical guard, untested.
+      for (const path of ['stats', 'flaky-tests', 'runs', 'analysis', 'trend']) {
+        const res = await app.request(`/api/v1/projects/not-a-uuid/${path}`);
+        expect(res.status, `${path} must 400 on a malformed id`).toBe(400);
+        expect((await res.json()).error).toBe('Invalid project ID format');
+      }
+    });
+  });
+
   describe('GET /api/v1/projects/:id/flaky-tests', () => {
     it('should return flaky tests array', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/flaky-tests`);
@@ -437,6 +449,40 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(body.results[0].status).toBe('passed');
     });
 
+    it('?status=flaky returns only the flaky result', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=flaky`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.results.length).toBe(1);
+      expect(body.results[0].testName).toBe('flakes on retry');
+      expect(body.results[0].status).toBe('flaky');
+    });
+
+    it('?status=failed returns only the failed result', async () => {
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=failed`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.results.length).toBe(1);
+      expect(body.results[0].testName).toBe('fails consistently');
+      expect(body.results[0].status).toBe('failed');
+    });
+
+    it('an unparseable ?status falls back to the default failed+flaky scope', async () => {
+      // projects.ts:315-322: safeParse fails → status === undefined → the
+      // `inArray(['failed','flaky'])` fallback, NOT a 400 and NOT `all`.
+      const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=bogus`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      const names = body.results.map((r: { testName: string }) => r.testName);
+      expect(body.results.length).toBe(2);
+      expect(names).toContain('fails consistently');
+      expect(names).toContain('flakes on retry');
+      expect(names).not.toContain('passes reliably');
+    });
+
     it('includes failureDetail on a failed row and null on a passed row under ?status=all', async () => {
       const res = await app.request(`/api/v1/projects/${runDetailProjectId}/runs/${runId}?status=all`);
       expect(res.status).toBe(200);
@@ -643,6 +689,32 @@ describeWithDb('Projects API Integration Tests', () => {
       expect(body.windowDays).toBe(90);
       expect(body.threshold).toBe(1);
     });
+
+    it('clamps the lower bound and falls back on non-numeric window/threshold', async () => {
+      // The sibling test above only covers the UPPER clamps (999→90, 5→1).
+      // These cover the lower clamp and the non-numeric fallbacks, which are
+      // distinct branches (projects.ts:387-397). testProjectId ingests nothing,
+      // so analysis is empty — but windowDays/threshold still echo the resolved
+      // values. Defaults are 14 / 0.05 (flakiness.ts DEFAULT_CONFIG; this
+      // project sets no overrides).
+
+      // days=-5 reaches Math.max(...,1) → 1. (days=0 would NOT: parseInt('0')||14
+      // swallows the 0 into 14 before the clamp — hence a negative here.)
+      const neg = await app.request(`/api/v1/projects/${testProjectId}/analysis?days=-5`);
+      expect((await neg.json()).windowDays).toBe(1);
+
+      // days=abc → parseInt NaN → `|| resolvedConfig.windowDays` → 14.
+      const nanDays = await app.request(`/api/v1/projects/${testProjectId}/analysis?days=abc`);
+      expect((await nanDays.json()).windowDays).toBe(14);
+
+      // threshold=-1 → Math.max(rawThreshold,0) → 0.
+      const negT = await app.request(`/api/v1/projects/${testProjectId}/analysis?threshold=-1`);
+      expect((await negT.json()).threshold).toBe(0);
+
+      // threshold=abc → parseFloat NaN → !Number.isFinite → resolvedConfig → 0.05.
+      const nanT = await app.request(`/api/v1/projects/${testProjectId}/analysis?threshold=abc`);
+      expect((await nanT.json()).threshold).toBe(0.05);
+    });
   });
 
   describe('GET /api/v1/projects/:id/analysis — flaky-subset invariant (populated)', () => {
@@ -741,6 +813,18 @@ describeWithDb('Projects API Integration Tests', () => {
       const body = await res.json();
       expect(body.days.length).toBe(90);
       expect(body.rates.length).toBe(90);
+    });
+
+    it('clamps days=0 up to a 1-entry series (lower bound)', async () => {
+      // trend uses Number.isNaN(rawDays) ? 7 : Math.max(rawDays,1) — unlike
+      // /analysis, there is no `|| default` to swallow 0, so days=0 DOES reach
+      // the Math.max(...,1) lower clamp (projects.ts:439).
+      const res = await app.request(`/api/v1/projects/${testProjectId}/trend?days=0`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      expect(body.days.length).toBe(1);
+      expect(body.rates.length).toBe(1);
     });
 
     it('reports null — not 0 — for every day, since this project has zero runs', async () => {

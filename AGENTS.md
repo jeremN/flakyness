@@ -40,6 +40,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `.github/dependabot.yml` ignores TS majors for the dashboard only; only
   lift that pin once BOTH TS 7.1 has shipped AND a `svelte-check` release
   supports it (latest is still 4.7.2). Track `sveltejs/language-tools#2733`.
+- **Dashboard component tests are node-only (no rendered-DOM tests yet).**
+  Pure view-logic is extracted to `apps/dashboard/src/lib/` (`format.ts`,
+  `status.ts`, `error-page.ts`, `href.ts`) and unit-tested in the node env
+  (plain `*.test.ts`, run by `pnpm --filter dashboard test`); the `.svelte`
+  components import those helpers rather than inlining them. Rendered-DOM
+  tests (jsdom + `@testing-library/svelte`) are **deferred to A3b** — same
+  class of block as the TS7 pin above: `@sveltejs/vite-plugin-svelte@7.2.0`
+  (latest) does not apply its `.svelte` transform under **Vitest 4.1.10 +
+  Vite 8.1.4**, so a component never compiles and render queries find raw
+  source (`pnpm build`, dev, and the Playwright E2E suite all compile
+  `.svelte` fine — the gap is Vitest-specific). Reproduced across every
+  config variant. Unblocks when vite-plugin-svelte ships Vitest-4 support,
+  or via Vitest **browser mode** (reuses the working dev-server transform;
+  needs Chromium in CI). Until then, extract logic to `$lib` and node-test
+  it; template branching stays covered only by the E2E suite. See plan 045.
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under

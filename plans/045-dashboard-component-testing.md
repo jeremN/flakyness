@@ -10,6 +10,33 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-21-dashboard-component-testing-design.md`
 
+## Execution amendment (2026-07-21) — render half deferred to A3b
+
+Standing up the jsdom infra (Task 1) hit an **upstream blocker**:
+`@sveltejs/vite-plugin-svelte@7.2.0` (the latest release — nothing newer to bump
+to) does **not** apply its `.svelte` transform under **Vitest 4.1.10 + Vite
+8.1.4**. Reproduced across every config variant (two-project split,
+single-config, `sveltekit()`, raw `svelte()`): Vite's `import-analysis` sees raw
+`.svelte` source because the Svelte compiler never ran. `pnpm build`, dev, and
+the Playwright E2E suite all compile `.svelte` fine — the gap is Vitest-specific.
+Same class as the documented TS7/svelte-check block: Svelte tooling lagging this
+repo's aggressively-latest stack.
+
+**Maintainer decision:** deliver the extraction half now (unblocked, node-tested,
+highest-value coverage), defer the jsdom render tests to a follow-up **A3b**,
+documented in AGENTS.md like the TS7 pin. Accordingly:
+
+- **Deferred to A3b:** Task 1 (jsdom infra), Tasks 5–8 (render tests). The
+  `jsdom` + `@testing-library/svelte` devDeps were removed (unused until A3b,
+  which may instead use Vitest browser mode).
+- **Proceeding now:** Tasks 2–4 (extraction + node tests + rewire), plus a
+  revised **Task 9** (final gate + AGENTS.md blocker note + README index).
+- The extraction tasks below are unchanged EXCEPT: ignore any instruction to run
+  the `client` project or `*.svelte.test.ts` — run node tests via
+  `pnpm --filter dashboard exec vitest run --project server …` is also moot (no
+  projects now); use `pnpm --filter dashboard exec vitest run <file>` or
+  `pnpm --filter dashboard test`.
+
 ## Global Constraints
 
 - **Extractions are behavior-preserving.** Each callsite swaps an inline fn for

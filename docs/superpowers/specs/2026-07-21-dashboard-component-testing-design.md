@@ -1,8 +1,17 @@
 # Dashboard `.svelte` component testing (A3) — design
 
-**Status:** approved
+**Status:** approved — render half deferred at execution (see below)
 **Date:** 2026-07-21
 **Sub-project:** A3 of the mutation-testing effort (A1 done → A2a done → A2b done → **A3** → B)
+
+> **Execution outcome (2026-07-21):** the jsdom render infrastructure is blocked
+> upstream — `@sveltejs/vite-plugin-svelte@7.2.0` (latest) does not apply its
+> `.svelte` transform under Vitest 4.1.10 + Vite 8.1.4 (build/dev/E2E compile
+> fine; the gap is Vitest-specific — same class as the TS7/svelte-check block).
+> The **extraction half** ships as plan 045; the **render half** (D3 Full
+> coverage, D1's render tests) is deferred to **A3b**, unblocked when
+> vite-plugin-svelte ships Vitest-4 support (or via Vitest browser mode). See
+> `plans/045-dashboard-component-testing.md` → "Execution amendment".
 
 ## Context
 

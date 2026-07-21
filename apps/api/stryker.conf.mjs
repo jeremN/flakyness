@@ -20,6 +20,12 @@ export default {
   vitest: { configFile: 'vitest.stryker.config.ts' },
   coverageAnalysis: 'perTest',
   concurrency: 2,
+  // Generous per-mutant timeout budget: under contention Stryker's default
+  // budget can mis-classify a slow-but-Surviving mutant as Timeout (which the
+  // gate counts like Killed), inflating scores. A wider budget keeps baselines
+  // reproducible; genuine hangs still time out (rare in this code).
+  timeoutMS: 15000,
+  timeoutFactor: 2,
   mutate: [
     'src/**/*.ts',
     '!src/**/*.test.ts',

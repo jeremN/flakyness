@@ -630,25 +630,24 @@ rationale. Items 5–7 remain unplanned.
     report-only today. Once a nightly run records their scores, evaluate adding them to
     the `HARDENED` array in `mutation-gate.mjs` with baseline-calibrated floors,
     following the same `floor(baseline) − 5` convention used for the current seven.
-15. **`logger.ts`'s per-file floor (74) is miscalibrated too high — it fails on a clean,
-    unmodified baseline.** Found while recording plan 047's gate-bite proof: the scoped
-    3-file API Stryker run (`--mutate
-    "src/middleware/logger.ts,src/middleware/rate-limit.ts,src/routes/projects.ts"`,
-    disposable Postgres, concurrency 2) reproducibly scores `logger.ts` at **72.06%** (49
-    killed / 0 timeout / 18 survived / 1 no-coverage of 68), confirmed across two
-    independent runs — matching plan 047 Task 1's own twice-reproduced isolated
-    measurement of the same number. The 74 floor was instead calibrated (plan 047 Task
-    4) from a *different*, concurrent 3-file run that recorded **79.41%** (49 killed /
-    **5 timeout** / 13 survived / 1 no-cov) — same killed count, but 5 mutants that are
-    deterministically `Survived` in isolation got misclassified as `Timeout` under that
-    run's contention (Postgres + two other files mutating concurrently). Since `Timeout`
-    counts the same as `Killed` in the gate's score formula, that inflated the baseline
-    by ~7 points before `floor(79.41) − 5 = 74` was derived — so the recorded floor was
-    never actually achievable by the deterministic score. **Recommended fix**:
-    recalibrate from the true isolated number, `floor(72.06) − 5 = 67`, and re-verify
-    it's stable across a couple of runs before landing. Left unfixed here deliberately —
-    plan 047's task scope is docs-only (no `scripts/mutation-gate.mjs` edits this task),
-    and choosing a new floor is a policy call, not something to sneak into a docs commit.
+15. **[RESOLVED on branch `test/stryker-nightly-mutation`] `logger.ts` and `projects.ts`'s
+    per-file floors were miscalibrated too high — recalibrated to their reliable,
+    reproduced baselines.** `logger.ts`'s floor moved **74 → 67** (reliable **72.06%**,
+    reproduced 4x) and `projects.ts`'s floor moved **53 → 48** (reliable **~53.7%**,
+    reproduced 3x). `rate-limit.ts` (57) and the 4 dashboard floors (91/61/95/95) were
+    already correct — those five reproduce exactly run-to-run and needed no change.
+    **Root cause**: the original baselines came from an earlier concurrent-load Stryker
+    run in which some deterministically-`Survived` mutants got scored `Timeout` under
+    contention; the gate's score formula counts `Timeout` the same as `Killed`, so those
+    misclassifications inflated both baselines. Timeouts only ever push a score *up*, so
+    the isolated, timeout-free score is the reliable lower bound. **Prevention**: added
+    `timeoutMS: 15000` / `timeoutFactor: 2` to `apps/api/stryker.conf.mjs` so contention
+    can't re-inflate future baselines the same way. **Remaining lever (long-term)**:
+    `projects.ts`'s residual run-to-run wobble tracks the repo's documented un-awaited
+    flakiness-reconcile race in the projects route tests (see AGENTS.md — poll, never
+    sleep); stabilizing those tests would let its floor tighten further. Raising real
+    coverage on the coarse route files (#13) remains the honest way to raise these
+    floors over time.
 
 ## Findings considered and rejected
 

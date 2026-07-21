@@ -2,13 +2,22 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 // Per-file floors over the A1–A3b hardened set. floor = floor(baseline) - 5.
-// Baselines recorded 2026-07-21 (Tasks 2 & 3). Bump deliberately, like the
-// route-count guard. Broad-run scores for non-hardened files are report-only.
+// Baselines recorded 2026-07-21. Bump deliberately, like the route-count guard.
+// Broad-run scores for non-hardened files are report-only.
+//
+// The 4 dashboard baselines + API rate-limit.ts reproduce exactly run-to-run.
+// API logger.ts and projects.ts are calibrated from their RELIABLE (isolated,
+// timeout-free) scores — reproduced 4x (logger) / 3x (projects). An earlier
+// concurrent-load run mis-classified some Survived mutants as Timeout (which
+// this formula counts like Killed), inflating those two baselines; we do NOT
+// calibrate off that. A generous timeoutMS/timeoutFactor in apps/api's Stryker
+// config now suppresses that re-inflation. Raising real coverage on the coarse
+// route files is the honest way to raise these floors (see plans/README.md #13/#15).
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
-  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 74 }, // baseline: 79.41%
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/rate-limit.ts', floor: 57 }, // baseline: 62.00%
-  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/routes/projects.ts',       floor: 53 }, // baseline: 58.05%
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/routes/projects.ts',       floor: 48 }, // baseline: ~53.7% (reliable low; race-wobbly)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

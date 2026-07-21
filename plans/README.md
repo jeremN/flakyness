@@ -641,11 +641,15 @@ rationale. Items 5–7 remain unplanned.
       (already killed in reality under plain Vitest — 3 directly verified: the
       `buildGrepInvert` empty-string return, the blanked `'threshold'` query key, and
       the gutted `/:id/runs` handler body); ≈13-16 were genuine accepted
-      equivalents/cost-prohibitive caps. On `rate-limit.ts`, 5 were killable via plan
-      048's tests (multi-hop/whitespaced XFF parsing, trusted-proxy-list trim, 429
-      body, `REPORT_RATE_LIMIT` constant); 11 were new findings (mostly the
-      un-exercised `reportRateLimit` key generator and the three real limiters'
-      unpinned messages); 2 were genuine accepted equivalents.
+      equivalents/cost-prohibitive caps. On `rate-limit.ts`, plan 048 killed ≈11
+      of the 18 survivors (the file moved 32→43 killed): its original targets
+      (multi-hop/whitespaced XFF parsing, trusted-proxy-list trim, 429 body,
+      `REPORT_RATE_LIMIT`/`API_RATE_LIMIT` constants) plus the findings folded in
+      after Task 1's measurement — the empty-XFF `if (forwarded)` fallback and the
+      un-exercised `reportRateLimit` key generator + its message. The remaining
+      survivors are accepted equivalents (see residuals below): the
+      `apiRateLimit`/`adminRateLimit` baked-in messages, `standardHeaders:
+      'draft-7'`, and the defensive deep optional-chain.
     - **Accepted residuals** (recorded so a future pass doesn't re-audit them, not
       chased by plan 048): the `QUARANTINE_ROW_CAP` / `RUN_RESULTS_CAP` truncation
       caps (need >1000/>2000-row fixtures to exercise); the trend date-label

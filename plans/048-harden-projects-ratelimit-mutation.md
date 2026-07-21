@@ -910,14 +910,26 @@ paragraph untouched.
 
 - [ ] **Step 4: Prove the gate is green-on-clean at the new floors**
 
-With the final measured `mutation.json` from Step 1 still present:
+> **The gate is all-or-nothing across ALL 7 hardened entries, in TWO report
+> files** — `apps/api/reports/mutation/mutation.json` (logger.ts, rate-limit.ts,
+> projects.ts) and `apps/dashboard/reports/mutation/mutation.json` (the 4 `$lib`
+> files). A projects+rate-limit-only report makes the gate exit **2** (missing
+> logger.ts entry). And **each `stryker run --mutate` OVERWRITES `mutation.json`
+> — it does not merge** — so the final API report must come from ONE consolidated
+> run covering all three API files:
+> `--mutate "src/middleware/logger.ts,src/middleware/rate-limit.ts,src/routes/projects.ts"`.
+> Generate the dashboard report too (`pnpm --filter dashboard test:mutation`, no
+> Postgres). This mirrors plan 047's green-on-clean proof.
+
+With both complete reports present:
 
 ```bash
 node scripts/mutation-gate.mjs
 ```
 
-Expected: **exit 0**, `GATE PASSED`, and the two hardened lines print
-`PASS` with `score ≥ floor` for both files.
+Expected: **exit 0**, `GATE PASSED`, all 7 lines print `PASS` with
+`score ≥ floor` (projects.ts and rate-limit.ts at their new floors; the other
+5 unchanged).
 
 - [ ] **Step 5: Run the gate's own unit test and the full API suite**
 

@@ -4,29 +4,18 @@
   import ErrorState from '$lib/components/ErrorState.svelte';
   import { invalidateAll } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
-  import type { TrendDirection } from '../../../app.d';
-  import { statusBadgeClass as getStatusBadgeClass } from '$lib/status';
+  import {
+    statusBadgeClass as getStatusBadgeClass,
+    trendDirectionLabel,
+    trendDirectionBadgeClass,
+  } from '$lib/status';
+  import { formatDateTime, formatDuration, trendTooltipLabel } from '$lib/format';
 
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
-
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  function formatDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
 
   const statCards = $derived([
     { label: 'Total Runs', value: data.testHistory.stats.totalRuns, color: 'purple' },
@@ -36,23 +25,6 @@
     { label: 'Skipped', value: data.testHistory.stats.skipped, color: 'gray' },
     { label: 'Avg Duration', value: formatDuration(data.testHistory.stats.avgDuration), color: 'blue' },
   ]);
-
-  // Rendered honestly, including 'insufficient-data' — it is not the same
-  // claim as 'stable' (see plans/028-honest-visible-trends.md design
-  // decision 4) and must never be disguised as one.
-  const DIRECTION_LABEL: Record<TrendDirection, string> = {
-    improving: '↓ Improving',
-    worsening: '↑ Worsening',
-    stable: '→ Stable',
-    'insufficient-data': 'Insufficient data',
-  };
-
-  const DIRECTION_BADGE_CLASS: Record<TrendDirection, string> = {
-    improving: 'badge-green',
-    worsening: 'badge-red',
-    stable: 'badge-gray',
-    'insufficient-data': 'badge-gray',
-  };
 
   // A day with no runs (`flakeRate: null`) must render as a gap in the
   // line, not a flat 0% — that flat line is exactly the lie plan 028 exists
@@ -67,7 +39,7 @@
       formatter: (params: unknown) => {
         const p = params as Array<{ name: string; value: number | null }>;
         const value = p[0]?.value ?? null;
-        return `${p[0].name}<br/>Flake Rate: <b>${value === null ? 'no runs' : `${value}%`}</b>`;
+        return `${p[0].name}<br/>Flake Rate: <b>${trendTooltipLabel(value)}</b>`;
       },
     },
     grid: {
@@ -157,8 +129,8 @@
       <h2 class="text-sm font-semibold text-muted uppercase tracking-wider">
         Flake Rate Trend ({data.testTrend.days} Days)
       </h2>
-      <span class="badge {DIRECTION_BADGE_CLASS[data.testTrend.direction]}">
-        {DIRECTION_LABEL[data.testTrend.direction]}
+      <span class="badge {trendDirectionBadgeClass(data.testTrend.direction)}">
+        {trendDirectionLabel(data.testTrend.direction)}
       </span>
     </div>
     <Chart options={trendChartOptions} height="240px" />
@@ -181,7 +153,7 @@
         <h2 class="font-semibold text-gray-900">This test is marked as flaky</h2>
         <p class="text-muted text-sm">
           Flake rate: <span class="font-semibold text-orange-600">{(parseFloat(data.testHistory.flakyInfo.flakeRate) * 100).toFixed(1)}%</span> • 
-          First detected: {formatDate(data.testHistory.flakyInfo.firstDetected)}
+          First detected: {formatDateTime(data.testHistory.flakyInfo.firstDetected)}
         </p>
       </div>
     </div>
@@ -222,7 +194,7 @@
           <td class="py-4 px-4 font-mono text-muted text-sm">{run.commitSha.slice(0, 7)}</td>
           <td class="py-4 px-4 text-muted">{formatDuration(run.durationMs)}</td>
           <td class="py-4 px-4 text-muted">{run.retryCount}</td>
-          <td class="py-4 px-4 text-muted text-sm">{formatDate(run.createdAt)}</td>
+          <td class="py-4 px-4 text-muted text-sm">{formatDateTime(run.createdAt)}</td>
         </tr>
         {#if run.errorMessage}
           <tr class="bg-red-50">

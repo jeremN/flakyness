@@ -2,6 +2,7 @@
   import '../app.css';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { appendProjectParam } from '$lib/href';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -28,10 +29,7 @@
   }
 
   function getNavHref(baseHref: string): string {
-    if (data.selectedProject) {
-      return `${baseHref}?project=${data.selectedProject.id}`;
-    }
-    return baseHref;
+    return appendProjectParam(baseHref, data.selectedProject?.id);
   }
 
   function isActive(href: string): boolean {

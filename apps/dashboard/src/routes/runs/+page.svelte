@@ -1,33 +1,13 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { goto } from '$app/navigation';
+  import { formatDateTime, getPassRate, getPassRateClass } from '$lib/format';
 
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
-
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  function getPassRate(run: { passed: number; totalTests: number }): number {
-    if (run.totalTests === 0) return 0;
-    return (run.passed / run.totalTests) * 100;
-  }
-
-  function getPassRateClass(passRate: number): string {
-    if (passRate >= 90) return 'badge-green';
-    if (passRate >= 70) return 'badge-orange';
-    return 'badge-red';
-  }
 </script>
 
 <svelte:head>
@@ -107,7 +87,7 @@
             <td class="py-4 px-4">
               <span class="badge badge-orange">{run.flaky}</span>
             </td>
-            <td class="py-4 px-4 text-muted text-sm">{formatDate(run.createdAt)}</td>
+            <td class="py-4 px-4 text-muted text-sm">{formatDateTime(run.createdAt)}</td>
           </tr>
         {/each}
       </tbody>

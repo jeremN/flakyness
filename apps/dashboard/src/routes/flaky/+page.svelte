@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
+  import { formatDate } from '$lib/format';
+  import { flakyStatusBadgeClass } from '$lib/status';
+  import { appendProjectParam } from '$lib/href';
 
   interface Props {
     data: PageData;
@@ -8,30 +11,8 @@
 
   let { data }: Props = $props();
 
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  }
-
-  function getStatusBadgeClass(status: string): string {
-    switch (status) {
-      case 'active': return 'badge-orange';
-      case 'resolved': return 'badge-green';
-      case 'ignored': return 'badge-gray';
-      default: return 'badge-gray';
-    }
-  }
-
   function getFilterHref(status: string): string {
-    const base = `/flaky?status=${status}`;
-    if (data.currentProject) {
-      return `${base}&project=${data.currentProject.id}`;
-    }
-    return base;
+    return appendProjectParam(`/flaky?status=${status}`, data.currentProject?.id);
   }
 </script>
 
@@ -141,7 +122,7 @@
               {formatDate(test.lastSeen)}
             </td>
             <td class="py-4 px-4">
-              <span class="badge {getStatusBadgeClass(test.status)} uppercase">
+              <span class="badge {flakyStatusBadgeClass(test.status)} uppercase">
                 {test.status}
               </span>
             </td>

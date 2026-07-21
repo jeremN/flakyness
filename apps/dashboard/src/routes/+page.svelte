@@ -3,6 +3,7 @@
   import Chart from '$lib/components/Chart.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
   import { invalidateAll, goto } from '$app/navigation';
+  import { formatDateTime, trendTooltipLabel } from '$lib/format';
   import type { EChartsOption } from 'echarts';
 
   interface Props {
@@ -10,16 +11,6 @@
   }
 
   let { data }: Props = $props();
-
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
 
   // Chart configuration for flake rate trend - updated for light theme
   const chartOptions: EChartsOption = $derived(data.trendData ? {
@@ -34,7 +25,7 @@
         // render as "null%"; say so honestly instead. See
         // plans/028-honest-visible-trends.md.
         const value = p[0]?.value ?? null;
-        return `${p[0].name}<br/>Flake Rate: <b>${value === null ? 'no runs' : `${value}%`}</b>`;
+        return `${p[0].name}<br/>Flake Rate: <b>${trendTooltipLabel(value)}</b>`;
       },
     },
     grid: {
@@ -197,7 +188,7 @@
                     {(parseFloat(test.flakeRate) * 100).toFixed(1)}%
                   </span>
                 </td>
-                <td class="py-4 px-4 text-muted text-sm">{formatDate(test.lastSeen)}</td>
+                <td class="py-4 px-4 text-muted text-sm">{formatDateTime(test.lastSeen)}</td>
               </tr>
             {/each}
           </tbody>
@@ -255,7 +246,7 @@
                 <td class="py-4 px-4">
                   <span class="badge badge-orange">{run.flaky}</span>
                 </td>
-                <td class="py-4 px-4 text-muted text-sm">{formatDate(run.createdAt)}</td>
+                <td class="py-4 px-4 text-muted text-sm">{formatDateTime(run.createdAt)}</td>
               </tr>
             {/each}
           </tbody>

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
-import { db, flakyTests } from '../db';
+import { db, flakyTests, testRuns } from '../db';
 import { escapeRegex, buildGrepInvert, RUN_RESULTS_CAP } from './projects';
 
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -158,6 +158,84 @@ describeWithDb('Projects API Integration Tests', () => {
     it('should return all when status=all', async () => {
       const res = await app.request(`/api/v1/projects/${testProjectId}/flaky-tests?status=all`);
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('GET /api/v1/projects/:id/flaky-tests — status filter & limit (seeded)', () => {
+    let ftProjectId: string;
+
+    beforeAll(async () => {
+      if (!(hasDatabase && hasAdminToken)) return;
+      const createRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `flaky-filter-${randomUUID()}` }),
+      });
+      ftProjectId = (await createRes.json()).project.id;
+
+      // Direct seed — this route reads flaky_tests rows only; it does not race
+      // the un-awaited reconcile (nothing is ingested here).
+      await db.insert(flakyTests).values([
+        { projectId: ftProjectId, testName: 'ft-active-1', testFile: 'f.spec.ts', status: 'active', flakeCount: 5, totalRuns: 10, flakeRate: '0.5000' },
+        { projectId: ftProjectId, testName: 'ft-active-2', testFile: 'f.spec.ts', status: 'active', flakeCount: 3, totalRuns: 10, flakeRate: '0.3000' },
+        { projectId: ftProjectId, testName: 'ft-resolved', testFile: 'f.spec.ts', status: 'resolved', flakeCount: 0, totalRuns: 10, flakeRate: '0.0000' },
+        { projectId: ftProjectId, testName: 'ft-ignored', testFile: 'f.spec.ts', status: 'ignored', flakeCount: 4, totalRuns: 10, flakeRate: '0.4000' },
+      ]);
+    });
+
+    afterAll(async () => {
+      if (ftProjectId) {
+        await app.request(`/api/v1/admin/projects/${ftProjectId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+      }
+    });
+
+    const names = (body: { flakyTests: { testName: string }[] }) =>
+      body.flakyTests.map((t) => t.testName);
+
+    it('status=active returns only the active rows (default status)', async () => {
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests`);
+      const got = names(await res.json());
+      expect(got.sort()).toEqual(['ft-active-1', 'ft-active-2']);
+    });
+
+    it('status=ignored returns only the ignored row', async () => {
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=ignored`);
+      expect(names(await res.json())).toEqual(['ft-ignored']);
+    });
+
+    it('status=resolved returns only the resolved row', async () => {
+      // Task-1 finding: the `'resolved'` enum value (projects.ts:12) had no
+      // content-asserting test old or new; this pins it.
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=resolved`);
+      expect(names(await res.json())).toEqual(['ft-resolved']);
+    });
+
+    it('an unparseable status falls back to active (the default)', async () => {
+      // Task-1 finding: /flaky-tests's `: 'active'` unparseable fallback
+      // (projects.ts:109) was untested (the /runs/:runId sibling gets this via
+      // Task 2, /flaky-tests did not). safeParse fails → 'active'.
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=bogus`);
+      const got = names(await res.json());
+      expect(got.sort()).toEqual(['ft-active-1', 'ft-active-2']);
+    });
+
+    it('status=all returns every row regardless of status', async () => {
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=all`);
+      const got = names(await res.json());
+      expect(got.sort()).toEqual(['ft-active-1', 'ft-active-2', 'ft-ignored', 'ft-resolved']);
+    });
+
+    it('limit is applied and clamped up to a minimum of 1', async () => {
+      // 4 rows exist under status=all; limit=1 must return exactly 1.
+      const one = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=all&limit=1`);
+      expect((await one.json()).flakyTests.length).toBe(1);
+
+      // limit=0 → Math.max(0,1) → 1, NOT 0 rows.
+      const zero = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=all&limit=0`);
+      expect((await zero.json()).flakyTests.length).toBe(1);
     });
   });
 
@@ -841,6 +919,55 @@ describeWithDb('Projects API Integration Tests', () => {
         expect(rate === null).toBe(true);
         expect(rate).not.toBe(0);
       }
+    });
+  });
+
+  describe('GET /api/v1/projects/:id/trend — populated day (seeded)', () => {
+    let trendProjectId: string;
+
+    beforeAll(async () => {
+      if (!(hasDatabase && hasAdminToken)) return;
+      const createRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `trend-populated-${randomUUID()}` }),
+      });
+      trendProjectId = (await createRes.json()).project.id;
+
+      // Direct testRuns insert — /trend aggregates test_runs, never flaky_tests,
+      // so this is race-free. createdAt defaults to now() → today's bucket.
+      // rate = round(((flaky + failed) / total) * 1000) / 10 = round(3/10*1000)/10 = 30.0
+      await db.insert(testRuns).values({
+        projectId: trendProjectId,
+        branch: 'main',
+        commitSha: 'trendpopulated01',
+        totalTests: 10,
+        passed: 7,
+        failed: 1,
+        skipped: 0,
+        flaky: 2,
+      });
+    });
+
+    afterAll(async () => {
+      if (trendProjectId) {
+        await app.request(`/api/v1/admin/projects/${trendProjectId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+      }
+    });
+
+    it('computes the flake rate for the day that has runs (non-null, exact)', async () => {
+      const res = await app.request(`/api/v1/projects/${trendProjectId}/trend?days=7`);
+      expect(res.status).toBe(200);
+
+      const body = await res.json();
+      // Buckets run oldest→today; the seeded run is today, so it lands in the
+      // LAST bucket. rate = (2 flaky + 1 failed) / 10 total = 30.0%.
+      const today = body.rates[body.rates.length - 1];
+      expect(today).toBe(30);
+      expect(today).not.toBeNull();
     });
   });
 });

@@ -331,6 +331,30 @@ In `describe('GET /api/v1/projects/:id/runs/:runId', …)`, after the existing
     });
 ```
 
+- [ ] **Step 3b: Add the malformed-project-id 400 coverage (Task-1 finding)**
+
+Task 1's measurement surfaced that the `uuidSchema.safeParse → 400` guard —
+identical across endpoints — is only tested on `/quarantine` and `/runs/:runId`;
+**no test sends a non-UUID id to `/stats`, `/flaky-tests`, `/runs`, `/analysis`,
+or `/trend`** (~21 survivors: the `!parsed.success` conditional, the return
+block, and the error body on each). One loop test closes all five. Add it inside
+`describeWithDb('Projects API Integration Tests', …)` (e.g. after the
+`describe('GET /api/v1/projects/:id/stats', …)` block):
+
+```js
+  describe('malformed project id → 400 (shared uuid guard)', () => {
+    it('rejects a non-UUID id with 400 and the standard error on every id-guarded endpoint', async () => {
+      // The guard exists on every endpoint but is only asserted on /quarantine
+      // and /runs/:runId today. These five share the identical guard, untested.
+      for (const path of ['stats', 'flaky-tests', 'runs', 'analysis', 'trend']) {
+        const res = await app.request(`/api/v1/projects/not-a-uuid/${path}`);
+        expect(res.status, `${path} must 400 on a malformed id`).toBe(400);
+        expect((await res.json()).error).toBe('Invalid project ID format');
+      }
+    });
+  });
+```
+
 - [ ] **Step 4: Run the file and confirm green, no skips**
 
 Run: `pnpm --filter api exec vitest run src/routes/projects.test.ts`
@@ -383,12 +407,27 @@ pnpm --filter api exec vitest run src/routes/projects.test.ts -t "status="
 git checkout -- apps/api/src/routes/projects.ts   # after EACH mutation
 ```
 
+- [ ] **Step 7b: Mutation proof — malformed-id guard**
+
+Prove the loop test bites for at least one endpoint each way, then revert:
+
+1. `projects.ts:369` (analysis) — change `!parsed.success` → `false`. The guard
+   is skipped, `/analysis` no longer 400s on `not-a-uuid` → the loop's
+   `toBe(400)` FAILS for `analysis`.
+2. `projects.ts:370` — change the error object `{ error: 'Invalid project ID
+   format' }` → `{}` (or blank the string). The `.error` assertion FAILS.
+
+```bash
+pnpm --filter api exec vitest run src/routes/projects.test.ts -t "malformed"
+git checkout -- apps/api/src/routes/projects.ts   # after EACH mutation
+```
+
 - [ ] **Step 8: Confirm the tree is clean of mutations, then commit**
 
 ```bash
 git status --short   # expect ONLY apps/api/src/routes/projects.test.ts modified
 git add apps/api/src/routes/projects.test.ts
-git commit -m "test(projects): cover analysis/trend clamps and runs/:runId status branches"
+git commit -m "test(projects): cover analysis/trend clamps, runs/:runId status branches and malformed-id guards"
 ```
 
 If `git status` lists `apps/api/src/routes/projects.ts`, a revert was missed —
@@ -480,6 +519,22 @@ Add this `describe` block inside `describeWithDb('Projects API Integration Tests
       expect(names(await res.json())).toEqual(['ft-ignored']);
     });
 
+    it('status=resolved returns only the resolved row', async () => {
+      // Task-1 finding: the `'resolved'` enum value (projects.ts:12) had no
+      // content-asserting test old or new; this pins it.
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=resolved`);
+      expect(names(await res.json())).toEqual(['ft-resolved']);
+    });
+
+    it('an unparseable status falls back to active (the default)', async () => {
+      // Task-1 finding: /flaky-tests's `: 'active'` unparseable fallback
+      // (projects.ts:109) was untested (the /runs/:runId sibling gets this via
+      // Task 2, /flaky-tests did not). safeParse fails → 'active'.
+      const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=bogus`);
+      const got = names(await res.json());
+      expect(got.sort()).toEqual(['ft-active-1', 'ft-active-2']);
+    });
+
     it('status=all returns every row regardless of status', async () => {
       const res = await app.request(`/api/v1/projects/${ftProjectId}/flaky-tests?status=all`);
       const got = names(await res.json());
@@ -563,11 +618,15 @@ Expected: all pass, **no `skipped`**.
 
 1. `projects.ts:131` — change the status filter
    `status !== 'all' ? eq(flakyTests.status, status) : undefined` →
-   `undefined` (always unfiltered). Then `status=ignored` returns all 4 rows →
-   the `toEqual(['ft-ignored'])` assertion FAILS.
+   `undefined` (always unfiltered). Then `status=ignored` (and `status=resolved`)
+   return all 4 rows → the `toEqual(['ft-ignored'])` / `toEqual(['ft-resolved'])`
+   assertions FAIL.
 2. `projects.ts:113` — change the limit lower clamp `Math.max(requestedLimit, 1)`
    → `Math.max(requestedLimit, 0)`. Then `?limit=0` returns 0 rows → the
    `length === 1` assertion FAILS.
+3. `projects.ts:109` — change the unparseable-status fallback `: 'active'` →
+   `: 'ignored'`. Then `?status=bogus` returns the ignored row → the
+   `toEqual(['ft-active-1', 'ft-active-2'])` assertion FAILS.
 
 ```bash
 pnpm --filter api exec vitest run src/routes/projects.test.ts -t "flaky-tests"
@@ -637,6 +696,14 @@ Inside `describe('getClientIp', …)`, after the existing
     process.env.TRUSTED_PROXY_IPS = '1.2.3.4, 5.5.5.5';
     expect(getClientIp(fakeCtx({ socketIp: '5.5.5.5', xff: '9.9.9.9' }))).toBe('9.9.9.9');
   });
+
+  it('falls back to the socket IP when a trusted proxy sends an empty X-Forwarded-For', () => {
+    // Task-1 finding: `if (forwarded)` (rate-limit.ts:41) had no present-but-blank
+    // XFF test. An empty header must be treated as absent → return the socket IP,
+    // not ''. Mutating the guard to `if (true)` would return '' here.
+    process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
+    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '' }))).toBe('1.2.3.4');
+  });
 ```
 
 - [ ] **Step 2: Add the 429-body test**
@@ -679,6 +746,50 @@ Inside `describe('rate limiter enforcement', …)`, after the existing
   });
 ```
 
+- [ ] **Step 3b: Exercise the real `reportRateLimit` key generator + message (Task-1 finding)**
+
+Task 1 found `reportRateLimit`'s real key generator
+(`c.get('project')?.id || 'anonymous'`, `rate-limit.ts:75-77`) and its baked-in
+message (`rate-limit.ts:79`) are never exercised — the Step-2 body test builds
+its *own* synthetic limiter. Add a test that drives the real export. Inside
+`describe('rate limiter enforcement', …)`, after the Step-2 body test:
+
+```js
+  it('reportRateLimit keys by the project id (separate buckets) and 429s with its own message', async () => {
+    const { Hono } = await import('hono');
+    const { reportRateLimit, REPORT_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      // Per-request project id (from a header) so two ids get two buckets. This
+      // proves the key generator actually reads `c.get('project')?.id`: if it
+      // were mutated to always return 'anonymous', project B below would share
+      // A's exhausted bucket and 429 instead of 200. Unique ids ('rl-a'/'rl-b')
+      // keep reportRateLimit's module-level store isolated from other tests.
+      app.use('*', async (c, next) => { c.set('project', { id: c.req.header('x-proj') }); await next(); });
+      app.use('*', reportRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      let last: Response | undefined;
+      for (let i = 0; i < REPORT_RATE_LIMIT.limit + 1; i++) {
+        last = await app.request('/x', { headers: { 'x-proj': 'rl-a' } });
+      }
+      expect(last!.status).toBe(429);
+      expect(await last!.json()).toEqual({
+        error: 'Too many report uploads. Please wait before retrying.',
+        retryAfter: 60,
+      });
+
+      // A different project id is a different bucket → still allowed.
+      const other = await app.request('/x', { headers: { 'x-proj': 'rl-b' } });
+      expect(other.status).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+```
+
 - [ ] **Step 4: Run the file and confirm green, no skips**
 
 Run: `pnpm --filter api exec vitest run src/middleware/rate-limit.test.ts`
@@ -703,6 +814,14 @@ Apply each mutation, run, confirm FAIL, `git checkout -- apps/api/src/middleware
    `toEqual` FAILS.
 5. `rate-limit.ts:19` — change `limit: 60` → `limit: 61`. The constants test
    FAILS. (Analogously for `rate-limit.ts:20` `API` `limit: 100`.)
+6. `rate-limit.ts:41` — change `if (forwarded)` → `if (true)`. Then a trusted
+   proxy's empty XFF returns `''` → the empty-XFF fallback test (expects
+   `'1.2.3.4'`) FAILS.
+7. `rate-limit.ts:77` — change the key generator `project?.id || 'anonymous'`
+   → `'anonymous'` (ignore the project id). Then project `rl-b` shares `rl-a`'s
+   exhausted bucket → the `other.status === 200` assertion FAILS. Separately,
+   blank `rate-limit.ts:79`'s message string → the `toEqual` on the 429 body
+   FAILS.
 
 Run each with:
 `pnpm --filter api exec vitest run src/middleware/rate-limit.test.ts`
@@ -712,7 +831,7 @@ Run each with:
 ```bash
 git status --short   # expect ONLY apps/api/src/middleware/rate-limit.test.ts modified
 git add apps/api/src/middleware/rate-limit.test.ts
-git commit -m "test(rate-limit): cover multi-hop XFF, trusted-list trim, 429 body and constants"
+git commit -m "test(rate-limit): cover XFF trim/empty, trusted-list trim, 429 body, constants and reportRateLimit keying"
 ```
 
 ---
@@ -743,8 +862,21 @@ Let `projectsLow` = the **lower** of the two `projects.ts` scores;
 `rateLimitScore` = the `rate-limit.ts` score.
 
 Expected: both scores are meaningfully higher than their Task-1 baselines
-(the point of Tasks 2-4). If a target file did **not** rise, a hardening test is
-not biting under Stryker — investigate before touching floors.
+(projects.ts 54.36%, rate-limit.ts 64.00%). If a target file did **not** rise, a
+hardening test is not biting under Stryker — investigate before touching floors.
+
+> **Measurement-anomaly caveat (from Task 1):** the scoped `--mutate` run
+> *under-reports* kills for some `projects.ts` mutants — Task 1 directly verified
+> three mutants Stryker marked `Survived` are actually killed under plain Vitest
+> (including a pure unit-test case, so it is a Stryker `perTest` coverage-mapping
+> miss, not the reconcile race). Consequences: (a) the `projects.ts` aggregate is
+> **directional**, an under-estimate of the true score — which makes the
+> `floor − 5` calibration conservatively safe, not unsafe; (b) the per-assertion
+> mutation proofs in Tasks 2-4 (apply→run→FAIL→revert) are the reliable
+> per-mutant signal, not the aggregate; (c) if `projects.ts` comes back higher
+> than the added coverage alone predicts, that is consistent with this anomaly,
+> not a bug. `rate-limit.ts` showed no such anomaly (Task 1 found no
+> counter-evidence) — treat its score as trustworthy.
 
 - [ ] **Step 2: Compute the new floors**
 
@@ -853,8 +985,19 @@ git commit -m "chore(mutation): ratchet projects.ts + rate-limit.ts floors after
 2. The `projects.ts` score still wobbles ~1pp because *other* suites that cover
    it hit the reconcile race (AGENTS.md). The new tests add no wobble (all
    race-safe), but the residual wobble is why Task 5 calibrates off the low.
-3. If Task 1's measurement surfaces a killable survivor not in the "Verified
-   survivor targets" list, it is added to the relevant task using the same
-   worked technique (concrete example: any of Task 2/3/4's proof steps) — this
-   is genuine measurement output, not an open-ended placeholder.
+3. Task 1's measurement surfaced killable survivors beyond the original
+   "Verified survivor targets"; the high-value cheap ones were folded into the
+   tasks: the malformed-id→400 guard on 5 endpoints (Task 2 Step 3b, ~21
+   mutants), `?status=resolved`/`?status=bogus` fallback (Task 3), and the
+   empty-XFF + `reportRateLimit` keygen/message (Task 4 Steps 1/3b).
+4. **Accepted residuals** (recorded in Task 5's README #13 summary, not chased):
+   the `QUARANTINE_ROW_CAP`/`RUN_RESULTS_CAP` truncation caps (need >1000/>2000
+   fixtures); the trend date-label cosmetics (`projects.ts:491-492`, only
+   `.length` is asserted, not label text); the `apiRateLimit`/`adminRateLimit`
+   baked-in messages (`rate-limit.ts:88,99` — pinning them means flooding the
+   module-level singletons, which would pollute the shared `'unknown'` bucket
+   other enforcement tests depend on); `standardHeaders: 'draft-7'` and the
+   defensive deep optional-chain (`rate-limit.ts:34,60`); and the ~13
+   `projects.ts` mutants Task 1 flagged as measurement-anomaly mis-reports
+   (already killed in reality — no new test needed).
 ```

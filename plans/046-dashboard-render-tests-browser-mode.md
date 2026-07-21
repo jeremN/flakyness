@@ -61,6 +61,11 @@ This task stands up the whole toolchain and proves it on the one component that 
 > 4. **`sveltekit()` works** as the browser-config plugin — the fallback config was NOT needed. `.svelte` compiles, `$lib`/`$app` resolve, `vi.mock('$app/*')` will be proven in Task 2.
 > 5. **Mutation-proof timing:** a browser-mode assertion that should red reds by **retry timeout (~15s)**, not instantly — `expect.element` retries until the condition holds or times out. A red mutation proof taking ~15s is normal, not a hang.
 > 6. **ROUTE-TEST FILENAME LAW (discovered Task 2, verified against `@sveltejs/kit@2.69.2`):** SvelteKit's route-manifest scanner (`create_manifest_data`) rejects **any** `+`-prefixed file under `src/routes/**` that is not a reserved route name, throwing during `svelte-kit sync` — which the `test:browser` script runs first, so a mis-named file breaks the whole browser suite. Therefore route-component render tests are named **`page.svelte.test.ts` / `layout.svelte.test.ts` / `error.svelte.test.ts` — WITHOUT the leading `+`** (co-located in the route dir, importing `./+page.svelte` etc. — the *component* keeps its `+`). The `include: ['src/**/*.svelte.test.ts']` glob still matches. Every route-test filename in Tasks 2–6 below already reflects this; do **not** re-add the `+`. `ErrorState.svelte.test.ts` (Task 1) is in `src/lib/`, outside the scanner, so it is unaffected.
+> 7. **PAGEDATA FIXTURE CONTRACT + mandatory `check` (discovered in Task 2's review — binds Tasks 3–6):** `svelte-check` type-checks every `*.svelte.test.ts`, and `render(Page, { props: { data } })` holds `data` to the route's *generated* `PageData` — the full type, not just the fields the component reads. A render-test fixture must therefore be a **complete, type-valid `PageData`**, or `pnpm --filter dashboard check` fails (Task 2 shipped a `check`-breaking file this way; the brief's literal fixture was type-incomplete). Rules, all empirically verified:
+>    - **`selectedProject` is a NON-NULL `Project`** in *every* route's `PageData` (it comes from the shared `+layout.server.ts`; `projects.find(...) || projects[0] || null` narrows to `Project` because `projects[0]` is a non-nullable object, so TS drops the `| null`). Every `data` fixture needs `selectedProject: { id, name, createdAt }`, plus `apiError: string | null` (null OK) and `projects: Project[]` (`[]` OK).
+>    - **Union-typed page loads pair their fields.** `runs/+page.server.ts` returns `{ runs: [], currentProject: null } | { runs: TestRun[], currentProject: Project }` — so a fixture with **non-empty `runs` MUST also set `currentProject` to a `Project`**; empty `runs` pairs with `currentProject: null`. Each other route has its own load union — read that route's `+page.server.ts` and match one branch exactly.
+>    - **Domain fixtures need ALL fields.** `TestRun` (`app.d.ts`) requires `startedAt: string|null, finishedAt: string|null, skipped: number, pipelineId: string|null` on top of the obvious ones; likewise `TestFlakiness`, `ProjectStats`, `TestTrend*` for their routes.
+>    - **Every task (3–6) MUST run `pnpm --filter dashboard check` (expect `0 ERRORS`) before committing** and treat its output as authoritative. `test:browser` green is NOT sufficient — it renders but does not type-check. Omitting `check` is exactly what let Task 2 ship broken.
 > The config, deps, script, node-exclude, and `ErrorState.svelte.test.ts` are already committed. Tasks 2–7 reuse the committed config as-is.
 
 - [ ] **Step 1: Add deps**
@@ -268,16 +273,21 @@ import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
-const base = { currentProject: { id: 'p1', name: 'Proj' }, projects: [], days: 14, threshold: 0.05 };
+// PageData for /analysis = layout `{ projects, selectedProject, apiError }` merged with the
+// page load union `{ analysis: null, currentProject: null, days, threshold }` |
+// `{ analysis: AnalysisResponse, currentProject: Project, days, threshold }`. `selectedProject`
+// is a NON-NULL Project (see plan point 7); `currentProject` pairs with `analysis`.
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const base = { projects: [], selectedProject: project, apiError: null, days: 14, threshold: 0.05 };
 
 describe('analysis/+page', () => {
   it('shows "No Project Selected" when analysis is null', async () => {
-    render(Page, { props: { data: { ...base, analysis: null } } });
+    render(Page, { props: { data: { ...base, analysis: null, currentProject: null } } });
     await expect.element(page.getByText('No Project Selected')).toBeInTheDocument();
   });
 
   it('shows "No tests found." when allTests is empty', async () => {
-    render(Page, { props: { data: { ...base, analysis: {
+    render(Page, { props: { data: { ...base, currentProject: project, analysis: {
       allTests: [], flakyTests: [], threshold: 0.05, windowDays: 14 } } } });
     await expect.element(page.getByText('No tests found.')).toBeInTheDocument();
   });
@@ -288,7 +298,7 @@ describe('analysis/+page', () => {
       failCount: 1, flakyCount: isFlaky ? 1 : 0, flakeRate: isFlaky ? 0.2 : 0,
       isFlaky, lastSeen: '2026-03-15T10:00:00Z',
     });
-    render(Page, { props: { data: { ...base, analysis: {
+    render(Page, { props: { data: { ...base, currentProject: project, analysis: {
       allTests: [row('a', true), row('b', false)], flakyTests: [row('a', true)],
       threshold: 0.05, windowDays: 14 } } } });
     await expect.element(page.getByText('a')).toBeInTheDocument();
@@ -308,10 +318,17 @@ vi.mock('$app/forms', () => ({ enhance: () => ({ destroy() {} }) }));
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
+import type { FlakyTest } from '../../app.d';
 
-const row = (over = {}) => ({ id: '1', testName: 't', testFile: 'f.spec.ts', flakeRate: '0.2',
-  totalRuns: 10, firstDetected: null, lastSeen: null, status: 'active', ...over });
-const base = { currentProject: { id: 'p1', name: 'Proj' } };
+// PageData for /flaky = layout `{ projects, selectedProject, apiError }` merged with the page
+// load union; every fixture below sets `currentProject: project` (non-null Project) so it matches
+// the `{ flakyTests: FlakyTest[], currentProject: Project, status, canMute }` branch uniformly.
+// `row()` is annotated `: FlakyTest` so `status` stays the literal union, not widened `string`.
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const row = (over: Partial<FlakyTest> = {}): FlakyTest => ({ id: '1', testName: 't', testFile: 'f.spec.ts',
+  flakeRate: '0.2', totalRuns: 10, flakeCount: 2, firstDetected: '2026-03-01T00:00:00Z',
+  lastSeen: '2026-03-15T10:00:00Z', status: 'active', ...over });
+const base = { projects: [], selectedProject: project, apiError: null, currentProject: project };
 
 describe('flaky/+page', () => {
   it('shows "No active flaky tests!" for an empty active list', async () => {
@@ -341,9 +358,9 @@ describe('flaky/+page', () => {
 });
 ```
 
-- [ ] **Step 3: Run + mutation proofs** (revert each)
+- [ ] **Step 3: Typecheck + run + mutation proofs** (revert each)
 
-Run: `pnpm --filter dashboard test:browser`
+Run `pnpm --filter dashboard check` FIRST — it must report `0 ERRORS` (it type-checks these `*.svelte.test.ts` fixtures against the generated `PageData`; see plan point 7). Only then `pnpm --filter dashboard test:browser`.
 - `analysis/+page.svelte`: `{#if !data.analysis}` → `{#if data.analysis}` → the "No Project Selected" test reds.
 - `analysis/+page.svelte`: `{#if data.analysis.allTests.length === 0}` → `=== 1` → the "No tests found." test reds.
 - `analysis/+page.svelte`: `{#if test.isFlaky}` → `{#if false}` → the "marks the flaky one" test reds (no `Flaky` badge).

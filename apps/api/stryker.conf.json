@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "vitest": { "configFile": "vitest.stryker.config.ts" },
+  "coverageAnalysis": "perTest",
+  "concurrency": 2,
+  "mutate": ["src/middleware/logger.ts"],
+  "reporters": ["html", "json", "clear-text", "progress"],
+  "thresholds": { "high": 90, "low": 70, "break": null },
+  "tsconfigFile_comment": "Points at a nonexistent file to no-op Stryker core's TSConfigPreprocessor, which unconditionally calls the removed classic API ts.parseConfigFileTextToJson and crashes under TypeScript 7 (apps/api's pinned version). Safe here: we don't use @stryker-mutator/typescript-checker and apps/api has no tsconfig path aliases for Vitest to resolve, so the extends/references rewrite this preprocessor performs has no effect on this pipeline.",
+  "tsconfigFile": "tsconfig.stryker-unused.json"
+}

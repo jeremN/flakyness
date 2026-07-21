@@ -531,10 +531,14 @@ rationale. Items 5–7 remain unplanned.
    this too. A completion signal (a status field, a synchronous `?wait=true`, or an
    ingest-returns-reconcile-id) would remove a whole class of race from downstream code.
    This is a genuine product/DX gap, not just a test problem.
-5. **`apps/api`'s build emits no `.d.ts`** — `tsup src/index.ts --format esm`, no `--dts`,
-   no tsup config, despite `declaration: true` in the root tsconfig. Harmless for an app
-   with no consumers, but the long-standing tsconfig comment blaming "baseUrl injected by
-   tsup's d.ts builder" describes something that does not happen.
+5. **[RESOLVED 2026-07-21 — no live defect remains] `apps/api`'s build emits no `.d.ts`.**
+   The `tsup src/index.ts --format esm` build (no `--dts`, no tsup config) never emits a
+   `.d.ts` despite `declaration: true` in the root tsconfig — kept as-is, harmless for an
+   app with no consumers. The actual defect this item flagged — a misleading tsconfig
+   comment blaming "baseUrl injected by tsup's d.ts builder" (a thing that never happens,
+   since `--dts` isn't passed) — was already removed by plan 023's TS7 migration; no live
+   tsconfig contains it (verified: only plan-023 history references the phrase). No code
+   change needed.
 6. **[DONE — plan 038, merged via PR #82, 2026-07-15] Dependabot maintenance obligation**:
    the npm entry lists `/` and `/apps/api` explicitly instead of an `/apps/*` glob (a glob
    would overlap the dashboard entry and double-open its PRs). A new app under `apps/` used
@@ -599,20 +603,18 @@ rationale. Items 5–7 remain unplanned.
     and relies on pnpm root-fan-out lockfile behaviour with open dependabot-core bugs (#11135,
     #10203); needs a Dependabot dry-run to de-risk before adopting. Do NOT do it in plan 040.
 
-11. **`runs/+page.svelte` imports `getPassRateClass` from `$lib/format` but never uses it.**
-    Found 2026-07-21 while authoring A3b (plan 046) render tests: the runs table inlines its
-    pass-rate colour thresholds directly in the template rather than calling the helper, so the
-    import is dead. One-line unused-import removal; deliberately left out of A3b, which is
-    test-only (no product-source changes) — recorded so it isn't lost.
-12. **`+layout.svelte`'s active-nav branch (`bg-purple-50 text-purple-700`) has no rendered
-    assertion.** Flagged in plan 046's final whole-branch review: the `layout.svelte.test.ts`
-    render tests even mock `$page.url = /flaky`, so the `isActive('/flaky')` branch
-    (`+layout.svelte:77-79`) actually executes, but no assertion checks the active-link styling —
-    a mutation-breakable template branch left uncovered, the one explicit exception to A3b's
-    "full-parity render coverage" claim. Deferred as styling-only (plausibly E2E-covered); a
-    future task should assert on the active-nav class (class-based assertions are a weaker,
-    more brittle class than the copy/behavior assertions A3b standardized on, hence not folded
-    into the test-only A3b branch).
+11. **[DONE 2026-07-21 — backlog quick-wins] `runs/+page.svelte` imported `getPassRateClass`
+    from `$lib/format` but never used it.** Found while authoring A3b (plan 046) render tests:
+    the runs table inlines its pass-rate colour thresholds directly in the template rather than
+    calling the helper, so the import was dead. Removed the unused import (one line).
+12. **[DONE 2026-07-21 — backlog quick-wins] `+layout.svelte`'s active-nav branch
+    (`bg-purple-50 text-purple-700`) had no rendered assertion.** Flagged in plan 046's final
+    whole-branch review: the `layout.svelte.test.ts` render tests mock `$page.url = /flaky`, so
+    the `isActive('/flaky')` branch (`+layout.svelte:77-79`) executes, but no assertion checked
+    the active-link styling — the one explicit exception to A3b's "full-parity render coverage".
+    Added a render assertion (`toHaveClass('bg-purple-50')` on the active 'Flaky Tests' link, and
+    `.not.toHaveClass` on an inactive one to guard the ternary discriminating); mutation-proven
+    (dropping `bg-purple-50` from the active branch reds it, revert byte-clean).
 13. **`projects.ts` / `rate-limit.ts`'s per-file mutation floors (48 / 57) are coarse
     regression guards, not full-coverage targets.** Found while proving Phase B's gate
     bites (plan 047): only `projects.ts`'s `/analysis` slice was hardened in A2b (plan

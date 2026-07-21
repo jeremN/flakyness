@@ -25,7 +25,7 @@ describe('+page (overview)', () => {
     await expect.element(page.getByText('No Projects Found')).toBeInTheDocument();
   });
 
-  it('renders the four stat cards and the chart stub when stats + trendData present', async () => {
+  it('renders the stats section (Active Flaky Tests card) and the chart stub when stats + trendData present', async () => {
     render(Page, { props: { data: { ...base, stats, trendData: { days: ['d'], rates: [1] }, flakyTests: [], recentRuns: [], partialFailure: false } } });
     await expect.element(page.getByText('Active Flaky Tests')).toBeInTheDocument();
     await expect.element(page.getByTestId('chart-stub')).toBeInTheDocument();

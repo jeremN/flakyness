@@ -603,6 +603,15 @@ rationale. Items 5–7 remain unplanned.
     pass-rate colour thresholds directly in the template rather than calling the helper, so the
     import is dead. One-line unused-import removal; deliberately left out of A3b, which is
     test-only (no product-source changes) — recorded so it isn't lost.
+12. **`+layout.svelte`'s active-nav branch (`bg-purple-50 text-purple-700`) has no rendered
+    assertion.** Flagged in plan 046's final whole-branch review: the `layout.svelte.test.ts`
+    render tests even mock `$page.url = /flaky`, so the `isActive('/flaky')` branch
+    (`+layout.svelte:77-79`) actually executes, but no assertion checks the active-link styling —
+    a mutation-breakable template branch left uncovered, the one explicit exception to A3b's
+    "full-parity render coverage" claim. Deferred as styling-only (plausibly E2E-covered); a
+    future task should assert on the active-nav class (class-based assertions are a weaker,
+    more brittle class than the copy/behavior assertions A3b standardized on, hence not folded
+    into the test-only A3b branch).
 
 ## Findings considered and rejected
 

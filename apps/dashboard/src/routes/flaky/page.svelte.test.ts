@@ -28,16 +28,16 @@ describe('flaky/+page', () => {
 
   it('hides Mute actions when canMute is false', async () => {
     render(Page, { props: { data: { ...base, flakyTests: [row()], status: 'active', canMute: false } } });
-    await expect.element(page.getByRole('button', { name: 'Mute' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Mute', exact: true })).not.toBeInTheDocument();
   });
 
   it('shows a Mute button for an active row when canMute is true', async () => {
     render(Page, { props: { data: { ...base, flakyTests: [row({ status: 'active' })], status: 'active', canMute: true } } });
-    await expect.element(page.getByRole('button', { name: 'Mute' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Mute', exact: true })).toBeInTheDocument();
   });
 
   it('shows an Unmute button for an ignored row when canMute is true', async () => {
     render(Page, { props: { data: { ...base, flakyTests: [row({ status: 'ignored' })], status: 'ignored', canMute: true } } });
-    await expect.element(page.getByRole('button', { name: 'Unmute' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Unmute', exact: true })).toBeInTheDocument();
   });
 });

@@ -492,25 +492,33 @@ vi.mock('$lib/components/Chart.svelte', async () => ({
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
+import type { FlakyTest } from '../app.d';
 
+// PageData for the overview (root) route = layout `{ projects, selectedProject, apiError }`
+// (selectedProject NON-NULL — plan point 7) merged with the page load `{ stats, flakyTests,
+// recentRuns, trendData, partialFailure }`. The `Array.from` callback is annotated `: FlakyTest`
+// so `status` stays the literal union (a bare object literal widens it to `string`).
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const base = { projects: [], selectedProject: project, apiError: null };
 const stats = { project: { id: 'p1', name: 'Proj' }, activeFlakyTests: 2, resolvedThisWeek: 1, totalRuns: 10, totalTests: 5 };
-const flaky = (n: number) => Array.from({ length: n }, (_, i) => ({
-  testName: `t${i}`, testFile: 'f.spec.ts', flakeRate: '0.2', lastSeen: '2026-03-15T10:00:00Z' }));
+const flaky = (n: number): FlakyTest[] => Array.from({ length: n }, (_, i): FlakyTest => ({
+  id: `f${i}`, testName: `t${i}`, testFile: 'f.spec.ts', firstDetected: '2026-03-01T00:00:00Z',
+  lastSeen: '2026-03-15T10:00:00Z', flakeCount: 2, totalRuns: 10, flakeRate: '0.2', status: 'active' }));
 
 describe('+page (overview)', () => {
   it('shows the no-projects state when stats is null', async () => {
-    render(Page, { props: { data: { stats: null, trendData: null, flakyTests: [], recentRuns: [], partialFailure: false } } });
+    render(Page, { props: { data: { ...base, stats: null, trendData: null, flakyTests: [], recentRuns: [], partialFailure: false } } });
     await expect.element(page.getByText('No Projects Found')).toBeInTheDocument();
   });
 
   it('renders the four stat cards and the chart stub when stats + trendData present', async () => {
-    render(Page, { props: { data: { stats, trendData: { days: ['d'], rates: [1] }, flakyTests: [], recentRuns: [], partialFailure: false } } });
+    render(Page, { props: { data: { ...base, stats, trendData: { days: ['d'], rates: [1] }, flakyTests: [], recentRuns: [], partialFailure: false } } });
     await expect.element(page.getByText('Active Flaky Tests')).toBeInTheDocument();
     await expect.element(page.getByTestId('chart-stub')).toBeInTheDocument();
   });
 
   it('caps the flaky preview at 5 rows (slice(0,5))', async () => {
-    render(Page, { props: { data: { stats, trendData: null, partialFailure: true, recentRuns: [], flakyTests: flaky(7) } } });
+    render(Page, { props: { data: { ...base, stats, trendData: null, partialFailure: true, recentRuns: [], flakyTests: flaky(7) } } });
     await expect.element(page.getByText('t4')).toBeInTheDocument();  // 5th row (index 4) present
     await expect.element(page.getByText('t5')).not.toBeInTheDocument(); // 6th row dropped
   });
@@ -519,7 +527,7 @@ describe('+page (overview)', () => {
 
 - [ ] **Step 3: `tests/[testName]` render test** — mock `$app/navigation` + Chart
 
-Cover: `data.testTrend` present → chart stub; `data.trendFailed` → the trend-failure `ErrorState`; `data.testHistory.flakyInfo` present → the flaky-info block; a `direction` of `'insufficient-data'` → the label `Insufficient data` renders (via `trendDirectionLabel`), NOT `→ Stable`. Read the component for the exact flaky-info heading; the direction label strings are verified: `insufficient-data` → `Insufficient data`, `stable` → `→ Stable`.
+Cover, one assertion each: a `direction` of `'insufficient-data'` → the label `Insufficient data` renders (via `trendDirectionLabel`), NOT `→ Stable`; and `data.trendFailed` → the trend-failure `ErrorState` (`Couldn't load the flake-rate trend.`). Direction label strings are verified: `insufficient-data` → `Insufficient data`, `stable` → `→ Stable`. (The chart-stub is exercised in the overview test above; the `flakyInfo` block is left to the E2E suite — this render test targets the two branches with dedicated mutation proofs.)
 
 ```ts
 import { describe, it, expect, vi } from 'vitest';
@@ -531,32 +539,39 @@ import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
+// PageData for /tests/[testName] = layout `{ projects, selectedProject, apiError }` (selectedProject
+// NON-NULL — plan point 7) merged with the page load `{ testHistory, testTrend, trendFailed, projectId }`.
+// TestTrend needs `testName` + `projectId` too (not just days/direction/trend).
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const base = { projects: [], selectedProject: project, apiError: null };
 const history = (over = {}) => ({ testName: 'my-test', flakyInfo: null,
   stats: { totalRuns: 5, passed: 3, failed: 1, flaky: 1, skipped: 0, avgDuration: 1200 },
   history: [], ...over });
 
 describe('tests/[testName]/+page', () => {
   it('labels an insufficient-data trend distinctly from stable', async () => {
-    render(Page, { props: { data: { projectId: 'p1', testHistory: history(),
-      testTrend: { days: 30, direction: 'insufficient-data', trend: [] }, trendFailed: false } } });
+    render(Page, { props: { data: { ...base, projectId: 'p1', testHistory: history(),
+      testTrend: { testName: 'my-test', projectId: 'p1', days: 30, direction: 'insufficient-data', trend: [] }, trendFailed: false } } });
     await expect.element(page.getByText('Insufficient data')).toBeInTheDocument();
     await expect.element(page.getByText('→ Stable')).not.toBeInTheDocument();
   });
 
   it('renders the trend-failure ErrorState', async () => {
-    render(Page, { props: { data: { projectId: 'p1', testHistory: history(),
+    render(Page, { props: { data: { ...base, projectId: 'p1', testHistory: history(),
       testTrend: null, trendFailed: true } } });
     await expect.element(page.getByText("Couldn't load the flake-rate trend.")).toBeInTheDocument();
   });
 });
 ```
 
-- [ ] **Step 4: Run + mutation proofs** (revert each)
+- [ ] **Step 4: Typecheck + run + mutation proofs** (revert each)
 
-Run: `pnpm --filter dashboard test:browser`
+Run `pnpm --filter dashboard check` FIRST — must be `0 ERRORS` (type-checks the fixtures against the generated `PageData`; see plan point 7). Then `pnpm --filter dashboard test:browser`. Prove EVERY assertion (all 5 tests):
 - `+page.svelte`: `data.flakyTests.slice(0, 5)` → `slice(0, 7)` → the "caps at 5 rows" test reds (`t5` appears).
-- `+page.svelte`: `{#if !data.stats}` → `{#if data.stats}` → the "no-projects state" test reds.
+- `+page.svelte`: `{#if !data.stats}` → `{#if data.stats}` → the "no-projects state" test reds (also reds the "stat cards" test's `Active Flaky Tests` assertion — that assertion's proof).
+- `+page.svelte`: the chart guard `{#if data.trendData}` (line ~137, gating `<Chart>`) → `{#if false}` → the "stat cards and chart stub" test reds (`chart-stub` gone; that test has `partialFailure: false`, so no fallback renders in its place).
 - `tests/[testName]/+page.svelte`: the `trendDirectionLabel(...)` call site — mutate `status.ts` `case 'insufficient-data': return 'Insufficient data'` → `return '→ Stable'` → the distinctness test reds. Revert `status.ts`.
+- `tests/[testName]/+page.svelte`: the trend-failure branch `{:else if data.trendFailed}` (renders `ErrorState message="Couldn't load the flake-rate trend."`) → `{:else if false}` → the "trend-failure ErrorState" test reds.
 - `tests/[testName]/+page.svelte`: flip `{:else if data.trendFailed}` → `{:else if false}` → the trend-failure test reds.
 
 - [ ] **Step 5: Commit**
@@ -607,38 +622,48 @@ describe('+error', () => {
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 import { readable } from 'svelte/store';
+import { createRawSnippet } from 'svelte';
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$app/stores', () => ({ page: readable({ url: new URL('http://localhost/flaky') }) }));
 import { render } from 'vitest-browser-svelte';
 import { page as vitestPage } from 'vitest/browser';
 import Layout from './+layout.svelte';
 
-const data = (over = {}) => ({ projects: [], selectedProject: null, apiError: null, ...over });
+// LayoutData = { projects: Project[], selectedProject: Project (NON-NULL — same layout-load
+// `|| null` narrowing as PageData, plan point 7), apiError: string | null }. `children` is a
+// REQUIRED Snippet prop, so every render passes a no-op snippet; the tested UI (switcher, banner,
+// nav) all renders outside `{@render children()}`.
+const project = { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z' };
+const children = createRawSnippet(() => ({ render: () => '<span></span>' }));
+const data = (over = {}) => ({ projects: [], selectedProject: project, apiError: null, ...over });
 
 describe('+layout', () => {
   it('renders the project switcher when there are projects', async () => {
-    render(Layout, { props: { data: data({ projects: [{ id: 'p1', name: 'Proj One' }], selectedProject: { id: 'p1' } }) } });
+    render(Layout, { props: { children, data: data({ projects: [project] }) } });
     await expect.element(vitestPage.getByText('Proj One')).toBeInTheDocument();
   });
 
   it('hides the switcher when there are no projects', async () => {
-    render(Layout, { props: { data: data({ projects: [] }) } });
+    render(Layout, { props: { children, data: data({ projects: [] }) } });
     await expect.element(vitestPage.getByRole('combobox')).not.toBeInTheDocument();
   });
 
   it('renders the apiError banner when apiError is set', async () => {
-    render(Layout, { props: { data: data({ apiError: 'API unreachable' }) } });
+    render(Layout, { props: { children, data: data({ apiError: 'API unreachable' }) } });
     await expect.element(vitestPage.getByText('API unreachable')).toBeInTheDocument();
   });
 });
 ```
-If rendering without a `children` snippet throws in browser mode, pass a minimal snippet per `vitest-browser-svelte`'s render options (read its README for the Svelte-5 snippet-prop form) and document it in the test. If `getByRole('combobox')` proves brittle, assert on the `Project` label text instead (present only inside the `{#if data.projects.length > 0}` block).
+The `children` snippet above uses Svelte 5's `createRawSnippet` (a no-op `<span>`) to satisfy the required `children: Snippet` prop without pulling in route content; if `check` or the runtime rejects that exact form, adjust per `vitest-browser-svelte`'s README (Svelte-5 snippet-prop form) and keep it a no-op. If `getByRole('combobox')` proves brittle, assert on the `Project` label text instead (present only inside the `{#if data.projects.length > 0}` block).
 
-- [ ] **Step 3: Run + mutation proofs** (revert each)
+- [ ] **Step 3: Typecheck + run + mutation proofs** (revert each)
 
-Run: `pnpm --filter dashboard test:browser`
-- `+error.svelte`: mutate `error-page.ts` `errorTitle` `case 404: return 'Page Not Found'` → `'X'` → the `+error` title test reds. Revert `error-page.ts`.
-- `+layout.svelte`: flip `{#if data.projects.length > 0}` → `{#if false}` → the switcher test reds.
+Run `pnpm --filter dashboard check` FIRST — must be `0 ERRORS`. Then `pnpm --filter dashboard test:browser`. Prove EVERY assertion:
+- `+error.svelte`: mutate `error-page.ts` `errorTitle` `case 404: return 'Page Not Found'` → `'X'` → the `+error` test reds (title assertion). Revert `error-page.ts`.
+- `+error.svelte`: mutate `error-page.ts` `errorIcon` `case 404: return '🔍'` → `'❌'` → the `+error` test reds (icon assertion). Revert `error-page.ts`.
+- `+error.svelte`: mutate the message derivation `$page.error?.message || 'An unexpected error occurred'` → `'An unexpected error occurred'` → the `+error` test reds (the `nope` message assertion is replaced by the fallback). Revert.
+- `+layout.svelte`: flip `{#if data.projects.length > 0}` → `{#if false}` → the switcher-present test reds.
+- `+layout.svelte`: flip `{#if data.projects.length > 0}` → `{#if data.projects.length >= 0}` (always true) → the switcher-HIDDEN test reds (`combobox` now renders for `projects: []`).
 - `+layout.svelte`: flip `{#if data.apiError}` → `{#if false}` → the apiError-banner test reds.
 
 - [ ] **Step 4: Commit**

@@ -52,15 +52,23 @@ This task stands up the whole toolchain and proves it on the one component that 
 - Create: `apps/dashboard/vitest.browser.config.ts`, `apps/dashboard/src/lib/components/ErrorState.svelte.test.ts`
 
 **Interfaces:**
-- Produces: the `vitest.browser.config.ts` config; the `test:browser` script; the canonical browser-mode render/assert pattern (`render` from `vitest-browser-svelte`, `page` from `@vitest/browser/context`, `expect.element(...).toBeInTheDocument()`, `document.querySelector('.cls')` for class assertions) that Tasks 2–6 reuse.
+- Produces: the `vitest.browser.config.ts` config; the `test:browser` script; the canonical browser-mode render/assert pattern (`render` from `vitest-browser-svelte`, `page` from `vitest/browser`, `expect.element(...).toBeInTheDocument()`, `document.querySelector('.cls')` for class assertions) that Tasks 2–6 reuse.
+
+> **Task 1 executed inline 2026-07-21 — reality corrections baked into this plan for the subagent phase (Tasks 2–7):**
+> 1. **Provider API:** Vitest 4.1 replaced the `provider: 'playwright'` string with a **factory**. The config now imports `import { playwright } from '@vitest/browser-playwright'` and sets `provider: playwright()`. A new devDep **`@vitest/browser-playwright@4.1.10`** was required, plus **`playwright@1.61.1`** (the `@vitest/browser` Playwright provider needs the base `playwright` package; `@playwright/test` alone did not resolve it).
+> 2. **Locator import:** use `import { page } from 'vitest/browser'` — `@vitest/browser/context` works but is deprecated in v4.1 and warns.
+> 3. **Node config exclude:** `vitest.config.ts`'s `include: ['src/**/*.test.ts']` also matches `*.svelte.test.ts`, so `exclude: [...configDefaults.exclude, 'src/**/*.svelte.test.ts']` was added there to keep the default `pnpm test` browser-free. (Already committed — Tasks 2–6 do not touch it.)
+> 4. **`sveltekit()` works** as the browser-config plugin — the fallback config was NOT needed. `.svelte` compiles, `$lib`/`$app` resolve, `vi.mock('$app/*')` will be proven in Task 2.
+> 5. **Mutation-proof timing:** a browser-mode assertion that should red reds by **retry timeout (~15s)**, not instantly — `expect.element` retries until the condition holds or times out. A red mutation proof taking ~15s is normal, not a hang.
+> The config, deps, script, node-exclude, and `ErrorState.svelte.test.ts` are already committed. Tasks 2–7 reuse the committed config as-is.
 
 - [ ] **Step 1: Add deps**
 
 ```bash
-cd apps/dashboard
-CI=true corepack pnpm add -D @vitest/browser@4.1.10 vitest-browser-svelte@3.0.0 --no-frozen-lockfile
+CI=true corepack pnpm --filter dashboard add -D \
+  @vitest/browser@4.1.10 @vitest/browser-playwright@4.1.10 vitest-browser-svelte@3.0.0 playwright@1.61.1
 ```
-If the `@vitest/browser` Playwright provider errors at run time that it cannot find `playwright`, also add it: `CI=true corepack pnpm add -D playwright@<matching @playwright/test version, one release back if <24h> --no-frozen-lockfile`. `@playwright/test@^1.61.1` is already present, so this is usually unnecessary.
+(`--no-frozen-lockfile` is NOT a valid flag for `pnpm add` on pnpm 11 — omit it.) All four clear the 24h floor on 2026-07-21. `@vitest/browser-playwright` supplies the provider factory (Vitest 4.1's provider is a factory, not the `'playwright'` string); `playwright` is the provider's runtime browser driver (`@playwright/test` alone does not resolve `playwright` from the dashboard package).
 
 - [ ] **Step 2: Add the `test:browser` script**
 
@@ -75,6 +83,7 @@ In `apps/dashboard/package.json` `scripts`, add (leave `"test"` unchanged):
 ```ts
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
+import { playwright } from '@vitest/browser-playwright';
 
 // Isolated from vitest.config.ts (node) so the default `pnpm test` stays
 // browser-free. Browser mode uses Vite's dev-server transform, which — unlike
@@ -86,13 +95,14 @@ export default defineConfig({
     include: ['src/**/*.svelte.test.ts'],
     browser: {
       enabled: true,
-      provider: 'playwright',
+      provider: playwright(),
       headless: true,
       instances: [{ browser: 'chromium' }],
     },
   },
 });
 ```
+Also add the exclude to the node `vitest.config.ts` so `pnpm test` stays browser-free (its `include: ['src/**/*.test.ts']` otherwise matches `*.svelte.test.ts`): `import { defineConfig, configDefaults } from 'vitest/config'` and `exclude: [...configDefaults.exclude, 'src/**/*.svelte.test.ts']`.
 
 **Contingency (only if Step 5 shows `sveltekit()` breaks browser mode — e.g. it tries to SSR/route, or `$app/*`/`$lib` fail to resolve):** replace the `sveltekit()` plugin with the raw Svelte plugin plus explicit aliases, and stub the `$app/*` virtual modules that `sveltekit()` would otherwise provide:
 ```ts
@@ -122,7 +132,7 @@ Read `apps/dashboard/src/lib/components/ErrorState.svelte` first (verified 2026-
 ```ts
 import { describe, it, expect } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import ErrorState from './ErrorState.svelte';
 
 describe('ErrorState', () => {
@@ -198,7 +208,7 @@ Verified copy (2026-07-21): empty state `<h3>No Test Runs Yet</h3>`; a run row r
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const base = { currentProject: null, projects: [] };
@@ -254,7 +264,7 @@ Verified copy: no-analysis branch `{#if !data.analysis}` → `<h3>No Project Sel
 ```ts
 import { describe, it, expect } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const base = { currentProject: { id: 'p1', name: 'Proj' }, projects: [], days: 14, threshold: 0.05 };
@@ -295,7 +305,7 @@ Verified copy: empty + `status === 'active'` → `<h3>No active flaky tests!</h3
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/forms', () => ({ enhance: () => ({ destroy() {} }) }));
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const row = (over = {}) => ({ id: '1', testName: 't', testFile: 'f.spec.ts', flakeRate: '0.2',
@@ -363,7 +373,7 @@ Cover, one assertion each (fill the three literals marked `‹read›` from the 
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const detail = (over = {}) => ({ id: 'r1', branch: 'main', commitSha: 'abcdef1234567',
@@ -450,7 +460,7 @@ vi.mock('$lib/components/Chart.svelte', async () => ({
   default: (await import('$lib/components/Chart.stub.svelte')).default,
 }));
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const stats = { project: { id: 'p1', name: 'Proj' }, activeFlakyTests: 2, resolvedThisWeek: 1, totalRuns: 10, totalTests: 5 };
@@ -488,7 +498,7 @@ vi.mock('$lib/components/Chart.svelte', async () => ({
   default: (await import('$lib/components/Chart.stub.svelte')).default,
 }));
 import { render } from 'vitest-browser-svelte';
-import { page } from '@vitest/browser/context';
+import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const history = (over = {}) => ({ testName: 'my-test', flakyInfo: null,
@@ -548,7 +558,7 @@ vi.mock('$app/stores', () => ({
   page: readable({ status: 404, error: { message: 'nope' }, url: new URL('http://localhost/x') }),
 }));
 import { render } from 'vitest-browser-svelte';
-import { page as vitestPage } from '@vitest/browser/context';
+import { page as vitestPage } from 'vitest/browser';
 import ErrorPage from './+error.svelte';
 
 describe('+error', () => {
@@ -570,7 +580,7 @@ import { readable } from 'svelte/store';
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$app/stores', () => ({ page: readable({ url: new URL('http://localhost/flaky') }) }));
 import { render } from 'vitest-browser-svelte';
-import { page as vitestPage } from '@vitest/browser/context';
+import { page as vitestPage } from 'vitest/browser';
 import Layout from './+layout.svelte';
 
 const data = (over = {}) => ({ projects: [], selectedProject: null, apiError: null, ...over });

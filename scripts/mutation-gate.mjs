@@ -6,13 +6,20 @@ import { pathToFileURL } from 'node:url';
 // Broad-run scores for non-hardened files are report-only.
 //
 // The 4 dashboard baselines + API rate-limit.ts reproduce exactly run-to-run.
-// API logger.ts and projects.ts are calibrated from their RELIABLE (isolated,
-// timeout-free) scores — reproduced 4x (logger) / 3x (projects). An earlier
-// concurrent-load run mis-classified some Survived mutants as Timeout (which
-// this formula counts like Killed), inflating those two baselines; we do NOT
-// calibrate off that. A generous timeoutMS/timeoutFactor in apps/api's Stryker
-// config now suppresses that re-inflation. Raising real coverage on the coarse
-// route files is the honest way to raise these floors (see plans/README.md #13/#15).
+// The two other API floors were lowered from earlier, higher recordings — for
+// two DIFFERENT reasons, not one:
+//  - logger.ts: an earlier concurrent-load run mis-scored 5 Survived mutants as
+//    Timeout (this formula counts Timeout like Killed), inflating it to 79.41%.
+//    Reliable isolated timeout-free score = 72.06% (49 killed, reproduced 4x).
+//    timeoutMS/timeoutFactor in apps/api's Stryker config now suppress that.
+//  - projects.ts: its score is non-deterministic (~54-58%) because the projects
+//    route tests hit the repo's documented un-awaited reconcile race (AGENTS.md)
+//    — ~12 mutants swing Killed<->Survived between runs, NOT a timeout artifact;
+//    the timeout knob does not fix it. Never measured in isolation; floor 48 is
+//    set below the reliable low (~53.7%). Stabilizing that race is what would
+//    let this floor tighten.
+// Raising real coverage on the coarse route files is the honest way to lift
+// these floors (see plans/README.md #13/#15).
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)

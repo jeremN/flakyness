@@ -632,22 +632,28 @@ rationale. Items 5–7 remain unplanned.
     following the same `floor(baseline) − 5` convention used for the current seven.
 15. **[RESOLVED on branch `test/stryker-nightly-mutation`] `logger.ts` and `projects.ts`'s
     per-file floors were miscalibrated too high — recalibrated to their reliable,
-    reproduced baselines.** `logger.ts`'s floor moved **74 → 67** (reliable **72.06%**,
-    reproduced 4x) and `projects.ts`'s floor moved **53 → 48** (reliable **~53.7%**,
-    reproduced 3x). `rate-limit.ts` (57) and the 4 dashboard floors (91/61/95/95) were
-    already correct — those five reproduce exactly run-to-run and needed no change.
-    **Root cause**: the original baselines came from an earlier concurrent-load Stryker
-    run in which some deterministically-`Survived` mutants got scored `Timeout` under
-    contention; the gate's score formula counts `Timeout` the same as `Killed`, so those
-    misclassifications inflated both baselines. Timeouts only ever push a score *up*, so
-    the isolated, timeout-free score is the reliable lower bound. **Prevention**: added
-    `timeoutMS: 15000` / `timeoutFactor: 2` to `apps/api/stryker.conf.mjs` so contention
-    can't re-inflate future baselines the same way. **Remaining lever (long-term)**:
-    `projects.ts`'s residual run-to-run wobble tracks the repo's documented un-awaited
-    flakiness-reconcile race in the projects route tests (see AGENTS.md — poll, never
-    sleep); stabilizing those tests would let its floor tighten further. Raising real
-    coverage on the coarse route files (#13) remains the honest way to raise these
-    floors over time.
+    reproduced baselines, for two DIFFERENT reasons (not one).** `logger.ts`'s floor moved
+    **74 → 67** and `projects.ts`'s floor moved **53 → 48**. `rate-limit.ts` (57) and the 4
+    dashboard floors (91/61/95/95) were already correct — those five reproduce exactly
+    run-to-run and needed no change.
+    - **`logger.ts` — false timeouts.** Its original 79.41% came from a concurrent-load run
+      in which 5 deterministically-`Survived` mutants got scored `Timeout` under contention;
+      the score formula counts `Timeout` like `Killed`, inflating it (the killed count was
+      identical — 49 — across runs; only those 5 shifted). Timeouts only push a score *up*,
+      so the isolated, timeout-free score (**72.06%**, 49 killed, reproduced 4x) is the
+      reliable lower bound → floor 67. **Prevented** going forward by `timeoutMS: 15000` /
+      `timeoutFactor: 2` in `apps/api/stryker.conf.mjs`, which stops contention from
+      re-inflating *this file's* score.
+    - **`projects.ts` — the reconcile race (a different cause).** Its score is genuinely
+      non-deterministic run-to-run (~54–58%): ~12 mutants swing `Killed`↔`Survived` between
+      runs — far larger than any timeout effect (its timeout count barely moves), and it has
+      never been measured in true isolation. The driver is the repo's documented un-awaited
+      flakiness-reconcile race in the projects route tests (see AGENTS.md — poll, never
+      sleep), **not** the timeout artifact above, so the `timeoutMS` knob does not address
+      it. Floor 48 is set below the reliable *low* (~53.7%) with margin. Stabilizing those
+      tests (fixing the race) is what would let this floor tighten.
+    Raising real coverage on the coarse route files (#13) remains the honest way to lift
+    both floors over time.
 
 ## Findings considered and rejected
 

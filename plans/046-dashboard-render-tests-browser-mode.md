@@ -446,6 +446,7 @@ describe('runs/[runId]/+page', () => {
 
 Run `pnpm --filter dashboard check` FIRST — must be `0 ERRORS` (it type-checks the fixtures against the generated `PageData`; see plan point 7). Then `pnpm --filter dashboard test:browser`.
 - Flip `{#if !data.projectId}` → `{#if data.projectId}` → the missing-project test reds.
+- Flip the empty-results guard `{#if data.runDetail.results.length === 0}` → `=== 1` → the empty-results test reds (falls through to the results table, so "No failures on this run" never renders).
 - Change the `loadFailed` `ErrorState` `message="Couldn't load this run."` → `"x"` → the loadFailed test reds.
 - Flip `{#if result.failureDetail}` (the errors block) → `{#if false}` → the "failed result error message" test reds.
 - Flip `{#if data.runDetail.truncated}` → `{#if false}` → the truncated-notice test reds.

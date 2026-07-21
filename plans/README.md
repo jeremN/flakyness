@@ -288,7 +288,8 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 042 | Replace four classes of non-biting assertions in the API suite with assertions a source mutation breaks (A1 of the mutation-testing effort) | P3 | S | — | DONE (merged via PR #96, commit `d335354`) |
 | 043 | Fix the inert admin brute-force limiter (mounted after the auth it protects) and make rate-limit.ts testable; A2a of the mutation-testing effort | P2 | S | A1 (plan 042); security finding | DONE (merged via PR #98) |
 | 044 | Cover `logger.ts` (status routing, prod stack-omission) and close A1's two `/analysis` IOUs (clamp + flaky-subset invariant); A2b of the mutation-testing effort | P3 | S | A1's recorded gaps (plan 042); follows A2a (plan 043) | DONE (merged via PR #99, commit `b10b4a0`) |
-| 045 | A3 of the mutation-testing effort: extract the dashboard's inlined pure view-logic to `$lib` (`format`/`status`/`error-page`/`href`) with node tests; components rewired behavior-preservingly. **Render half (jsdom) deferred to A3b** — upstream vite-plugin-svelte × Vitest 4 gap (see AGENTS.md) | P3 | M | A1/A2 (plans 042–044) | OPEN (extraction half; render tests deferred to A3b; PR pending) |
+| 045 | A3 of the mutation-testing effort: extract the dashboard's inlined pure view-logic to `$lib` (`format`/`status`/`error-page`/`href`) with node tests; components rewired behavior-preservingly. **Render half (jsdom) deferred to A3b** — upstream vite-plugin-svelte × Vitest 4 gap (see AGENTS.md) | P3 | M | A1/A2 (plans 042–044) | DONE (merged via PR #100, commit `1b605c9`; render half → plan 046) |
+| 046 | A3b of the mutation-testing effort: render-test the 8 route components + ErrorState in **Vitest browser mode** (isolated `vitest.browser.config.ts`, `vitest-browser-svelte`, headless Chromium; default `test` stays node-only), plus an advisory `component-tests` CI job; every assertion mutation-proven — closes A3's deferred render half via the documented browser-mode unblock path | P3 | M | A3 (plan 045) | OPEN (PR pending) |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -596,6 +597,21 @@ rationale. Items 5–7 remain unplanned.
     apps (dissolving #6) but restructures the config, forces a rewrite of plan 038's coverage guard,
     and relies on pnpm root-fan-out lockfile behaviour with open dependabot-core bugs (#11135,
     #10203); needs a Dependabot dry-run to de-risk before adopting. Do NOT do it in plan 040.
+
+11. **`runs/+page.svelte` imports `getPassRateClass` from `$lib/format` but never uses it.**
+    Found 2026-07-21 while authoring A3b (plan 046) render tests: the runs table inlines its
+    pass-rate colour thresholds directly in the template rather than calling the helper, so the
+    import is dead. One-line unused-import removal; deliberately left out of A3b, which is
+    test-only (no product-source changes) — recorded so it isn't lost.
+12. **`+layout.svelte`'s active-nav branch (`bg-purple-50 text-purple-700`) has no rendered
+    assertion.** Flagged in plan 046's final whole-branch review: the `layout.svelte.test.ts`
+    render tests even mock `$page.url = /flaky`, so the `isActive('/flaky')` branch
+    (`+layout.svelte:77-79`) actually executes, but no assertion checks the active-link styling —
+    a mutation-breakable template branch left uncovered, the one explicit exception to A3b's
+    "full-parity render coverage" claim. Deferred as styling-only (plausibly E2E-covered); a
+    future task should assert on the active-nav class (class-based assertions are a weaker,
+    more brittle class than the copy/behavior assertions A3b standardized on, hence not folded
+    into the test-only A3b branch).
 
 ## Findings considered and rejected
 

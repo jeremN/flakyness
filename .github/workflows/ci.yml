@@ -230,6 +230,32 @@ jobs:
           retention-days: 7
 
   # ============================================================
+  # Dashboard component render tests (Vitest browser mode, Chromium)
+  # Advisory: runs on every PR, not a required check (retries:0 policy).
+  # No Postgres/API/build — component tests render against mocked data.
+  # ============================================================
+  component-tests:
+    name: Component Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271  # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm --filter dashboard exec playwright install --with-deps chromium
+
+      - name: Run dashboard component render tests
+        run: pnpm --filter dashboard test:browser
+
+  # ============================================================
   # Build
   # ============================================================
   build:

@@ -35,5 +35,9 @@ playwright-report/
 test-results/
 apps/dashboard/e2e/.artifacts/
 
+# Vitest browser mode (apps/dashboard/*.svelte.test.ts) run artifacts
+.vitest-attachments/
+__screenshots__/
+
 # Docker
 postgres_data/

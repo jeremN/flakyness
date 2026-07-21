@@ -384,9 +384,9 @@ git commit -m "test(dashboard): render tests for analysis and flaky pages (A3b)"
 
 Imports `invalidateAll` from `$app/navigation` (mock it), `ErrorState` (renders fine), `statusBadgeClass` from `$lib/status`. Branch structure (verified 2026-07-21): `{#if !data.projectId}` → missing-project branch; `{:else if data.loadFailed}` → `ErrorState message="Couldn't load this run."`; `{:else if data.runDetail}` → detail, with `{@const showingAll = data.statusFilter === 'all'}`, a `Show all results` / `Show failures only` toggle link, `{#if data.runDetail.results.length === 0}` empty branch, per-result `failureDetail`/`errorMessage`, and `{#if data.runDetail.truncated}` notice.
 
-- [ ] **Step 1: Read the component for the exact copy of the missing-project branch (line ~28), the empty-results branch (line ~78), and the truncated notice (line ~187), then write the render test.**
+- [ ] **Step 1: Write the render test.**
 
-Cover, one assertion each (fill the three literals marked `‹read›` from the component):
+Cover, one assertion each. The three branch copy literals below were read verbatim from the component on 2026-07-21: missing-project `<h3>No Project Selected</h3>` (line 31), empty-results `<h3>No failures on this run</h3>` (line 81), truncated notice `Showing a capped subset of results — this run has more than the display limit.` (line 189):
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
@@ -411,7 +411,7 @@ const detail = (over: Partial<RunDetail> = {}): RunDetail => ({ run, results: []
 describe('runs/[runId]/+page', () => {
   it('shows the missing-project branch when projectId is falsy', async () => {
     render(Page, { props: { data: { ...base, projectId: null, loadFailed: false, runDetail: null, statusFilter: null } } });
-    await expect.element(page.getByText('‹read: missing-project copy›')).toBeInTheDocument();
+    await expect.element(page.getByText('No Project Selected')).toBeInTheDocument();
   });
 
   it('renders ErrorState when loadFailed', async () => {
@@ -421,7 +421,7 @@ describe('runs/[runId]/+page', () => {
 
   it('shows the empty-results branch', async () => {
     render(Page, { props: { data: { ...base, projectId: 'p1', loadFailed: false, runDetail: detail({ results: [] }), statusFilter: 'failures' } } });
-    await expect.element(page.getByText('‹read: empty-results copy›')).toBeInTheDocument();
+    await expect.element(page.getByText('No failures on this run')).toBeInTheDocument();
   });
 
   it('renders a failed result error message', async () => {
@@ -437,7 +437,7 @@ describe('runs/[runId]/+page', () => {
   it('shows the truncated notice when runDetail.truncated', async () => {
     render(Page, { props: { data: { ...base, projectId: 'p1', loadFailed: false, statusFilter: 'all',
       runDetail: detail({ results: [], truncated: true }) } } });
-    await expect.element(page.getByText('‹read: truncated-notice copy›')).toBeInTheDocument();
+    await expect.element(page.getByText('Showing a capped subset of results — this run has more than the display limit.')).toBeInTheDocument();
   });
 });
 ```

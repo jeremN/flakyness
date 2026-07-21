@@ -3,36 +3,13 @@
   import ErrorState from '$lib/components/ErrorState.svelte';
   import { invalidateAll } from '$app/navigation';
   import { statusBadgeClass } from '$lib/status';
+  import { formatDateTime, formatDuration, runDurationMs } from '$lib/format';
 
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
-
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  function formatDuration(ms: number | null): string {
-    if (ms === null) return '—';
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  }
-
-  // `startedAt`/`finishedAt` are both nullable (a report can omit either) —
-  // only compute a duration when both are present, rather than showing a
-  // misleading number derived from one missing side.
-  function runDurationMs(run: { startedAt: string | null; finishedAt: string | null }): number | null {
-    if (!run.startedAt || !run.finishedAt) return null;
-    return new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
-  }
 </script>
 
 <svelte:head>
@@ -72,8 +49,8 @@
         </h1>
         <p class="text-muted text-sm">
           Pipeline: {run.pipelineId || '—'} •
-          Started: {formatDate(run.startedAt)} •
-          Finished: {formatDate(run.finishedAt)} •
+          Started: {formatDateTime(run.startedAt)} •
+          Finished: {formatDateTime(run.finishedAt)} •
           Duration: {formatDuration(runDurationMs(run))}
         </p>
       </div>

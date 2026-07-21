@@ -1,20 +1,12 @@
 <script lang="ts">
   import type { PageData } from './$types';
+  import { formatDate } from '$lib/format';
 
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
-
-  function formatDate(dateString: string | null): string {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-  }
 </script>
 
 <svelte:head>

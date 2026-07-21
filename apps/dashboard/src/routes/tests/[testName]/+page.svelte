@@ -4,8 +4,11 @@
   import ErrorState from '$lib/components/ErrorState.svelte';
   import { invalidateAll } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
-  import type { TrendDirection } from '../../../app.d';
-  import { statusBadgeClass as getStatusBadgeClass } from '$lib/status';
+  import {
+    statusBadgeClass as getStatusBadgeClass,
+    trendDirectionLabel,
+    trendDirectionBadgeClass,
+  } from '$lib/status';
   import { formatDateTime, formatDuration, trendTooltipLabel } from '$lib/format';
 
   interface Props {
@@ -22,23 +25,6 @@
     { label: 'Skipped', value: data.testHistory.stats.skipped, color: 'gray' },
     { label: 'Avg Duration', value: formatDuration(data.testHistory.stats.avgDuration), color: 'blue' },
   ]);
-
-  // Rendered honestly, including 'insufficient-data' — it is not the same
-  // claim as 'stable' (see plans/028-honest-visible-trends.md design
-  // decision 4) and must never be disguised as one.
-  const DIRECTION_LABEL: Record<TrendDirection, string> = {
-    improving: '↓ Improving',
-    worsening: '↑ Worsening',
-    stable: '→ Stable',
-    'insufficient-data': 'Insufficient data',
-  };
-
-  const DIRECTION_BADGE_CLASS: Record<TrendDirection, string> = {
-    improving: 'badge-green',
-    worsening: 'badge-red',
-    stable: 'badge-gray',
-    'insufficient-data': 'badge-gray',
-  };
 
   // A day with no runs (`flakeRate: null`) must render as a gap in the
   // line, not a flat 0% — that flat line is exactly the lie plan 028 exists
@@ -143,8 +129,8 @@
       <h2 class="text-sm font-semibold text-muted uppercase tracking-wider">
         Flake Rate Trend ({data.testTrend.days} Days)
       </h2>
-      <span class="badge {DIRECTION_BADGE_CLASS[data.testTrend.direction]}">
-        {DIRECTION_LABEL[data.testTrend.direction]}
+      <span class="badge {trendDirectionBadgeClass(data.testTrend.direction)}">
+        {trendDirectionLabel(data.testTrend.direction)}
       </span>
     </div>
     <Chart options={trendChartOptions} height="240px" />

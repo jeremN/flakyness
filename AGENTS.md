@@ -101,5 +101,18 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 - **Time-series buckets: no data is `null`, never `0`.** "It didn't run" and
   "it ran and nothing flaked" are different facts — see
   `GET /api/v1/tests/:testName/trend` in `routes/tests.ts`.
+- **Mutation testing is automated (Stryker), not just a one-off proof.** A
+  nightly `Mutation` GitHub Actions workflow runs Stryker per-package
+  (`apps/api` broad; `apps/dashboard` scoped to `$lib`) and gates on
+  `scripts/mutation-gate.mjs`, which enforces **per-file floors** over the
+  hardened set: `logger.ts`, `rate-limit.ts`, `projects.ts`,
+  `$lib/{format,status,error-page,href}.ts`. Floors are baseline-calibrated
+  and only bumped deliberately. Run it locally with
+  `pnpm --filter <pkg> test:mutation` (API needs a disposable Postgres via
+  `docker run`; the dashboard's `$lib` run does not). `pool: 'threads'`
+  lives ONLY in `vitest.stryker.config.ts` — never touch the default
+  `forks` config used elsewhere. Browser-mode `.svelte` components are NOT
+  mutation-tested (Stryker has no browser-mode support) — the A3b render
+  tests remain their guard.
 - Commits: single-line conventional-commit subject. NO `Co-Authored-By`
   trailers. `main` is branch-protected — work on branches, PRs need green CI.

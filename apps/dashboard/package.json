@@ -11,10 +11,13 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "svelte-kit sync && vitest run",
     "test:browser": "svelte-kit sync && vitest run --config vitest.browser.config.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:mutation": "svelte-kit sync && stryker run"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
+    "@stryker-mutator/core": "9.6.1",
+    "@stryker-mutator/vitest-runner": "9.6.1",
     "@sveltejs/adapter-node": "^5.5.7",
     "@sveltejs/kit": "^2.69.2",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",

@@ -41,3 +41,7 @@ __screenshots__/
 
 # Docker
 postgres_data/
+
+# Stryker mutation-testing output
+reports/
+.stryker-tmp/

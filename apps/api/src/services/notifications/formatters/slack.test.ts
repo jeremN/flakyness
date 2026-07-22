@@ -63,4 +63,46 @@ describe('formatSlack', () => {
     expect(body.text).toContain('🔓');
     expect(body.text).toContain('released');
   });
+
+  it('renders a resolved-only event with the ✅ branch and no ⚠️', () => {
+    const resolvedOnly: FlakyTransitionEvent = {
+      kind: 'flaky_transition',
+      project: { id: 'p-1', name: 'demo' },
+      newlyFlaky: [],
+      newlyResolved: ['checkout test'],
+      run: { branch: 'main', commitSha: 'abc' },
+    };
+    const body = formatSlack(resolvedOnly, { dashboard: null, test: null });
+    expect(body.text).toContain('✅');
+    expect(body.text).toContain('1 resolved');
+    expect(body.text).toContain('checkout test');
+    expect(body.text).not.toContain('⚠️');
+  });
+
+  it('renders both branches with the separator when flaky and resolved co-occur', () => {
+    const both: FlakyTransitionEvent = {
+      kind: 'flaky_transition',
+      project: { id: 'p-1', name: 'demo' },
+      newlyFlaky: ['a'],
+      newlyResolved: ['b'],
+      run: { branch: 'main', commitSha: 'abc' },
+    };
+    const body = formatSlack(both, { dashboard: null, test: null });
+    expect(body.text).toContain('⚠️');
+    expect(body.text).toContain('✅');
+    expect(body.text).toContain('·');
+  });
+
+  it('escapes mrkdwn special chars in user-controlled strings (no live link injection)', () => {
+    const evil: FlakyTransitionEvent = {
+      kind: 'flaky_transition',
+      project: { id: 'p-1', name: 'a<b>&c' },
+      newlyFlaky: ['<https://evil.example|Click>'],
+      newlyResolved: [],
+      run: { branch: 'main', commitSha: 'abc' },
+    };
+    const body = formatSlack(evil, { dashboard: null, test: null });
+    expect(body.text).toContain('a&lt;b&gt;&amp;c');
+    expect(body.text).not.toContain('<https://evil.example|Click>');
+  });
 });

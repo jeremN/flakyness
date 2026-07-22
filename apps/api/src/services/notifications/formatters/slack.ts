@@ -21,21 +21,26 @@ function link(label: string, url: string | null): string {
   return url ? `<${url}|${label}>` : label;
 }
 
+/** Escape Slack mrkdwn control chars in user-controlled text (Slack's documented set: & < >). Order matters: & first. */
+function escapeMrkdwn(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function flakyText(event: FlakyTransitionEvent, links: DeepLinks): string {
-  const project = link(`*${event.project.name}*`, links.dashboard);
+  const project = link(`*${escapeMrkdwn(event.project.name)}*`, links.dashboard);
   const parts: string[] = [];
   if (event.newlyFlaky.length > 0) {
-    parts.push(`⚠️ ${event.newlyFlaky.length} newly flaky: ${event.newlyFlaky.join(', ')}`);
+    parts.push(`⚠️ ${event.newlyFlaky.length} newly flaky: ${event.newlyFlaky.map(escapeMrkdwn).join(', ')}`);
   }
   if (event.newlyResolved.length > 0) {
-    parts.push(`✅ ${event.newlyResolved.length} resolved: ${event.newlyResolved.join(', ')}`);
+    parts.push(`✅ ${event.newlyResolved.length} resolved: ${event.newlyResolved.map(escapeMrkdwn).join(', ')}`);
   }
   return `${project} on \`${event.run.branch}\` — ${parts.join('  ·  ')}`;
 }
 
 function quarantineText(event: QuarantineEvent, links: DeepLinks): string {
-  const project = link(`*${event.project.name}*`, links.dashboard);
-  const test = link(event.testName, links.test);
+  const project = link(`*${escapeMrkdwn(event.project.name)}*`, links.dashboard);
+  const test = link(escapeMrkdwn(event.testName), links.test);
   if (event.transition === 'entered') {
     const rate = event.flakeRate != null ? ` (flake rate ${(event.flakeRate * 100).toFixed(0)}%)` : '';
     const until = event.expiresAt ? `, muted until ${event.expiresAt.toISOString().slice(0, 10)}` : '';

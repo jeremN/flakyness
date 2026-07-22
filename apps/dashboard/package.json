@@ -35,7 +35,7 @@
     "vitest-browser-svelte": "3.0.0"
   },
   "dependencies": {
-    "@fontsource/inter": "^5.2.8",
+    "@fontsource/inter": "^5.3.0",
     "echarts": "^6.1.0"
   }
 }

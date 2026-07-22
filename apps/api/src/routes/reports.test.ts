@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { and, eq } from 'drizzle-orm';
-import { db, testResults, flakyTests } from '../db';
+import { and, eq, inArray } from 'drizzle-orm';
+import { db, testResults, flakyTests, projects, quarantineEvents } from '../db';
 import { updateFlakyTests } from '../services/flakiness';
+import { generateToken, hashToken } from '../middleware/auth';
 import { withTimeout } from './reports';
 
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -671,6 +672,145 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(quarantineRes.status).toBe(200);
       const quarantine = await quarantineRes.json();
       expect(quarantine.flaky.map((t: { testName: string }) => t.testName)).toContain(waitTestName);
+    });
+  });
+
+  describe('Auto-quarantine on ingest (Task 4 wiring)', () => {
+    // Same 2-passed/1-failed-in-one-report shape as `singleUploadFlakyReport`
+    // above: one ingest reaches minRuns and yields a deterministic flakeRate
+    // of 1/3, which is >= any threshold at or below 0.05 — comfortably above
+    // the opted-in project's floor threshold below.
+    const quarantineTestName = 'auto-quarantine candidate test';
+    const quarantineReport = {
+      config: {},
+      suites: [
+        {
+          title: 'quarantine.spec.ts',
+          file: 'quarantine.spec.ts',
+          specs: [
+            {
+              title: quarantineTestName,
+              ok: true,
+              tests: [
+                { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-15T11:00:00.000Z' }] },
+                { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-15T11:00:01.000Z' }] },
+                { results: [{ workerIndex: 0, status: 'failed', duration: 10, retry: 0, startTime: '2026-07-15T11:00:02.000Z' }] },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    // Projects are seeded via a direct `db.insert` (not the admin HTTP route,
+    // which only accepts `{ name, gitlabProjectId }`) so the quarantine
+    // override columns can be set on creation. The plaintext token is
+    // generated here and only its hash is stored — mirroring how
+    // `projectAuth()` looks projects up (middleware/auth.ts) — so the plain
+    // value still works as a real `Authorization: Bearer` credential.
+    let optedInProjectId: string;
+    let optedInToken: string;
+    let optedOutProjectId: string;
+    let optedOutToken: string;
+
+    beforeAll(async () => {
+      optedInToken = generateToken();
+      const [optedIn] = await db
+        .insert(projects)
+        .values({
+          name: `reports-quarantine-in-${Date.now()}`,
+          tokenHash: hashToken(optedInToken),
+          autoQuarantineEnabled: true,
+          // Floor = the resolved flakeThreshold (0.05 default): ANY
+          // detected-flaky test crosses it, so promotion is deterministic.
+          quarantineThreshold: '0.0500',
+          quarantineMinRuns: 1,
+        })
+        .returning();
+      optedInProjectId = optedIn.id;
+
+      optedOutToken = generateToken();
+      const [optedOut] = await db
+        .insert(projects)
+        .values({
+          name: `reports-quarantine-out-${Date.now()}`,
+          tokenHash: hashToken(optedOutToken),
+          // autoQuarantineEnabled left at its schema default (false) — this
+          // is the opt-in gate under test.
+        })
+        .returning();
+      optedOutProjectId = optedOut.id;
+    });
+
+    afterAll(async () => {
+      await db.delete(projects).where(inArray(projects.id, [optedInProjectId, optedOutProjectId]));
+    });
+
+    it('promotes a newly-flaky test into quarantine when autoQuarantineEnabled, reflected immediately under wait=true with no poll', async () => {
+      const res = await app.request(
+        '/api/v1/reports?branch=main&commit=quarantinein001&wait=true',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${optedInToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(quarantineReport),
+        }
+      );
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      // Sanity check: this test genuinely went through detection as
+      // newly-flaky before the quarantine engine could have promoted it.
+      expect(body.reconcile.newlyFlaky).toContain(quarantineTestName);
+
+      const quarantineRes = await app.request(`/api/v1/projects/${optedInProjectId}/quarantine`);
+      expect(quarantineRes.status).toBe(200);
+      const quarantine = await quarantineRes.json();
+      expect(quarantine.flaky.map((t: { testName: string }) => t.testName)).not.toContain(quarantineTestName);
+      expect(quarantine.muted.map((t: { testName: string }) => t.testName)).toContain(quarantineTestName);
+      expect(quarantine.grepInvert).toContain(quarantineTestName);
+
+      const events = await db
+        .select()
+        .from(quarantineEvents)
+        .where(
+          and(eq(quarantineEvents.projectId, optedInProjectId), eq(quarantineEvents.testName, quarantineTestName))
+        );
+      expect(events.some((e) => e.event === 'entered')).toBe(true);
+    });
+
+    it('does NOT quarantine an identical ingest when autoQuarantineEnabled is false (default-off safety)', async () => {
+      const res = await app.request(
+        '/api/v1/reports?branch=main&commit=quarantineout001&wait=true',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${optedOutToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(quarantineReport),
+        }
+      );
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      // Detection still runs — only promotion is gated by the opt-in flag.
+      expect(body.reconcile.newlyFlaky).toContain(quarantineTestName);
+
+      const quarantineRes = await app.request(`/api/v1/projects/${optedOutProjectId}/quarantine`);
+      expect(quarantineRes.status).toBe(200);
+      const quarantine = await quarantineRes.json();
+      expect(quarantine.flaky.map((t: { testName: string }) => t.testName)).toContain(quarantineTestName);
+      expect(quarantine.muted.map((t: { testName: string }) => t.testName)).not.toContain(quarantineTestName);
+      expect(quarantine.grepInvert).not.toContain(quarantineTestName);
+
+      const events = await db
+        .select()
+        .from(quarantineEvents)
+        .where(
+          and(eq(quarantineEvents.projectId, optedOutProjectId), eq(quarantineEvents.testName, quarantineTestName))
+        );
+      expect(events).toEqual([]);
     });
   });
 });

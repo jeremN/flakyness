@@ -159,7 +159,6 @@ export type PlaywrightReport = z.infer<typeof PlaywrightReportSchema>;
 export type TestCase = z.infer<typeof TestCaseSchema>;
 export type TestResult = z.infer<typeof TestResultSchema>;
 
-
 /**
  * Recursively extract all test specs from nested suites, tracking the title path
  */

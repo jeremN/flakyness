@@ -64,9 +64,11 @@ reports.use('*', reportRateLimit);
 /**
  * POST /api/v1/reports
  *
- * Ingest a Playwright JSON report or a JUnit XML report. The format is
- * detected from the body content (not Content-Type): a body that starts
- * with '<' is parsed as JUnit XML, everything else as Playwright JSON.
+ * Ingest a JUnit XML or Playwright JSON report. The format is detected from
+ * the body content (not Content-Type) and dispatched by shape to the first
+ * recognized parser: JUnit XML if the body starts with '<', Playwright JSON
+ * if it is an object with a top-level `suites` key. A body matching neither
+ * recognized format returns 400 "Unrecognized report format".
  *
  * Query params:
  *   - branch: Git branch name (default: "main")

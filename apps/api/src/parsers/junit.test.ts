@@ -308,4 +308,257 @@ describe('JUnit Parser', () => {
       expect(() => parseJUnitReport(xml)).toThrow(/50,000/);
     }, 20_000);
   });
+
+  // No-op-confirmation coverage, NOT mutant kills: for any name of length <= the
+  // 500-char cap, every `clamp` operator mutant (`>`->`>=`, `>`->`true`,
+  // `>`->`false`) yields the identical output (slicing a <=cap string is a no-op),
+  // so these two cases are genuine equivalents under the effort's policy. The one
+  // killable clamp mutant — never-truncate (`>`->`false`) — is killed by the
+  // oversized-name case in the `clamps` block above (600-char name -> length<=500).
+  describe('clamp boundary', () => {
+    it('leaves a name shorter than the cap unchanged', () => {
+      const shortName = 'x'.repeat(10);
+      const xml = `<testsuites><testsuite name="s"><testcase classname="c" name="${shortName}" time="0.01"/></testsuite></testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe(`c › ${shortName}`);
+    });
+
+    it('leaves a name exactly at the cap unchanged', () => {
+      // A classname prefix (e.g. 'c › ') would push the combined testName
+      // past 500 chars before the boundary is even reached, so this uses a
+      // name-only testcase (no classname) — that way the bare @_name value
+      // lands exactly on the 500-char cap with nothing prepended to it.
+      const exactName = 'x'.repeat(500);
+      const xml = `<testsuites><testsuite name="s"><testcase name="${exactName}" time="0.01"/></testsuite></testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe(exactName);
+      expect(parsed.results[0].testName.length).toBe(500);
+    });
+  });
+
+  describe('empty testsuite (toArray guard)', () => {
+    it('parses a testsuite with zero testcases without crashing', () => {
+      const xml = '<testsuites><testsuite name="empty"></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.totalTests).toBe(0);
+      expect(parsed.results).toEqual([]);
+    });
+  });
+
+  describe('parseTimeMs guards (root time attribute)', () => {
+    const twoTestXml = (time: string) =>
+      `<testsuites time="${time}"><testsuite name="s"><testcase classname="c" name="a" time="0.100"/><testcase classname="c" name="b" time="0.200"/></testsuite></testsuites>`;
+
+    it('treats an empty time attribute as absent, falling back to the summed durations', () => {
+      const parsed = parseJUnitReport(twoTestXml(''));
+
+      expect(parsed.durationMs).toBe(300);
+    });
+
+    it('treats a non-numeric time attribute as absent, falling back to the summed durations', () => {
+      const parsed = parseJUnitReport(twoTestXml('abc'));
+
+      expect(parsed.durationMs).toBe(300);
+    });
+  });
+
+  describe('parseTimestamp guards (suite timestamp attribute)', () => {
+    it('treats an empty timestamp attribute as absent', () => {
+      const xml =
+        '<testsuites><testsuite name="s" timestamp=""><testcase classname="c" name="a" time="0.01"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt).toBeNull();
+      expect(parsed.finishedAt).toBeNull();
+    });
+
+    it('treats an unparsable timestamp attribute as absent', () => {
+      const xml =
+        '<testsuites><testsuite name="s" timestamp="not-a-real-date"><testcase classname="c" name="a" time="0.01"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt).toBeNull();
+      expect(parsed.finishedAt).toBeNull();
+    });
+  });
+
+  describe('extractIssueMessage branches', () => {
+    it('returns a plain-text failure node unchanged (no attrs, text only)', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure>plain text no attrs</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('plain text no attrs');
+    });
+
+    it('returns empty (null errorMessage) for a numeric-only failure text node', () => {
+      // fast-xml-parser auto-parses bare numeric tag text into a JS number,
+      // so a <failure> with only digits as its text is neither a string nor
+      // a plain object — it must fall through to the empty-string branch.
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure>42</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBeNull();
+    });
+
+    it('returns null errorMessage for a failure object with neither @_message nor #text', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure other="x"/></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBeNull();
+    });
+
+    it('uses #text alone when @_message is absent', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure other="x">only text</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('only text');
+    });
+
+    it('uses @_message alone (no ": " separator) when #text is absent', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure message="m"/></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('m');
+    });
+
+    it('joins @_message and #text with ": " when both are present', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure message="m">t</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('m: t');
+    });
+
+    it('ignores a numeric-only #text when @_message is present (fast-xml-parser auto-numbers digit-only text)', () => {
+      // fast-xml-parser parses bare-digit tag text into a JS number, so
+      // `obj['#text']` is `42` (not `'42'`) here. The `typeof … === 'string'`
+      // guard on #text must reject that, leaving `text` empty — otherwise
+      // the "both present" branch would wrongly fire and append ": 42".
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure message="m">42</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('m');
+    });
+  });
+
+  describe('nested <testsuite> flatten', () => {
+    it('includes testcases from a nested <testsuite> in the flattened results', () => {
+      const xml = `<testsuites>
+        <testsuite name="outer" timestamp="2026-07-01T00:00:05Z" time="1.0">
+          <testcase classname="c" name="outer-test" time="0.01"/>
+          <testsuite name="inner" timestamp="2026-07-01T00:00:00Z" time="0.5">
+            <testcase classname="c" name="inner-test" time="0.02"/>
+          </testsuite>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+      const testNames = parsed.results.map((r) => r.testName);
+
+      expect(parsed.totalTests).toBe(2);
+      expect(testNames).toContain('c › outer-test');
+      expect(testNames).toContain('c › inner-test');
+      // The nested suite's earlier timestamp must win for startedAt, and the
+      // outer suite's later end time must win for finishedAt — this only
+      // happens if the nested suite's metadata actually gets flattened in.
+      expect(parsed.startedAt?.toISOString()).toBe('2026-07-01T00:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-07-01T00:00:06.000Z');
+    });
+  });
+
+  describe('classname handling', () => {
+    it('omits the "classname › " prefix and empty testFile when classname is absent', () => {
+      const xml = '<testsuites><testsuite name="s"><testcase name="solo" time="0.01"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe('solo');
+      expect(parsed.results[0].testFile).toBe('');
+    });
+
+    it('treats an empty classname attribute the same as an absent one', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="" name="solo" time="0.01"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe('solo');
+      expect(parsed.results[0].testFile).toBe('');
+    });
+  });
+
+  describe('status mapping (passed count)', () => {
+    it('counts passed distinctly from a differing number of non-passed tests', () => {
+      // 3 passed vs 1 failed (asymmetric) so a passed/non-passed swap in the
+      // filter is observable — a fixture with equal counts on both sides
+      // would hide that class of bug.
+      const xml = `<testsuites>
+        <testsuite name="s">
+          <testcase classname="c" name="p1" time="0.01"/>
+          <testcase classname="c" name="p2" time="0.01"/>
+          <testcase classname="c" name="p3" time="0.01"/>
+          <testcase classname="c" name="f1" time="0.01"><failure message="boom"/></testcase>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.passed).toBe(3);
+      expect(parsed.failed).toBe(1);
+    });
+  });
+
+  describe('startedAt/finishedAt precedence: root timestamp over suite timestamps', () => {
+    it('keeps the root timestamp even when a child suite has an earlier one', () => {
+      const xml = `<testsuites timestamp="2026-07-01T00:00:00Z" time="1.000">
+        <testsuite name="s1" timestamp="2026-06-01T00:00:00Z">
+          <testcase classname="c" name="a" time="0.01"/>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe('2026-07-01T00:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-07-01T00:00:01.000Z');
+    });
+  });
+
+  describe('startedAt/finishedAt fallback: suites processed out of chronological order', () => {
+    it('still finds the earliest start and the latest finish', () => {
+      const xml = `<testsuites>
+        <testsuite name="s1" timestamp="2026-07-01T00:00:05Z" time="1.0">
+          <testcase classname="c" name="a" time="1.0"/>
+        </testsuite>
+        <testsuite name="s2" timestamp="2026-07-01T00:00:00Z" time="0.5">
+          <testcase classname="c" name="b" time="0.5"/>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe('2026-07-01T00:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-07-01T00:00:06.000Z');
+    });
+  });
 });

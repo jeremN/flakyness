@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 // Per-file floors over the A1–A3b hardened set, plus plan 048's hardening of
-// projects.ts/rate-limit.ts. floor = floor(reliableLow) - 5. Baselines
-// recorded 2026-07-21 (A1-A3b + Phase B); projects.ts/rate-limit.ts
-// re-baselined 2026-07-22 (plan 048). Bump deliberately, like the
-// route-count guard. Broad-run scores for non-hardened files are report-only.
+// projects.ts/rate-limit.ts and plan 049's promotion of flakiness.ts + the
+// parsers. floor = floor(reliableLow) - 5. Baselines recorded 2026-07-21
+// (A1-A3b + Phase B); projects.ts/rate-limit.ts re-baselined 2026-07-22
+// (plan 048); flakiness.ts/junit.ts/playwright.ts baselined 2026-07-22
+// (plan 049). Bump deliberately, like the route-count guard. Broad-run scores
+// for non-hardened files are report-only.
 //
 // The 4 dashboard baselines reproduce exactly run-to-run. The three API
 // floors do NOT — each is calibrated off a reliable low (lowest of ≥2 scored
@@ -38,6 +40,16 @@ import { pathToFileURL } from 'node:url';
 //    assertions — every mutant the new tests target killed in all three
 //    runs. Floor 81 is set below the reliable low (86.00%), same
 //    margin-of-safety policy as projects.ts.
+// Plan 049 promoted three previously report-only files. Unlike the wobbly
+// route/middleware files above, these were hardened to high, stable scores
+// (survivor-driven, test-only), each measured across a scoped run + the
+// consolidated all-6 run:
+//  - flakiness.ts: 92.90%, identical across both runs (deterministic). Its 2
+//    Timeouts are the chunks() `i -= size` / `i >= arr.length` infinite-loop
+//    mutants — genuine hangs the suite detects, not the false-timeout artifact
+//    that hit logger.ts. Floor 87.
+//  - junit.ts: 88.38%, identical across both runs (pure parser, no DB). Floor 83.
+//  - playwright.ts: reliable low 91.11% (of 91.11/91.37; pure parser). Floor 86.
 // Raising real coverage on the coarse route files is the honest way to lift
 // these floors further (see plans/README.md #13/#15).
 export const HARDENED = [
@@ -45,6 +57,9 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/rate-limit.ts', floor: 81 }, // baseline: 86.00% (reliable low; wobbles ~2pp post-048 — see comment above)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/routes/projects.ts',       floor: 61 }, // baseline: 66.44% (reliable low; race-wobbly)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/flakiness.ts',    floor: 87 }, // baseline: 92.90% (reliable, reproduced 2x; 2 genuine chunks() infinite-loop timeouts)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/junit.ts',         floor: 83 }, // baseline: 88.38% (deterministic — identical across 2 runs)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/playwright.ts',    floor: 86 }, // baseline: 91.11% (reliable low of 91.11/91.37)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

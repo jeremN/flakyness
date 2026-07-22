@@ -291,6 +291,45 @@ describe('Playwright Parser', () => {
 
       expect(() => parsePlaywrightReport(report)).toThrow(z.ZodError);
     });
+
+    it('rejects an oversized error `value` field beyond the schema bound', () => {
+      const tooLongValue = 'v'.repeat(10_001);
+
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'oversized-value.spec.ts',
+            file: 'oversized-value.spec.ts',
+            specs: [
+              {
+                title: 'oversized value field',
+                ok: false,
+                tags: [],
+                file: 'oversized-value.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ value: tooLongValue }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(() => parsePlaywrightReport(report)).toThrow(z.ZodError);
+    });
   });
 
   describe('tags and annotations', () => {
@@ -418,6 +457,39 @@ describe('Playwright Parser', () => {
         expect(result.tags).toEqual([]);
         expect(result.annotations).toEqual([]);
       }
+    });
+
+    it('defaults tags to an empty array (not a placeholder) when the field is entirely absent', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'no-tags-field.spec.ts',
+            file: 'no-tags-field.spec.ts',
+            specs: [
+              {
+                title: 'never declares a tags field',
+                ok: true,
+                // `tags` omitted entirely (not even an empty array) - exercises
+                // the `spec.tags ?? []` default itself, not a pre-populated [].
+                file: 'no-tags-field.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].tags).toEqual([]);
     });
   });
 
@@ -597,6 +669,940 @@ describe('Playwright Parser', () => {
       expect(detail?.errors[0].stack?.length).toBe(10_000);
       expect(detail?.stdout?.length).toBe(10_000);
       expect(detail?.attachments).toHaveLength(25);
+    });
+
+    it('skips malformed stdout/stderr chunks (non-string, no .text) without crashing', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'malformed-chunks.spec.ts',
+            file: 'malformed-chunks.spec.ts',
+            specs: [
+              {
+                title: 'has a null chunk mixed in',
+                ok: false,
+                tags: [],
+                file: 'malformed-chunks.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                        stdout: ['before\n', null, { text: 'after\n' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(() => parsePlaywrightReport(report)).not.toThrow();
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results[0].failureDetail?.stdout).toBe('before\nafter\n');
+    });
+
+    it('captures the error value field alongside message/stack/snippet', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'value-field.spec.ts',
+            file: 'value-field.spec.ts',
+            specs: [
+              {
+                title: 'assertion with a captured value',
+                ok: false,
+                tags: [],
+                file: 'value-field.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'expect(received).toBe(expected)', value: 'expected 42, received 7' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail?.errors[0].value).toBe('expected 42, received 7');
+    });
+
+    it('dedupes errors by the exact message+stack pair, not by either field alone', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'dedup-key.spec.ts',
+            file: 'dedup-key.spec.ts',
+            specs: [
+              {
+                title: 'three distinct errors that share partial fields',
+                ok: false,
+                tags: [],
+                file: 'dedup-key.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [
+                          { message: 'msgA', stack: 'stackX' },
+                          { message: 'msgB', stack: 'stackX' }, // same stack, different message -> distinct
+                          { message: 'msgA', stack: 'stackY' }, // same message, different stack -> distinct
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail?.errors).toHaveLength(3);
+    });
+
+    it('caps captured errors to MAX_ERRORS (10) even when more are present', () => {
+      const manyErrors = Array.from({ length: 12 }, (_, i) => ({ message: `error-${i}` }));
+
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'many-errors.spec.ts',
+            file: 'many-errors.spec.ts',
+            specs: [
+              {
+                title: 'exceeds MAX_ERRORS',
+                ok: false,
+                tags: [],
+                file: 'many-errors.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: manyErrors,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail?.errors).toHaveLength(10);
+    });
+
+    it('skips non-object attachment entries without crashing', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'malformed-attachments.spec.ts',
+            file: 'malformed-attachments.spec.ts',
+            specs: [
+              {
+                title: 'has a stray non-object attachment',
+                ok: false,
+                tags: [],
+                file: 'malformed-attachments.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                        attachments: [
+                          'not-an-object',
+                          null,
+                          { name: 'valid', contentType: 'text/plain', path: 'a.txt' },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      expect(() => parsePlaywrightReport(report)).not.toThrow();
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results[0].failureDetail?.attachments).toHaveLength(1);
+      expect(parsed.results[0].failureDetail?.attachments?.[0].name).toBe('valid');
+    });
+
+    it('skips an attachment entry missing a usable name', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'nameless-attachment.spec.ts',
+            file: 'nameless-attachment.spec.ts',
+            specs: [
+              {
+                title: 'has an attachment without a name',
+                ok: false,
+                tags: [],
+                file: 'nameless-attachment.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                        attachments: [
+                          { contentType: 'text/plain', path: 'noname.txt' },
+                          { name: '', contentType: 'text/plain', path: 'emptyname.txt' },
+                          { name: 42, contentType: 'text/plain', path: 'numericname.txt' },
+                          { name: 'valid', contentType: 'text/plain', path: 'a.txt' },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results[0].failureDetail?.attachments).toHaveLength(1);
+      expect(parsed.results[0].failureDetail?.attachments?.[0].name).toBe('valid');
+    });
+
+    it('defaults a missing attachment contentType to an empty string', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'no-contenttype.spec.ts',
+            file: 'no-contenttype.spec.ts',
+            specs: [
+              {
+                title: 'attachment without contentType',
+                ok: false,
+                tags: [],
+                file: 'no-contenttype.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                        attachments: [{ name: 'shot', path: 'shot.png' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results[0].failureDetail?.attachments?.[0]).toEqual({
+        name: 'shot',
+        contentType: '',
+        path: 'shot.png',
+      });
+    });
+
+    it('omits the attachment path entirely when the source has none (not `path: undefined`)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'no-path.spec.ts',
+            file: 'no-path.spec.ts',
+            specs: [
+              {
+                title: 'attachment without a path',
+                ok: false,
+                tags: [],
+                file: 'no-path.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                        attachments: [{ name: 'shot', contentType: 'image/png' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const attachment = parsed.results[0].failureDetail?.attachments?.[0];
+      expect(attachment).not.toHaveProperty('path');
+    });
+
+    it('is non-null when only attachments are present (no errors/stdout/stderr)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'only-attachments.spec.ts',
+            file: 'only-attachments.spec.ts',
+            specs: [
+              {
+                title: 'passed but left an attachment behind',
+                ok: true,
+                tags: [],
+                file: 'only-attachments.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'passed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        attachments: [{ name: 'trace', contentType: 'application/zip', path: 'trace.zip' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toBeNull();
+      expect(detail?.errors).toHaveLength(0);
+      expect(detail?.attachments).toHaveLength(1);
+    });
+
+    it('is non-null when only stdout is present (no errors/stderr/attachments)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'only-stdout.spec.ts',
+            file: 'only-stdout.spec.ts',
+            specs: [
+              {
+                title: 'passed but logged something',
+                ok: true,
+                tags: [],
+                file: 'only-stdout.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'passed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        stdout: ['just some output\n'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toBeNull();
+      expect(detail?.stdout).toBe('just some output\n');
+    });
+
+    it('is non-null when only stderr is present (no errors/stdout/attachments)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'only-stderr.spec.ts',
+            file: 'only-stderr.spec.ts',
+            specs: [
+              {
+                title: 'passed but warned on stderr',
+                ok: true,
+                tags: [],
+                file: 'only-stderr.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'passed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        stderr: ['a warning\n'],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toBeNull();
+      expect(detail?.stderr).toBe('a warning\n');
+    });
+
+    it('omits the attachments key entirely when there are none, not an empty array', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'no-attachments.spec.ts',
+            file: 'no-attachments.spec.ts',
+            specs: [
+              {
+                title: 'failed with no attachments',
+                ok: false,
+                tags: [],
+                file: 'no-attachments.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      {
+                        workerIndex: 0,
+                        status: 'failed',
+                        duration: 100,
+                        retry: 0,
+                        startTime: '2026-07-01T00:00:00.000Z',
+                        errors: [{ message: 'boom' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      const detail = parsed.results[0].failureDetail;
+      expect(detail).not.toHaveProperty('attachments');
+    });
+  });
+
+  describe('extractSpecs (file-suite title detection)', () => {
+    it('treats a suite title ending in .ts (no slash) as a file marker, excluding it from the title path', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'unit.spec.ts',
+            file: 'unit.spec.ts',
+            specs: [
+              {
+                title: 'bare ts-titled test',
+                ok: true,
+                tags: [],
+                file: 'unit.spec.ts',
+                tests: [
+                  { projectName: 'chromium', results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-01T00:00:00.000Z' }] },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      // If the suite title were NOT recognized as a file marker, it would be
+      // prepended to the name: 'unit.spec.ts › bare ts-titled test'.
+      expect(parsed.results[0].testName).toBe('bare ts-titled test');
+    });
+
+    it('treats a suite title ending in .js (no slash) as a file marker, excluding it from the title path', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'legacy.spec.js',
+            file: 'legacy.spec.js',
+            specs: [
+              {
+                title: 'bare js-titled test',
+                ok: true,
+                tags: [],
+                file: 'legacy.spec.js',
+                tests: [
+                  { projectName: 'chromium', results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-01T00:00:00.000Z' }] },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].testName).toBe('bare js-titled test');
+    });
+
+    it('treats a suite title containing a slash as a file marker even without a .ts/.js extension', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'features/checkout',
+            file: 'features/checkout',
+            specs: [
+              {
+                title: 'slash-only test',
+                ok: true,
+                tags: [],
+                file: 'features/checkout',
+                tests: [
+                  { projectName: 'chromium', results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-01T00:00:00.000Z' }] },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].testName).toBe('slash-only test');
+    });
+
+    it('defaults an unset top-level file to empty string, not a stray placeholder', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'no file or slash',
+            // no top-level `file` field: exercises extractSpecs's parentFile
+            // default value directly.
+            specs: [
+              {
+                title: 'test with nothing to attribute a file to',
+                ok: true,
+                tags: [],
+                tests: [
+                  { projectName: 'chromium', results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime: '2026-07-01T00:00:00.000Z' }] },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].testFile).toBe('');
+    });
+  });
+
+  describe('determineStatus (via full parse)', () => {
+    it('treats a timedOut attempt followed by a pass as flaky (not just "failed")', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'timeout-retry.spec.ts',
+            file: 'timeout-retry.spec.ts',
+            specs: [
+              {
+                title: 'flaky via timeout then pass',
+                ok: true,
+                tags: [],
+                file: 'timeout-retry.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'timedOut', duration: 30000, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                      { workerIndex: 0, status: 'passed', duration: 500, retry: 1, startTime: '2026-07-01T00:00:31.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].status).toBe('flaky');
+      expect(parsed.results[0].retryCount).toBe(1);
+    });
+
+    it('treats a partial skip (one skipped attempt, one passed) as passed, not skipped', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'partial-skip.spec.ts',
+            file: 'partial-skip.spec.ts',
+            specs: [
+              {
+                title: 'skipped once then passed',
+                ok: true,
+                tags: [],
+                file: 'partial-skip.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'skipped', duration: 0, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                      { workerIndex: 0, status: 'passed', duration: 500, retry: 1, startTime: '2026-07-01T00:00:01.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].status).toBe('passed');
+    });
+
+    it('treats a failed attempt followed by a skipped final attempt as skipped, not failed', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'fail-then-skip.spec.ts',
+            file: 'fail-then-skip.spec.ts',
+            specs: [
+              {
+                title: 'aborted after failure',
+                ok: false,
+                tags: [],
+                file: 'fail-then-skip.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'failed', duration: 1000, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                      { workerIndex: 0, status: 'skipped', duration: 0, retry: 1, startTime: '2026-07-01T00:00:02.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].status).toBe('skipped');
+    });
+
+    it('maps a lone "interrupted" attempt to failed (the fallback branch, not passed/skipped)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'interrupted.spec.ts',
+            file: 'interrupted.spec.ts',
+            specs: [
+              {
+                title: 'run was interrupted',
+                ok: false,
+                tags: [],
+                file: 'interrupted.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'interrupted', duration: 0, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].status).toBe('failed');
+    });
+  });
+
+  describe('getExecutions (spec.tests vs legacy spec.results)', () => {
+    it('falls back to legacy spec.results when spec.tests is present but empty', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'legacy-fallback.spec.ts',
+            file: 'legacy-fallback.spec.ts',
+            specs: [
+              {
+                title: 'uses legacy results shape',
+                ok: true,
+                tags: [],
+                file: 'legacy-fallback.spec.ts',
+                tests: [], // present but empty -> must not short-circuit the legacy fallback
+                results: [
+                  { workerIndex: 0, status: 'passed', duration: 250, retry: 0, startTime: '2026-07-01T00:00:00.000Z' },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(1);
+      expect(parsed.results[0].status).toBe('passed');
+      expect(parsed.results[0].durationMs).toBe(250);
+    });
+
+    it('excludes a spec whose legacy spec.results is present but empty (no tests[] at all)', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'legacy-empty.spec.ts',
+            file: 'legacy-empty.spec.ts',
+            specs: [
+              {
+                title: 'never actually ran',
+                ok: true,
+                tags: [],
+                file: 'legacy-empty.spec.ts',
+                results: [], // present but empty, and no tests[] field at all
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+      expect(parsed.results).toHaveLength(0);
+      expect(parsed.totalTests).toBe(0);
+    });
+  });
+
+  describe('startedAt / finishedAt tracking', () => {
+    it('tracks the earliest start and latest end across specs, independent of processing order', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'first.spec.ts',
+            file: 'first.spec.ts',
+            specs: [
+              {
+                title: 'starts earliest, runs longest',
+                ok: true,
+                tags: [],
+                file: 'first.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'passed', duration: 10_000, retry: 0, startTime: '2026-07-01T10:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            title: 'second.spec.ts',
+            file: 'second.spec.ts',
+            specs: [
+              {
+                title: 'starts later, runs shorter',
+                ok: true,
+                tags: [],
+                file: 'second.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 1, status: 'passed', duration: 1_000, retry: 0, startTime: '2026-07-01T10:00:05.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            title: 'third.spec.ts',
+            file: 'third.spec.ts',
+            specs: [
+              {
+                title: 'starts last, but runs longest of all - must still win the max-end check',
+                ok: true,
+                tags: [],
+                file: 'third.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 2, status: 'passed', duration: 20_000, retry: 0, startTime: '2026-07-01T10:00:08.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            title: 'fourth.spec.ts',
+            file: 'fourth.spec.ts',
+            specs: [
+              {
+                title: 'processed last of all, but ends earlier than the third spec - must NOT override the true max',
+                ok: true,
+                tags: [],
+                file: 'fourth.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 3, status: 'passed', duration: 100, retry: 0, startTime: '2026-07-01T10:00:20.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+
+      // Earliest start comes from the FIRST spec (10:00:00) even though it is
+      // processed (and starts) before the others.
+      expect(parsed.startedAt?.toISOString()).toBe('2026-07-01T10:00:00.000Z');
+      // Latest end comes from the THIRD spec (10:00:08 + 20s = 10:00:28), NOT
+      // the fourth (last-processed) spec's earlier end (10:00:20.1) - proving
+      // finishedAt is a running max, not "whichever result is processed
+      // first" (first: end 10:00:10, second: end 10:00:06) nor "whichever is
+      // processed last" (fourth: end 10:00:20.100).
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-07-01T10:00:28.000Z');
+    });
+
+    it('ignores a result with an empty startTime string when tracking start/end', () => {
+      const report = {
+        config: {},
+        suites: [
+          {
+            title: 'blank-starttime.spec.ts',
+            file: 'blank-starttime.spec.ts',
+            specs: [
+              {
+                title: 'has a blank startTime attempt then a real one',
+                ok: true,
+                tags: [],
+                file: 'blank-starttime.spec.ts',
+                tests: [
+                  {
+                    projectName: 'chromium',
+                    results: [
+                      { workerIndex: 0, status: 'failed', duration: 0, retry: 0, startTime: '' },
+                      { workerIndex: 0, status: 'passed', duration: 500, retry: 1, startTime: '2026-07-01T10:00:00.000Z' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const parsed = parsePlaywrightReport(report);
+
+      expect(parsed.startedAt?.toISOString()).toBe('2026-07-01T10:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-07-01T10:00:00.500Z');
     });
   });
 });

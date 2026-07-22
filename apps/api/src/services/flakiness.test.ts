@@ -4,6 +4,7 @@ import {
   computeFlakiness,
   updateFlakyTests,
   resolveProjectConfig,
+  getProjectStats,
   type ResultRow,
   type FlakinessConfig,
   type ProjectFlakinessOverrides,
@@ -194,6 +195,32 @@ describe('Flakiness Detection', () => {
 
       expect(result[0].lastSeen).toEqual(newest);
     });
+
+    it('falls back to empty string when a result has no testFile', () => {
+      const result = computeFlakiness(
+        [
+          { testName: 't', status: 'failed', testFile: null, createdAt: new Date() },
+          { testName: 't', status: 'passed', testFile: null, createdAt: new Date() },
+          { testName: 't', status: 'passed', testFile: null, createdAt: new Date() },
+        ],
+        defaultConfig
+      );
+      expect(result[0].testFile).toBe('');
+    });
+
+    it('reports the most recent createdAt as lastSeen regardless of input order', () => {
+      const older = new Date('2026-01-01T00:00:00Z');
+      const newer = new Date('2026-02-01T00:00:00Z');
+      const result = computeFlakiness(
+        [
+          { testName: 't', status: 'passed', testFile: 's.ts', createdAt: newer },
+          { testName: 't', status: 'failed', testFile: 's.ts', createdAt: older },
+          { testName: 't', status: 'passed', testFile: 's.ts', createdAt: older },
+        ],
+        defaultConfig
+      );
+      expect(result[0].lastSeen.toISOString()).toBe(newer.toISOString());
+    });
   });
 
   describe('resolveProjectConfig', () => {
@@ -235,62 +262,65 @@ describe('Flakiness Detection', () => {
 const hasDatabase = !!process.env.DATABASE_URL;
 const describeWithDb = hasDatabase ? describe : describe.skip;
 
-describeWithDb('updateFlakyTests', () => {
-  const createdProjectIds: string[] = [];
+// Shared DB-test helpers/state, used by both the `updateFlakyTests` and
+// `getProjectStats` describeWithDb blocks below. A single tracked-id list and
+// afterAll cover cascade cleanup for every project seeded by either block.
+const createdProjectIds: string[] = [];
 
-  async function seedProject(label: string): Promise<string> {
-    const [project] = await db
-      .insert(projects)
-      .values({
-        name: `flakiness-test-${label}-${Date.now()}`,
-        tokenHash: '0'.repeat(64),
-      })
-      .returning({ id: projects.id });
-    createdProjectIds.push(project.id);
-    return project.id;
-  }
+async function seedProject(label: string): Promise<string> {
+  const [project] = await db
+    .insert(projects)
+    .values({
+      name: `flakiness-test-${label}-${Date.now()}`,
+      tokenHash: '0'.repeat(64),
+    })
+    .returning({ id: projects.id });
+  createdProjectIds.push(project.id);
+  return project.id;
+}
 
-  async function seedRun(
-    projectId: string,
-    results: Array<{ testName: string; status: string }>
-  ): Promise<string> {
-    const [run] = await db
-      .insert(testRuns)
-      .values({
-        projectId,
-        branch: 'main',
-        commitSha: 'a'.repeat(40),
-        totalTests: results.length,
-      })
-      .returning({ id: testRuns.id });
-    await db.insert(testResults).values(
-      results.map((r) => ({
-        testRunId: run.id,
-        testName: r.testName,
-        testFile: 'suite.spec.ts',
-        status: r.status,
-      }))
-    );
-    return run.id;
-  }
+async function seedRun(
+  projectId: string,
+  results: Array<{ testName: string; status: string }>
+): Promise<string> {
+  const [run] = await db
+    .insert(testRuns)
+    .values({
+      projectId,
+      branch: 'main',
+      commitSha: 'a'.repeat(40),
+      totalTests: results.length,
+    })
+    .returning({ id: testRuns.id });
+  await db.insert(testResults).values(
+    results.map((r) => ({
+      testRunId: run.id,
+      testName: r.testName,
+      testFile: 'suite.spec.ts',
+      status: r.status,
+    }))
+  );
+  return run.id;
+}
 
-  function repeat(n: number, testName: string, status: string) {
-    return Array.from({ length: n }, () => ({ testName, status }));
-  }
+function repeat(n: number, testName: string, status: string) {
+  return Array.from({ length: n }, () => ({ testName, status }));
+}
 
-  async function getFlakyRow(projectId: string, testName: string) {
-    return db.query.flakyTests.findFirst({
-      where: and(eq(flakyTests.projectId, projectId), eq(flakyTests.testName, testName)),
-    });
-  }
-
-  afterAll(async () => {
-    if (createdProjectIds.length > 0) {
-      // FK cascades remove test_runs, test_results and flaky_tests children.
-      await db.delete(projects).where(inArray(projects.id, createdProjectIds));
-    }
+async function getFlakyRow(projectId: string, testName: string) {
+  return db.query.flakyTests.findFirst({
+    where: and(eq(flakyTests.projectId, projectId), eq(flakyTests.testName, testName)),
   });
+}
 
+afterAll(async () => {
+  if (createdProjectIds.length > 0) {
+    // FK cascades remove test_runs, test_results and flaky_tests children.
+    await db.delete(projects).where(inArray(projects.id, createdProjectIds));
+  }
+});
+
+describeWithDb('updateFlakyTests', () => {
   it('creates an active row with firstDetected and correct stats for a new flaky test', async () => {
     const projectId = await seedProject('new-flaky');
     await seedRun(projectId, [
@@ -310,6 +340,19 @@ describeWithDb('updateFlakyTests', () => {
     expect(row!.flakeCount).toBe(2);
     expect(row!.totalRuns).toBe(4);
     expect(row!.flakeRate).toBe('0.5000');
+  });
+
+  it('sums failCount and flakyCount into the persisted flakeCount', async () => {
+    const projectId = await seedProject('flakecount-sum');
+    await seedRun(projectId, [
+      ...repeat(2, 'test-a', 'passed'),
+      ...repeat(1, 'test-a', 'failed'),
+      ...repeat(2, 'test-a', 'flaky'),
+    ]);
+    await updateFlakyTests(projectId);
+    const row = await getFlakyRow(projectId, 'test-a');
+    expect(row!.flakeCount).toBe(3); // 1 failed + 2 flaky — kills failCount - flakyCount
+    expect(row!.totalRuns).toBe(5);
   });
 
   it('preserves firstDetected and updates stats on subsequent calls (conflict path)', async () => {
@@ -573,5 +616,29 @@ describeWithDb('updateFlakyTests', () => {
     expect(third).toEqual({ updated: 1, resolved: 0, newlyFlaky: ['test-a'], newlyResolved: [] });
     const reactivated = await getFlakyRow(projectId, 'test-a');
     expect(reactivated!.status).toBe('active');
+  });
+});
+
+describeWithDb('getProjectStats', () => {
+  it('returns null for a project that does not exist', async () => {
+    expect(await getProjectStats('00000000-0000-0000-0000-000000000000')).toBeNull();
+  });
+
+  it('counts active flaky tests, resolved-this-week, and run totals', async () => {
+    const projectId = await seedProject('stats');
+    await seedRun(projectId, [...repeat(3, 'x', 'passed')]); // 1 run, totalTests 3
+    const base = { projectId, testFile: 's.ts', flakeCount: 1, totalRuns: 3, flakeRate: '0.3300' };
+    await db.insert(flakyTests).values([
+      { ...base, testName: 'a', status: 'active', firstDetected: new Date(), lastSeen: new Date() },
+      { ...base, testName: 'b', status: 'active', firstDetected: new Date(), lastSeen: new Date() },
+      { ...base, testName: 'c', status: 'resolved', firstDetected: new Date(), lastSeen: new Date() },
+      { ...base, testName: 'd', status: 'resolved', firstDetected: new Date(),
+        lastSeen: new Date(Date.now() - 30 * 864e5) }, // outside the 7-day window
+    ]);
+    const stats = await getProjectStats(projectId);
+    expect(stats!.activeFlakyTests).toBe(2);   // kills status='active'→'' and count(*)→''
+    expect(stats!.resolvedThisWeek).toBe(1);    // kills the -7→+7 window flip and status='resolved'
+    expect(stats!.totalRuns).toBe(1);
+    expect(stats!.totalTests).toBe(3);          // kills the select({}) mutant
   });
 });

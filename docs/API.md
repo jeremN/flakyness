@@ -734,6 +734,15 @@ Requires the admin Bearer token (see [Admin Endpoints](#admin-endpoints)), not a
 
 Only `"ignored"` (mute) and `"active"` (unmute) are accepted. `"resolved"` is system-managed and rejected with `400`. Reconcile passes (triggered on every report ingest) never overwrite an `"ignored"` status back to `"active"` or `"resolved"` — an operator must explicitly unmute.
 
+A manual mute sets `mute_source` to `"manual"` and clears any auto-quarantine
+expiry — manual mutes are **indefinite** and never auto-released by the
+auto-quarantine engine (which only ever releases `mute_source: "auto"` rows).
+A manual unmute clears `mute_source` back to `null` and stamps
+`quarantine_released_at`. Both actions append one row to the internal
+`quarantine_events` audit trail (`event: "manual_mute"` /
+`"manual_unmute"`, `source: "manual"`) — there is no API endpoint to read
+this table in v1; it exists for future auditing/UI.
+
 **Response:**
 ```json
 {
@@ -787,6 +796,10 @@ GET /api/v1/admin/projects
       "minRuns": null,
       "webhookUrl": null,
       "retentionDays": null,
+      "autoQuarantineEnabled": false,
+      "quarantineThreshold": null,
+      "quarantineMinRuns": null,
+      "quarantineTtlDays": null,
       "stats": {
         "totalRuns": 150,
         "totalTests": 5000,
@@ -810,6 +823,13 @@ no webhook is configured.
 [Prune Project Data](#prune-project-data). `null` (the default for every
 project, including ones created before this field existed) means **keep
 forever**; no data is ever deleted automatically.
+
+`autoQuarantineEnabled`, `quarantineThreshold`, `quarantineMinRuns`, and
+`quarantineTtlDays` configure auto-quarantine — see
+[Update Project Flakiness Config](#update-project-flakiness-config).
+`autoQuarantineEnabled` defaults to `false` (opt-in, current behavior
+unchanged); the other three are `null` until overridden, meaning they use
+their respective built-in defaults.
 
 ### Create Project
 
@@ -863,11 +883,11 @@ PATCH /api/v1/admin/projects/:id
 ```
 
 Update a project's per-project flakiness detection overrides, its
-transition-notification webhook, and/or its data retention. Fields omitted
-from the body are left unchanged; sending a field as `null` explicitly clears
-it back to the built-in default (or, for `webhookUrl`, disables the webhook;
-for `retentionDays`, reverts to "keep forever"). At least one field is
-required.
+transition-notification webhook, its data retention, and/or its
+auto-quarantine config. Fields omitted from the body are left unchanged;
+sending a field as `null` explicitly clears it back to the built-in default
+(or, for `webhookUrl`, disables the webhook; for `retentionDays`, reverts to
+"keep forever"). At least one field is required.
 
 **Body (all fields optional, but at least one required):**
 ```json
@@ -876,7 +896,11 @@ required.
   "windowDays": 30,
   "minRuns": 5,
   "webhookUrl": "https://example.com/hooks/flackyness",
-  "retentionDays": 60
+  "retentionDays": 60,
+  "autoQuarantineEnabled": true,
+  "quarantineThreshold": 0.25,
+  "quarantineMinRuns": 5,
+  "quarantineTtlDays": 10
 }
 ```
 
@@ -885,8 +909,12 @@ required.
 | `flakeThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is considered flaky. `null` resets to the default (`0.05`). |
 | `windowDays` | integer \| null | `[1, 90]` | Analysis window in days used by background flakiness reconciliation. `null` resets to the default (`14`). |
 | `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
-| `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` disables the webhook. |
+| `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks) — **and** on auto-quarantine entry/exit — see [Auto-Quarantine Webhooks](#auto-quarantine-webhooks). Both share this one URL. `null` disables both. |
 | `retentionDays` | integer \| null | `[1, 3650]` | Days of `test_runs` history to keep — see [Prune Project Data](#prune-project-data). `null` (the default) means **keep forever**; no global default exists. |
+| `autoQuarantineEnabled` | boolean | — | Turns auto-quarantine on/off for this project. Defaults to `false` (opt-in; current behavior unchanged). |
+| `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
+| `quarantineMinRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is (re-)quarantined. `null` resets to the resolved `minRuns`. |
+| `quarantineTtlDays` | integer \| null | `[1, 365]` | Mandatory TTL of an auto-quarantine, in days. `null` resets to the default (`7`). |
 
 **Response (200):**
 ```json
@@ -900,13 +928,18 @@ required.
     "windowDays": 30,
     "minRuns": 5,
     "webhookUrl": "https://example.com/hooks/flackyness",
-    "retentionDays": 60
+    "retentionDays": 60,
+    "autoQuarantineEnabled": true,
+    "quarantineThreshold": 0.25,
+    "quarantineMinRuns": 5,
+    "quarantineTtlDays": 10
   }
 }
 ```
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
-`webhookUrl`, or an empty body) and `404` if the project doesn't exist.
+`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, or
+an empty body) and `404` if the project doesn't exist.
 
 > **The retention/window guard:** `retentionDays` may never be lower than the
 > project's *resolved* flakiness `windowDays` (the stored override if set,
@@ -988,6 +1021,52 @@ for a future release and is always `null` in v1.
   in v1 (no protection against pointing the webhook at an internal/private
   address); this is a deliberate tradeoff for a single-operator deployment,
   not an oversight.
+
+### Auto-Quarantine Webhooks
+
+Set `webhookUrl` via [Update Project Flakiness Config](#update-project-flakiness-config)
+— the same URL used for [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks)
+— to also get a notification whenever the auto-quarantine engine promotes a
+test into quarantine or releases one back out. These only fire for a project
+with `autoQuarantineEnabled: true`; see
+[Get Quarantine List](#get-quarantine-list-ci-consumable) for how a
+quarantined test shows up in `muted`/`grepInvert`.
+
+**Trigger:** the same background reconciliation that runs after every
+`POST /api/v1/reports` ingest, immediately after flaky-test detection
+settles (auto-quarantine reads the freshly-reconciled `flaky_tests` rows).
+If that reconciliation promotes a test into quarantine or releases one past
+its TTL, **and** the project has a `webhookUrl` configured, the API sends
+**one** POST request per transition (a single ingest can therefore fire more
+than one of these, unlike the flaky-transition webhook which sends at most
+one per ingest):
+
+```http
+POST <webhookUrl>
+Content-Type: application/json
+```
+```json
+{
+  "event": "quarantine_entered",
+  "project": { "id": "uuid", "name": "my-project" },
+  "testName": "login test flakes on retry",
+  "flakeRate": 0.42,
+  "expiresAt": "2024-12-18T00:00:00.000Z"
+}
+```
+
+`event` is `quarantine_entered` when a test crosses `quarantineThreshold` and
+is auto-muted, or `quarantine_released` when an auto-mute's TTL expires and
+the test returns to `active`. `flakeRate` is the test's flake rate at the
+time of the transition (`null` if unavailable). `expiresAt` is the ISO
+timestamp the quarantine will auto-release at — only populated for
+`quarantine_entered`; it is always `null` for `quarantine_released`.
+
+**Delivery semantics (v1):** identical to the flaky-transition webhook above
+— one best-effort POST per transition, a 5-second timeout, no retries, no
+payload signing, and delivery failures never block or delay the `201`
+ingest response (or `?wait=true`'s reconcile, which only waits for the
+quarantine *database* state to settle, never for webhook delivery).
 
 ### Delete Project
 

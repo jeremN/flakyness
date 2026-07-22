@@ -293,6 +293,8 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 047 | Phase B of the mutation-testing effort: nightly Stryker mutation testing — broad per-package run (apps/api + dashboard $lib), narrow per-file gate over the A1–A3b hardened set, isolated `pool:'threads'` Stryker vitest config, advisory nightly `Mutation` workflow | P3 | M | A1–A3b (plans 042–046) | OPEN (PR pending) |
 | 048 | Harden `projects.ts` + `rate-limit.ts` mutation coverage; ratchet their gate floors | P3 | S–M | #13 | DONE |
 | 049 | Promote `flakiness.ts` + parsers (`junit`/`playwright`) into the mutation gate with calibrated floors | P3 | M | #14 | DONE |
+| 050 | Roadmap #1: `ReportParser` registry — dispatch ingestion by report shape (`detect`/`parse` interface, register-only extensibility) | P2 | M | — | DONE (merged via PR #106, commit `c759cf8`) |
+| 051 | Roadmap #2: opt-in per-project auto-quarantine — stricter `quarantine_threshold`, TTL release + clean-slate, `reconcileQuarantine` engine in the post-ingest reconcile, entry/exit webhooks, `quarantine_events` audit + manual-mute provenance. Default off = zero behavior change | P2 | M–L | 050 (soft; builds on the merged registry) | OPEN (PR pending) |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -733,6 +735,28 @@ rationale. Items 5–7 remain unplanned.
       tests (fixing the race) is what would let this floor tighten.
     Raising real coverage on the coarse route files (#13) remains the honest way to lift
     both floors over time.
+
+16. **[OPEN — deferred from plan 051's final whole-branch review, not blocking]** Auto-quarantine
+    shipped READY-TO-MERGE (0 Critical/0 Important), but three low-value tightenings were
+    consciously deferred to a follow-up rather than done in-branch:
+    - **Threshold-floor re-check on `flakeThreshold` raise.** The admin PATCH validates
+      `quarantine_threshold ≥ resolved flakeThreshold` only when `quarantine_threshold` is in
+      the body; raising `flakeThreshold` above a *stored/default* `quarantine_threshold` (e.g.
+      default 0.20) leaves the resolved quarantine bar below the detection bar. **Benign** —
+      Promote requires `status='active'` (i.e. `flakeRate ≥ flakeThreshold`), so quarantine
+      can never fire below the detection bar; only the reported-only band collapses. Fix
+      (optional): re-validate the floor against the resolved value whenever *either* field
+      changes.
+    - **Audit writes are non-transactional.** Both the engine (`reconcileQuarantine`) and the
+      manual `PATCH /flaky/:id` handler write the `quarantine_events` row as a *separate*
+      statement after the status update; a failed audit insert would leave an un-audited
+      transition. Consistent within the feature; wrapping either in a transaction is a
+      reasonable follow-up.
+    - **N+1 clean-slate `count(*)`.** Promote issues one fresh-run count per candidate;
+      bounded to tens per project today, batchable if volume grows.
+    `quarantine.ts` is also **not yet in the automated Stryker mutation gate** — its assertions
+    are hand-proven (each engine test mutation-checked at review), but a future pass could
+    promote it into the gate like `flakiness.ts`/parsers (cf. #14).
 
 ## Findings considered and rejected
 

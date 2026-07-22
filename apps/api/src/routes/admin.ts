@@ -56,6 +56,10 @@ const projectConfigPatchSchema = z
     // schema.ts). Must never undercut the project's resolved flakiness
     // windowDays — enforced below, after parsing.
     retentionDays: z.number().int().min(1).max(3650).nullable().optional(),
+    autoQuarantineEnabled: z.boolean().optional(),
+    quarantineThreshold: z.number().min(0).max(1).nullable().optional(),
+    quarantineMinRuns: z.number().int().min(1).max(100).nullable().optional(),
+    quarantineTtlDays: z.number().int().min(1).max(365).nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
 
@@ -77,6 +81,10 @@ adminRouter.get('/projects', async (c) => {
       minRuns: projects.minRuns,
       webhookUrl: projects.webhookUrl,
       retentionDays: projects.retentionDays,
+      autoQuarantineEnabled: projects.autoQuarantineEnabled,
+      quarantineThreshold: projects.quarantineThreshold,
+      quarantineMinRuns: projects.quarantineMinRuns,
+      quarantineTtlDays: projects.quarantineTtlDays,
       totalRuns: sql<number>`coalesce((
         select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
       ), 0)`,
@@ -101,6 +109,10 @@ adminRouter.get('/projects', async (c) => {
     minRuns: p.minRuns,
     webhookUrl: p.webhookUrl,
     retentionDays: p.retentionDays,
+    autoQuarantineEnabled: p.autoQuarantineEnabled,
+    quarantineThreshold: p.quarantineThreshold !== null ? Number(p.quarantineThreshold) : null,
+    quarantineMinRuns: p.quarantineMinRuns,
+    quarantineTtlDays: p.quarantineTtlDays,
     stats: {
       totalRuns: p.totalRuns,
       totalTests: p.totalTests,
@@ -249,6 +261,24 @@ adminRouter.patch(
       }
     }
 
+    // quarantine_threshold must be >= the RESOLVED flakeThreshold. If this same
+    // request also sets flakeThreshold (including an explicit null reset),
+    // validate against the value being written, not the stale stored one.
+    if (typeof data.quarantineThreshold === 'number') {
+      const effectiveFlakeThreshold =
+        'flakeThreshold' in data
+          ? resolveProjectConfig({
+              ...existing,
+              flakeThreshold: data.flakeThreshold == null ? null : data.flakeThreshold.toFixed(4),
+            }).flakeThreshold
+          : resolveProjectConfig(existing).flakeThreshold;
+      if (data.quarantineThreshold < effectiveFlakeThreshold) {
+        return c.json({
+          error: `quarantineThreshold (${data.quarantineThreshold}) must be >= the flakeThreshold (${effectiveFlakeThreshold})`,
+        }, 400);
+      }
+    }
+
     // Build the .set() object only from keys present in the parsed body, so
     // an omitted field leaves the stored value untouched while an explicit
     // `null` clears it back to the default.
@@ -271,6 +301,12 @@ adminRouter.patch(
     if ('retentionDays' in data) {
       updates.retentionDays = data.retentionDays ?? null;
     }
+    if ('autoQuarantineEnabled' in data) updates.autoQuarantineEnabled = data.autoQuarantineEnabled;
+    if ('quarantineThreshold' in data)
+      updates.quarantineThreshold =
+        data.quarantineThreshold == null ? null : data.quarantineThreshold.toFixed(4);
+    if ('quarantineMinRuns' in data) updates.quarantineMinRuns = data.quarantineMinRuns ?? null;
+    if ('quarantineTtlDays' in data) updates.quarantineTtlDays = data.quarantineTtlDays ?? null;
 
     const [project] = await db
       .update(projects)
@@ -286,6 +322,10 @@ adminRouter.patch(
         minRuns: projects.minRuns,
         webhookUrl: projects.webhookUrl,
         retentionDays: projects.retentionDays,
+        autoQuarantineEnabled: projects.autoQuarantineEnabled,
+        quarantineThreshold: projects.quarantineThreshold,
+        quarantineMinRuns: projects.quarantineMinRuns,
+        quarantineTtlDays: projects.quarantineTtlDays,
       });
 
     if (!project) {
@@ -298,6 +338,8 @@ adminRouter.patch(
       project: {
         ...project,
         flakeThreshold: project.flakeThreshold !== null ? Number(project.flakeThreshold) : null,
+        quarantineThreshold:
+          project.quarantineThreshold !== null ? Number(project.quarantineThreshold) : null,
       },
     });
   }

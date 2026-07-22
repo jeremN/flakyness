@@ -6,7 +6,13 @@ import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
-import { sendFlakyTransitionWebhook, type FlakyTransitionPayload } from '../services/notifications';
+import { reconcileQuarantine, type QuarantineTransition } from '../services/quarantine';
+import {
+  sendFlakyTransitionWebhook,
+  type FlakyTransitionPayload,
+  sendQuarantineWebhook,
+  type QuarantineWebhookPayload,
+} from '../services/notifications';
 import { logger } from '../middleware/logger';
 import { reportsIngestedTotal, reportParseFailuresTotal } from '../metrics';
 
@@ -164,6 +170,45 @@ reports.post(
     // double every ingest's DB work.
     const reconcilePromise = updateFlakyTests(project.id, resolveProjectConfig(project));
 
+    // Auto-quarantine reconcile runs AFTER detection settles (release+promote
+    // operate on the freshly-reconciled flaky_tests), in BOTH modes. Kept as
+    // its own promise so wait=true can await the DB settle while webhook
+    // delivery stays fire-and-forget.
+    const quarantinePromise = reconcilePromise.then(
+      () => reconcileQuarantine(project.id, project),
+      // Detect failed → nothing to quarantine; the flaky .catch already logged it.
+      (): QuarantineTransition[] => []
+    );
+
+    // Best-effort quarantine webhooks — fire-and-forget in both modes, exactly
+    // like the flaky webhook above: a slow/failed receiver must never block
+    // wait=true nor fail the ingest (already committed).
+    quarantinePromise
+      .then(async (transitions) => {
+        if (!project.webhookUrl || transitions.length === 0) return;
+        for (const t of transitions) {
+          const delivered = await sendQuarantineWebhook(project.webhookUrl, {
+            event: t.event === 'entered' ? 'quarantine_entered' : 'quarantine_released',
+            project: { id: project.id, name: project.name },
+            testName: t.testName,
+            flakeRate: t.flakeRate,
+            expiresAt: t.expiresAt ? t.expiresAt.toISOString() : null,
+          } satisfies QuarantineWebhookPayload);
+          if (!delivered) {
+            logger.error('Quarantine webhook delivery failed', {
+              projectId: project.id, projectName: project.name, testName: t.testName,
+            });
+          }
+        }
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error('Quarantine reconcile failed', {
+          projectId: project.id,
+          error: { name: err instanceof Error ? err.name : 'Error', message },
+        });
+      });
+
     // Deliver a best-effort webhook notification off the same result, in
     // BOTH modes, always fire-and-forget: awaiting a network POST here (which
     // can hang on a slow/unreachable receiver) would turn `?wait=true` into
@@ -220,6 +265,16 @@ reports.post(
         const message = err instanceof Error ? err.message : 'Unknown error';
         reconcile = { error: message };
       }
+
+      // Await the quarantine DB reconcile too, so an immediate GET
+      // /projects/:id/quarantine reflects promotion/release with no poll —
+      // honoring the same wait=true consistency contract as flaky detection.
+      //
+      // Bound the quarantine DB settle by the same timeout as detection — a
+      // slow reconcile must not hang wait=true past RECONCILE_WAIT_TIMEOUT_MS.
+      // The background quarantinePromise keeps running (its fire-and-forget
+      // .catch remains its durable consumer); we only stop AWAITING it here.
+      await withTimeout(quarantinePromise, RECONCILE_WAIT_TIMEOUT_MS).catch(() => {});
     }
 
     return c.json({

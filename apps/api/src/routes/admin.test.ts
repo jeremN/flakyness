@@ -603,6 +603,77 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(body.error).toContain('windowDays (30)');
     });
 
+    it('persists auto-quarantine config and echoes it back', async () => {
+      const projectId = await createProject('quarantine-set');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoQuarantineEnabled: true, quarantineThreshold: 0.25, quarantineMinRuns: 5, quarantineTtlDays: 10 }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.project.autoQuarantineEnabled).toBe(true);
+      expect(Number(body.project.quarantineThreshold)).toBeCloseTo(0.25, 4);
+      expect(body.project.quarantineMinRuns).toBe(5);
+      expect(body.project.quarantineTtlDays).toBe(10);
+    });
+
+    it('rejects a quarantineThreshold below the flakeThreshold', async () => {
+      const projectId = await createProject('quarantine-below-threshold');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.1, quarantineThreshold: 0.05 }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/must be >= the flakeThreshold/);
+    });
+
+    it('rejects a quarantineThreshold below the flakeThreshold reset to default by the same request', async () => {
+      const projectId = await createProject('quarantine-below-reset-default');
+
+      // Store an override (0.02) that is BELOW the built-in default (0.05).
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.02 }),
+      });
+
+      // This same request resets flakeThreshold to null (-> default 0.05)
+      // while setting quarantineThreshold to 0.03. The guard must validate
+      // against the resolved default (0.05), not the stale stored override
+      // (0.02) -- 0.03 < 0.05, so this must be rejected.
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: null, quarantineThreshold: 0.03 }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/must be >= the flakeThreshold/);
+    });
+
+    it('allows a quarantineThreshold equal to the flakeThreshold', async () => {
+      const projectId = await createProject('quarantine-equal-threshold');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.1, quarantineThreshold: 0.1 }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Number(body.project.quarantineThreshold)).toBeCloseTo(0.1, 4);
+    });
+
+    it('rejects an out-of-range quarantineTtlDays', async () => {
+      const projectId = await createProject('quarantine-bad-ttl');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quarantineTtlDays: 0 }),
+      });
+      expect(res.status).toBe(400);
+    });
+
     it('rejects an empty body', async () => {
       const projectId = await createProject('empty-body');
       const res = await app.request(`/api/v1/admin/projects/${projectId}`, {

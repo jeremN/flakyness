@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb, boolean } from 'drizzle-orm/pg-core';
 import type { FailureDetail } from '../parsers/types';
 
 // Projects being tracked
@@ -22,6 +22,16 @@ export const projects = pgTable('projects', {
   // Must never be lower than the resolved flakiness windowDays — see
   // routes/admin.ts.
   retentionDays: integer('retention_days'),
+  // Auto-quarantine (opt-in per project; default off = current behavior).
+  // See plan 051 / docs/superpowers/specs/2026-07-22-auto-quarantine-design.md.
+  autoQuarantineEnabled: boolean('auto_quarantine_enabled').notNull().default(false),
+  // Stricter-than-detection flake rate to auto-quarantine; NULL = default 0.20.
+  // Must be >= the resolved flakeThreshold (validated in routes/admin.ts).
+  quarantineThreshold: decimal('quarantine_threshold', { precision: 5, scale: 4 }),
+  // Min runs before (re-)quarantine; NULL = resolved minRuns.
+  quarantineMinRuns: integer('quarantine_min_runs'),
+  // Mandatory TTL of an auto-quarantine, in days; NULL = default 7.
+  quarantineTtlDays: integer('quarantine_ttl_days'),
 }, (table) => ({
   // Index for token hash lookup (authentication)
   tokenHashIdx: index('projects_token_hash_idx').on(table.tokenHash),
@@ -89,6 +99,15 @@ export const flakyTests = pgTable('flaky_tests', {
   totalRuns: integer('total_runs').default(0),
   flakeRate: decimal('flake_rate', { precision: 5, scale: 4 }), // 0.0000 to 1.0000
   status: varchar('status', { length: 20 }).default('active'), // active, resolved, ignored
+  // Mute provenance: 'manual' | 'auto' | NULL. Only meaningful while
+  // status='ignored'. NULL on a legacy muted row = indefinite manual mute
+  // (never auto-released). See plan 051.
+  muteSource: varchar('mute_source', { length: 10 }),
+  // Auto-quarantine TTL expiry; set for mute_source='auto', NULL otherwise.
+  quarantineExpiresAt: timestamp('quarantine_expires_at'),
+  // When this test last exited quarantine (auto-release OR manual unmute);
+  // anchors the clean-slate rule (fresh runs must post-date it).
+  quarantineReleasedAt: timestamp('quarantine_released_at'),
 }, (table) => ({
   // Composite index for dashboard queries (filter by project + status)
   projectStatusIdx: index('flaky_tests_project_status_idx')
@@ -101,6 +120,23 @@ export const flakyTests = pgTable('flaky_tests', {
     .on(table.projectId, table.testName),
 }));
 
+// Append-only audit of every quarantine transition (auto + manual) — the
+// "traçabilité du mute" (plan 051). No UI in #2; feeds #4's audit view.
+export const quarantineEvents = pgTable('quarantine_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  testName: varchar('test_name', { length: 500 }).notNull(),
+  event: varchar('event', { length: 20 }).notNull(), // entered | released | manual_mute | manual_unmute
+  source: varchar('source', { length: 10 }).notNull(), // auto | manual
+  flakeRate: decimal('flake_rate', { precision: 5, scale: 4 }),
+  threshold: decimal('threshold', { precision: 5, scale: 4 }),
+  ttlDays: integer('ttl_days'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  projectCreatedIdx: index('quarantine_events_project_created_idx')
+    .on(table.projectId, table.createdAt),
+}));
+
 // Type exports for use in application
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -110,3 +146,5 @@ export type TestResult = typeof testResults.$inferSelect;
 export type NewTestResult = typeof testResults.$inferInsert;
 export type FlakyTest = typeof flakyTests.$inferSelect;
 export type NewFlakyTest = typeof flakyTests.$inferInsert;
+export type QuarantineEvent = typeof quarantineEvents.$inferSelect;
+export type NewQuarantineEvent = typeof quarantineEvents.$inferInsert;

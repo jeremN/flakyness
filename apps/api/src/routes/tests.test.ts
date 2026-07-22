@@ -2,9 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { eq } from 'drizzle-orm';
-import { db, flakyTests, testRuns, testResults } from '../db';
+import { eq, and } from 'drizzle-orm';
+import { db, flakyTests, testRuns, testResults, quarantineEvents } from '../db';
 import { updateFlakyTests } from '../services/flakiness';
+import { reconcileQuarantine } from '../services/quarantine';
 import { buildTrend, type TrendRow } from './tests';
 
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -488,6 +489,60 @@ describeWithDb('Tests API Integration Tests', () => {
       expect(getRes.status).toBe(200);
       const getBody = await getRes.json();
       expect(getBody.flakyTest.status).toBe('ignored');
+    });
+
+    it('records mute_source=manual, clears any auto-expiry, and writes an audit event on manual mute', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(200);
+      const [row] = await db.select().from(flakyTests).where(eq(flakyTests.id, flakyId));
+      expect(row.status).toBe('ignored');
+      expect(row.muteSource).toBe('manual');
+      expect(row.quarantineExpiresAt).toBeNull();
+      const events = await db
+        .select()
+        .from(quarantineEvents)
+        .where(and(eq(quarantineEvents.projectId, testProjectId), eq(quarantineEvents.event, 'manual_mute')));
+      expect(events.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('a manually-muted (mute_source=manual) test is immune to auto-release', async () => {
+      // Mute, force an expiry in the past, run reconcileQuarantine, assert still ignored.
+      await db
+        .update(flakyTests)
+        .set({ status: 'ignored', muteSource: 'manual', quarantineExpiresAt: new Date(Date.now() - 1000) })
+        .where(eq(flakyTests.id, flakyId));
+      await reconcileQuarantine(testProjectId, {
+        autoQuarantineEnabled: true,
+        quarantineThreshold: '0.2000',
+        quarantineMinRuns: 3,
+        quarantineTtlDays: 7,
+        flakeThreshold: null,
+        windowDays: null,
+        minRuns: null,
+      });
+      const [row] = await db.select().from(flakyTests).where(eq(flakyTests.id, flakyId));
+      expect(row.status).toBe('ignored');
+    });
+
+    it('sets released_at + mute_source NULL and audits on manual unmute', async () => {
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      expect(res.status).toBe(200);
+      const [row] = await db.select().from(flakyTests).where(eq(flakyTests.id, flakyId));
+      expect(row.muteSource).toBeNull();
+      expect(row.quarantineReleasedAt).not.toBeNull();
+      const events = await db
+        .select()
+        .from(quarantineEvents)
+        .where(and(eq(quarantineEvents.projectId, testProjectId), eq(quarantineEvents.event, 'manual_unmute')));
+      expect(events.length).toBeGreaterThanOrEqual(1);
     });
   });
 

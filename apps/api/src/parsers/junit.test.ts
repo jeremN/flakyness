@@ -309,6 +309,12 @@ describe('JUnit Parser', () => {
     }, 20_000);
   });
 
+  // No-op-confirmation coverage, NOT mutant kills: for any name of length <= the
+  // 500-char cap, every `clamp` operator mutant (`>`->`>=`, `>`->`true`,
+  // `>`->`false`) yields the identical output (slicing a <=cap string is a no-op),
+  // so these two cases are genuine equivalents under the effort's policy. The one
+  // killable clamp mutant — never-truncate (`>`->`false`) — is killed by the
+  // oversized-name case in the `clamps` block above (600-char name -> length<=500).
   describe('clamp boundary', () => {
     it('leaves a name shorter than the cap unchanged', () => {
       const shortName = 'x'.repeat(10);

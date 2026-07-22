@@ -25,4 +25,8 @@ describe('resolveWebhookKind', () => {
   it('falls back to generic on an unparseable URL', () => {
     expect(resolveWebhookKind('not a url', null)).toBe('generic');
   });
+
+  it('does not treat a spoofed host containing hooks.slack.com as a substring as slack', () => {
+    expect(resolveWebhookKind('https://hooks.slack.com.evil.example/x', null)).toBe('generic');
+  });
 });

@@ -35,7 +35,7 @@ function flakyText(event: FlakyTransitionEvent, links: DeepLinks): string {
   if (event.newlyResolved.length > 0) {
     parts.push(`✅ ${event.newlyResolved.length} resolved: ${event.newlyResolved.map(escapeMrkdwn).join(', ')}`);
   }
-  return `${project} on \`${event.run.branch}\` — ${parts.join('  ·  ')}`;
+  return `${project} on \`${event.run.branch.replace(/`/g, "'")}\` — ${parts.join('  ·  ')}`;
 }
 
 function quarantineText(event: QuarantineEvent, links: DeepLinks): string {

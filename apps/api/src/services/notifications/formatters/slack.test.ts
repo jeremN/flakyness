@@ -105,4 +105,33 @@ describe('formatSlack', () => {
     expect(body.text).toContain('a&lt;b&gt;&amp;c');
     expect(body.text).not.toContain('<https://evil.example|Click>');
   });
+
+  it('neutralizes a backtick in the branch so it cannot break out of the code span', () => {
+    const evilBranch: FlakyTransitionEvent = {
+      kind: 'flaky_transition',
+      project: { id: 'p-1', name: 'demo' },
+      newlyFlaky: ['a'],
+      newlyResolved: [],
+      run: { branch: 'main`<https://evil.example|x>', commitSha: 'abc' },
+    };
+    const body = formatSlack(evilBranch, { dashboard: null, test: null });
+    // the injected backtick must be gone (no code-span breakout freeing the <..|..> into a live link)
+    expect(body.text).not.toContain('`<https://evil.example|x>');
+    // only the two intended code-span delimiters remain — an odd count would mean a broken span
+    expect((body.text.match(/`/g) || []).length).toBe(2);
+  });
+
+  it('escapes mrkdwn special chars in a quarantine event project name and test name', () => {
+    const evil: QuarantineEvent = {
+      kind: 'quarantine',
+      transition: 'entered',
+      project: { id: 'p-1', name: 'a<b>&c' },
+      testName: '<https://evil.example|owned>',
+      flakeRate: 0.42,
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+    };
+    const body = formatSlack(evil, { dashboard: null, test: null });
+    expect(body.text).toContain('a&lt;b&gt;&amp;c');
+    expect(body.text).not.toContain('<https://evil.example|owned>');
+  });
 });

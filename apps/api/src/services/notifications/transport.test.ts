@@ -16,6 +16,7 @@ describe('postWebhook', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ a: 1 }),
+        signal: expect.any(AbortSignal),
       })
     );
   });

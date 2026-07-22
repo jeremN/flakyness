@@ -1,30 +1,50 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-// Per-file floors over the A1–A3b hardened set. floor = floor(baseline) - 5.
-// Baselines recorded 2026-07-21. Bump deliberately, like the route-count guard.
-// Broad-run scores for non-hardened files are report-only.
+// Per-file floors over the A1–A3b hardened set, plus plan 048's hardening of
+// projects.ts/rate-limit.ts. floor = floor(reliableLow) - 5. Baselines
+// recorded 2026-07-21 (A1-A3b + Phase B); projects.ts/rate-limit.ts
+// re-baselined 2026-07-22 (plan 048). Bump deliberately, like the
+// route-count guard. Broad-run scores for non-hardened files are report-only.
 //
-// The 4 dashboard baselines + API rate-limit.ts reproduce exactly run-to-run.
-// The two other API floors were lowered from earlier, higher recordings — for
-// two DIFFERENT reasons, not one:
+// The 4 dashboard baselines reproduce exactly run-to-run. The three API
+// floors do NOT — each is calibrated off a reliable low (lowest of ≥2 scored
+// runs), for different reasons:
 //  - logger.ts: an earlier concurrent-load run mis-scored 5 Survived mutants as
 //    Timeout (this formula counts Timeout like Killed), inflating it to 79.41%.
 //    Reliable isolated timeout-free score = 72.06% (49 killed, reproduced 4x).
 //    timeoutMS/timeoutFactor in apps/api's Stryker config now suppress that.
-//  - projects.ts: its score is non-deterministic (~54-58%) because the projects
-//    route tests hit the repo's documented un-awaited reconcile race (AGENTS.md)
-//    — ~12 mutants swing Killed<->Survived between runs, NOT a timeout artifact;
-//    the timeout knob does not fix it. Never measured in isolation; floor 48 is
-//    set below the reliable low (~53.7%). Stabilizing that race is what would
-//    let this floor tighten.
+//  - projects.ts: its score is non-deterministic (pre-048: ~54-58%; post-048:
+//    ~66-68%) because the projects route tests hit the repo's documented
+//    un-awaited reconcile race (AGENTS.md) — post-048, 84+ of 298 mutants swing
+//    Killed<->Survived between runs (up from the pre-048 ~12; the wider new
+//    coverage surface exposes the race to more mutants), but flips run in
+//    both directions and roughly cancel, so the aggregate itself only moves
+//    ~1-2pp per run. NOT a timeout artifact; the timeout knob does not fix
+//    it. Plan 048 hardened the query-param clamp/fallback, status-filter,
+//    and populated-trend branches (projects.test.ts); three post-hardening
+//    scored runs came back 67.11%, 68.46%, and 66.44%, of-total. Floor 61 is
+//    set below the reliable low (66.44%). Stabilizing the reconcile race is
+//    what would let this floor tighten further.
+//  - rate-limit.ts: plan 048 hardened the multi-hop/whitespaced XFF parsing,
+//    trusted-proxy-list trim, 429 body, and exported-constant branches
+//    (rate-limit.test.ts). Three post-hardening scored runs came back
+//    88.00%, 86.00%, and 86.00%, of-total — a genuine ~2pp wobble that
+//    contradicts the pre-048 assumption that this file "reproduces exactly."
+//    Root cause: the one mutant that flips (rate-limit.ts:99, the
+//    adminRateLimit message string) is a deliberately-unhardened accepted
+//    residual (see plans/README.md #13) whose Killed/Survived status is
+//    apparently sensitive to cross-test timing, not a flaw in the new
+//    assertions — every mutant the new tests target killed in all three
+//    runs. Floor 81 is set below the reliable low (86.00%), same
+//    margin-of-safety policy as projects.ts.
 // Raising real coverage on the coarse route files is the honest way to lift
-// these floors (see plans/README.md #13/#15).
+// these floors further (see plans/README.md #13/#15).
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
-  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/rate-limit.ts', floor: 57 }, // baseline: 62.00%
-  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/routes/projects.ts',       floor: 48 }, // baseline: ~53.7% (reliable low; race-wobbly)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/rate-limit.ts', floor: 81 }, // baseline: 86.00% (reliable low; wobbles ~2pp post-048 — see comment above)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/routes/projects.ts',       floor: 61 }, // baseline: 66.44% (reliable low; race-wobbly)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

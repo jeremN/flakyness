@@ -291,6 +291,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 045 | A3 of the mutation-testing effort: extract the dashboard's inlined pure view-logic to `$lib` (`format`/`status`/`error-page`/`href`) with node tests; components rewired behavior-preservingly. **Render half (jsdom) deferred to A3b** — upstream vite-plugin-svelte × Vitest 4 gap (see AGENTS.md) | P3 | M | A1/A2 (plans 042–044) | DONE (merged via PR #100, commit `1b605c9`; render half → plan 046) |
 | 046 | A3b of the mutation-testing effort: render-test the 8 route components + ErrorState in **Vitest browser mode** (isolated `vitest.browser.config.ts`, `vitest-browser-svelte`, headless Chromium; default `test` stays node-only), plus an advisory `component-tests` CI job; every assertion mutation-proven — closes A3's deferred render half via the documented browser-mode unblock path | P3 | M | A3 (plan 045) | DONE (merged via PR #101, commit `905843f`) |
 | 047 | Phase B of the mutation-testing effort: nightly Stryker mutation testing — broad per-package run (apps/api + dashboard $lib), narrow per-file gate over the A1–A3b hardened set, isolated `pool:'threads'` Stryker vitest config, advisory nightly `Mutation` workflow | P3 | M | A1–A3b (plans 042–046) | OPEN (PR pending) |
+| 048 | Harden `projects.ts` + `rate-limit.ts` mutation coverage; ratchet their gate floors | P3 | S–M | #13 | DONE |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -615,16 +616,69 @@ rationale. Items 5–7 remain unplanned.
     Added a render assertion (`toHaveClass('bg-purple-50')` on the active 'Flaky Tests' link, and
     `.not.toHaveClass` on an inactive one to guard the ternary discriminating); mutation-proven
     (dropping `bg-purple-50` from the active branch reds it, revert byte-clean).
-13. **`projects.ts` / `rate-limit.ts`'s per-file mutation floors (48 / 57) are coarse
-    regression guards, not full-coverage targets.** Found while proving Phase B's gate
-    bites (plan 047): only `projects.ts`'s `/analysis` slice was hardened in A2b (plan
-    044) — the file has 298 total mutants and ~17% land as `NoCoverage` (mostly zod
-    `enum([...])` string-literal rejections nothing asserts against), so much of the
-    298-mutant route file is thinly covered; `rate-limit.ts` has a smaller but analogous
-    gap (~7 `NoCoverage` mutants of 50). A future hardening pass on either file would
-    raise its true mutation score, which should raise its recorded baseline and let the
-    floor be tightened — not a blocker at current coverage, since the floors are honest
-    guards against regression from *today's* baseline, not aspirational targets.
+13. **[RESOLVED on branch `test/harden-projects-ratelimit-mutation`] `projects.ts` /
+    `rate-limit.ts`'s per-file mutation floors (48 / 57) are coarse regression guards,
+    not full-coverage targets.** Found while proving Phase B's gate bites (plan 047):
+    only `projects.ts`'s `/analysis` slice was hardened in A2b (plan 044) — the file
+    has 298 total mutants and ~17% land as `NoCoverage` (mostly zod `enum([...])`
+    string-literal rejections nothing asserts against), so much of the 298-mutant
+    route file is thinly covered; `rate-limit.ts` has a smaller but analogous gap
+    (~7 `NoCoverage` mutants of 50).
+
+    **Resolved by plan 048** (2026-07-21/22): added biting tests for the killable
+    survivor set on both files, then re-measured and ratcheted the floors.
+    - **New floors**: `projects.ts` **48 → 61** (baseline 66.44%, the reliable low
+      across three post-hardening scored runs: 67.11%, 68.46%, 66.44%, of-total).
+      `rate-limit.ts` **57 → 81** (baseline 86.00%, the reliable low across three
+      post-hardening runs: 88.00%, 86.00%, 86.00%, of-total).
+    - **Killed vs. accepted, from Task 1's pre-hardening triage** (136 survivors on
+      `projects.ts` = 85 Survived + 51 NoCoverage of 298; 18 on `rate-limit.ts` = 11
+      Survived + 7 NoCoverage of 50): on `projects.ts`, ≈53 mutants were killable via
+      the tests plan 048 wrote (query-param clamp/fallback branches, status-filter
+      variants, populated-trend rate math, malformed-id 400 guards on 5 endpoints);
+      ≈54 were new findings deliberately left for a future pass (see residuals below);
+      ≈13 pattern-matched a Stryker `perTest` coverage-mapping measurement anomaly
+      (already killed in reality under plain Vitest — 3 directly verified: the
+      `buildGrepInvert` empty-string return, the blanked `'threshold'` query key, and
+      the gutted `/:id/runs` handler body); ≈13-16 were genuine accepted
+      equivalents/cost-prohibitive caps. On `rate-limit.ts`, plan 048 killed ≈11
+      of the 18 survivors (the file moved 32→43 killed): its original targets
+      (multi-hop/whitespaced XFF parsing, trusted-proxy-list trim, 429 body,
+      `REPORT_RATE_LIMIT`/`API_RATE_LIMIT` constants) plus the findings folded in
+      after Task 1's measurement — the empty-XFF `if (forwarded)` fallback and the
+      un-exercised `reportRateLimit` key generator + its message. The remaining
+      survivors are accepted equivalents (see residuals below): the
+      `apiRateLimit`/`adminRateLimit` baked-in messages, `standardHeaders:
+      'draft-7'`, and the defensive deep optional-chain.
+    - **Accepted residuals** (recorded so a future pass doesn't re-audit them, not
+      chased by plan 048): the `QUARANTINE_ROW_CAP` / `RUN_RESULTS_CAP` truncation
+      caps (need >1000/>2000-row fixtures to exercise); the trend date-label
+      cosmetics (`projects.ts:491-492` — only `.length` is asserted, never label
+      text); the `apiRateLimit`/`adminRateLimit` baked-in messages
+      (`rate-limit.ts:88,99` — pinning them means flooding the module-level
+      singleton limiters, which would pollute the shared `'unknown'` bucket other
+      enforcement tests depend on); `standardHeaders: 'draft-7'` and the defensive
+      deep optional-chain guarding `c.env.incoming.socket.remoteAddress`
+      (`rate-limit.ts:34,60`); and the ~13 `projects.ts` measurement-anomaly
+      mis-reports noted above.
+    - **New finding surfaced while re-measuring (not in the original plan)**: contrary
+      to the pre-048 assumption that `rate-limit.ts` "reproduces exactly" run-to-run
+      (only `projects.ts` was known to wobble, via the reconcile race), it does not
+      at this hardened coverage level — three post-hardening runs showed a genuine
+      ~2pp swing (88.00% / 86.00% / 86.00%). Root cause: the one mutant that flips
+      (`rate-limit.ts:99`, the `adminRateLimit` message string) is itself one of the
+      accepted residuals above, and every mutant the new tests actually target stayed
+      killed across all three runs — so the wobble does not undermine the new
+      assertions, it just means `rate-limit.ts`'s floor is now calibrated off a
+      reliable low (three runs, like `projects.ts`) rather than a single reproduced
+      score. `projects.ts` itself now shows far more individual mutants swinging
+      between runs (84 of 298, up from the pre-048 ~12) because the wider coverage
+      surface exposes more mutants to the same reconcile race — but the flips run in
+      both directions and roughly cancel, so the aggregate score still only moves
+      ~1-2pp per run.
+    - Raising real coverage on the coarse route files remains the honest way to lift
+      these floors further; the residuals above are exactly where a future pass
+      should start.
 14. **Promote `flakiness.ts` / `parsers/**` into the gated set once scored.** The broad
     `apps/api` Stryker run (`pnpm --filter api test:mutation`) already mutates these
     files, but `scripts/mutation-gate.mjs`'s hardened set only covers

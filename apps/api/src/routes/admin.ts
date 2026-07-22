@@ -261,12 +261,16 @@ adminRouter.patch(
       }
     }
 
-    // quarantine_threshold must be >= the RESOLVED flakeThreshold (this request's
-    // flakeThreshold if it sets one, else the stored/default value).
+    // quarantine_threshold must be >= the RESOLVED flakeThreshold. If this same
+    // request also sets flakeThreshold (including an explicit null reset),
+    // validate against the value being written, not the stale stored one.
     if (typeof data.quarantineThreshold === 'number') {
       const effectiveFlakeThreshold =
-        'flakeThreshold' in data && data.flakeThreshold != null
-          ? data.flakeThreshold
+        'flakeThreshold' in data
+          ? resolveProjectConfig({
+              ...existing,
+              flakeThreshold: data.flakeThreshold == null ? null : data.flakeThreshold.toFixed(4),
+            }).flakeThreshold
           : resolveProjectConfig(existing).flakeThreshold;
       if (data.quarantineThreshold < effectiveFlakeThreshold) {
         return c.json({

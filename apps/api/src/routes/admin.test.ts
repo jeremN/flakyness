@@ -629,6 +629,41 @@ describeAdmin('Admin API Integration Tests', () => {
       expect((await res.json()).error).toMatch(/must be >= the flakeThreshold/);
     });
 
+    it('rejects a quarantineThreshold below the flakeThreshold reset to default by the same request', async () => {
+      const projectId = await createProject('quarantine-below-reset-default');
+
+      // Store an override (0.02) that is BELOW the built-in default (0.05).
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.02 }),
+      });
+
+      // This same request resets flakeThreshold to null (-> default 0.05)
+      // while setting quarantineThreshold to 0.03. The guard must validate
+      // against the resolved default (0.05), not the stale stored override
+      // (0.02) -- 0.03 < 0.05, so this must be rejected.
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: null, quarantineThreshold: 0.03 }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/must be >= the flakeThreshold/);
+    });
+
+    it('allows a quarantineThreshold equal to the flakeThreshold', async () => {
+      const projectId = await createProject('quarantine-equal-threshold');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.1, quarantineThreshold: 0.1 }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Number(body.project.quarantineThreshold)).toBeCloseTo(0.1, 4);
+    });
+
     it('rejects an out-of-range quarantineTtlDays', async () => {
       const projectId = await createProject('quarantine-bad-ttl');
       const res = await app.request(`/api/v1/admin/projects/${projectId}`, {

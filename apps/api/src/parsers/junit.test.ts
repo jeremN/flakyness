@@ -320,8 +320,10 @@ describe('JUnit Parser', () => {
     });
 
     it('leaves a name exactly at the cap unchanged', () => {
-      // classname + ' › ' pushes the combined testName over 500 chars, so clamp
-      // the classname-only text by using a name-only testcase (no classname).
+      // A classname prefix (e.g. 'c › ') would push the combined testName
+      // past 500 chars before the boundary is even reached, so this uses a
+      // name-only testcase (no classname) — that way the bare @_name value
+      // lands exactly on the 500-char cap with nothing prepended to it.
       const exactName = 'x'.repeat(500);
       const xml = `<testsuites><testsuite name="s"><testcase name="${exactName}" time="0.01"/></testsuite></testsuites>`;
 
@@ -438,6 +440,19 @@ describe('JUnit Parser', () => {
       const parsed = parseJUnitReport(xml);
 
       expect(parsed.results[0].errorMessage).toBe('m: t');
+    });
+
+    it('ignores a numeric-only #text when @_message is present (fast-xml-parser auto-numbers digit-only text)', () => {
+      // fast-xml-parser parses bare-digit tag text into a JS number, so
+      // `obj['#text']` is `42` (not `'42'`) here. The `typeof … === 'string'`
+      // guard on #text must reject that, leaving `text` empty — otherwise
+      // the "both present" branch would wrongly fire and append ": 42".
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="t" time="0.01"><failure message="m">42</failure></testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].errorMessage).toBe('m');
     });
   });
 

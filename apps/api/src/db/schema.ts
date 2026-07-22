@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
-import type { FailureDetail } from '../parsers/playwright';
+import type { FailureDetail } from '../parsers/types';
 
 // Projects being tracked
 export const projects = pgTable('projects', {

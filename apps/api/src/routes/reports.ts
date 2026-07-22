@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { parsePlaywrightReport, type ParsedReport } from '../parsers/playwright';
+import { parsePlaywrightReport } from '../parsers/playwright';
+import type { ParsedReport } from '../parsers/types';
 import { parseJUnitReport } from '../parsers/junit';
 import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';

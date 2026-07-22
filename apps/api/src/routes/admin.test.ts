@@ -603,6 +603,42 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(body.error).toContain('windowDays (30)');
     });
 
+    it('persists auto-quarantine config and echoes it back', async () => {
+      const projectId = await createProject('quarantine-set');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoQuarantineEnabled: true, quarantineThreshold: 0.25, quarantineMinRuns: 5, quarantineTtlDays: 10 }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.project.autoQuarantineEnabled).toBe(true);
+      expect(Number(body.project.quarantineThreshold)).toBeCloseTo(0.25, 4);
+      expect(body.project.quarantineMinRuns).toBe(5);
+      expect(body.project.quarantineTtlDays).toBe(10);
+    });
+
+    it('rejects a quarantineThreshold below the flakeThreshold', async () => {
+      const projectId = await createProject('quarantine-below-threshold');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flakeThreshold: 0.1, quarantineThreshold: 0.05 }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/must be >= the flakeThreshold/);
+    });
+
+    it('rejects an out-of-range quarantineTtlDays', async () => {
+      const projectId = await createProject('quarantine-bad-ttl');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quarantineTtlDays: 0 }),
+      });
+      expect(res.status).toBe(400);
+    });
+
     it('rejects an empty body', async () => {
       const projectId = await createProject('empty-body');
       const res = await app.request(`/api/v1/admin/projects/${projectId}`, {

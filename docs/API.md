@@ -787,6 +787,10 @@ GET /api/v1/admin/projects
       "minRuns": null,
       "webhookUrl": null,
       "retentionDays": null,
+      "autoQuarantineEnabled": false,
+      "quarantineThreshold": null,
+      "quarantineMinRuns": null,
+      "quarantineTtlDays": null,
       "stats": {
         "totalRuns": 150,
         "totalTests": 5000,
@@ -810,6 +814,13 @@ no webhook is configured.
 [Prune Project Data](#prune-project-data). `null` (the default for every
 project, including ones created before this field existed) means **keep
 forever**; no data is ever deleted automatically.
+
+`autoQuarantineEnabled`, `quarantineThreshold`, `quarantineMinRuns`, and
+`quarantineTtlDays` configure auto-quarantine — see
+[Update Project Flakiness Config](#update-project-flakiness-config).
+`autoQuarantineEnabled` defaults to `false` (opt-in, current behavior
+unchanged); the other three are `null` until overridden, meaning they use
+their respective built-in defaults.
 
 ### Create Project
 
@@ -863,11 +874,11 @@ PATCH /api/v1/admin/projects/:id
 ```
 
 Update a project's per-project flakiness detection overrides, its
-transition-notification webhook, and/or its data retention. Fields omitted
-from the body are left unchanged; sending a field as `null` explicitly clears
-it back to the built-in default (or, for `webhookUrl`, disables the webhook;
-for `retentionDays`, reverts to "keep forever"). At least one field is
-required.
+transition-notification webhook, its data retention, and/or its
+auto-quarantine config. Fields omitted from the body are left unchanged;
+sending a field as `null` explicitly clears it back to the built-in default
+(or, for `webhookUrl`, disables the webhook; for `retentionDays`, reverts to
+"keep forever"). At least one field is required.
 
 **Body (all fields optional, but at least one required):**
 ```json
@@ -876,7 +887,11 @@ required.
   "windowDays": 30,
   "minRuns": 5,
   "webhookUrl": "https://example.com/hooks/flackyness",
-  "retentionDays": 60
+  "retentionDays": 60,
+  "autoQuarantineEnabled": true,
+  "quarantineThreshold": 0.25,
+  "quarantineMinRuns": 5,
+  "quarantineTtlDays": 10
 }
 ```
 
@@ -887,6 +902,10 @@ required.
 | `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
 | `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` disables the webhook. |
 | `retentionDays` | integer \| null | `[1, 3650]` | Days of `test_runs` history to keep — see [Prune Project Data](#prune-project-data). `null` (the default) means **keep forever**; no global default exists. |
+| `autoQuarantineEnabled` | boolean | — | Turns auto-quarantine on/off for this project. Defaults to `false` (opt-in; current behavior unchanged). |
+| `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
+| `quarantineMinRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is (re-)quarantined. `null` resets to the resolved `minRuns`. |
+| `quarantineTtlDays` | integer \| null | `[1, 365]` | Mandatory TTL of an auto-quarantine, in days. `null` resets to the default (`7`). |
 
 **Response (200):**
 ```json
@@ -900,13 +919,18 @@ required.
     "windowDays": 30,
     "minRuns": 5,
     "webhookUrl": "https://example.com/hooks/flackyness",
-    "retentionDays": 60
+    "retentionDays": 60,
+    "autoQuarantineEnabled": true,
+    "quarantineThreshold": 0.25,
+    "quarantineMinRuns": 5,
+    "quarantineTtlDays": 10
   }
 }
 ```
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
-`webhookUrl`, or an empty body) and `404` if the project doesn't exist.
+`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, or
+an empty body) and `404` if the project doesn't exist.
 
 > **The retention/window guard:** `retentionDays` may never be lower than the
 > project's *resolved* flakiness `windowDays` (the stored override if set,

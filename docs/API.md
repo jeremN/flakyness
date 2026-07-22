@@ -445,10 +445,16 @@ Content-Type: application/json
 
 The format is detected from the **body content**, not `Content-Type` — CI
 uploaders frequently send an inaccurate or generic content type. The body is
-read once and trimmed; if it starts with `<`, it's parsed as JUnit XML,
-otherwise it's parsed as JSON. `Content-Type: application/json` or
+read once and dispatched by shape to the first recognized report format:
+**JUnit XML** (the body starts with `<`) or **Playwright JSON** (a JSON
+object with a top-level `suites` key). `Content-Type: application/json` or
 `application/xml` are both accepted (or any other value) — send whichever
 your CI tool defaults to.
+
+A body matching a recognized format that fails to parse returns
+`400 { "error": "Failed to parse <format> report: <details>" }` (`<format>`
+is `JUnit` or `Playwright`). A body matching neither recognized format
+returns `400 { "error": "Unrecognized report format" }`.
 
 ##### JUnit XML support
 

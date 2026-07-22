@@ -1,6 +1,6 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
-import type { ParsedReport, ParsedTestResult } from './playwright';
+import type { ParsedReport, ParsedTestResult } from './types';
 
 // JUnit XML Report Parser
 //

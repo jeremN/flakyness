@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { parsePlaywrightReport, type ParsedReport } from '../parsers/playwright';
-import { parseJUnitReport } from '../parsers/junit';
+import { dispatchReport } from '../parsers/registry';
 import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
@@ -65,9 +64,11 @@ reports.use('*', reportRateLimit);
 /**
  * POST /api/v1/reports
  *
- * Ingest a Playwright JSON report or a JUnit XML report. The format is
- * detected from the body content (not Content-Type): a body that starts
- * with '<' is parsed as JUnit XML, everything else as Playwright JSON.
+ * Ingest a JUnit XML or Playwright JSON report. The format is detected from
+ * the body content (not Content-Type) and dispatched by shape to the first
+ * recognized parser: JUnit XML if the body starts with '<', Playwright JSON
+ * if it is an object with a top-level `suites` key. A body matching neither
+ * recognized format returns 400 "Unrecognized report format".
  *
  * Query params:
  *   - branch: Git branch name (default: "main")
@@ -97,38 +98,20 @@ reports.post(
     // un-awaited path.
     const wait = c.req.query('wait') === 'true';
 
-    // Read the body once as text, then dispatch by content — not Content-Type,
-    // since CI uploaders can send an inaccurate header. A body that (after
-    // leading whitespace) starts with '<' is treated as a JUnit XML report;
-    // anything else takes the existing Playwright JSON path.
+    // Read the body once as text, then dispatch by content shape — not
+    // Content-Type, since CI uploaders can send an inaccurate header. The
+    // parser registry recognizes JUnit XML and Playwright JSON; a body no
+    // parser recognizes is rejected as unrecognized.
     const bodyText = await c.req.text();
-    let parsed: ParsedReport;
-
-    if (bodyText.trimStart().startsWith('<')) {
-      try {
-        parsed = parseJUnitReport(bodyText);
-      } catch (error) {
-        reportParseFailuresTotal.inc();
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return c.json({ error: `Failed to parse JUnit report: ${message}` }, 400);
+    const dispatched = dispatchReport(bodyText);
+    if (!dispatched.ok) {
+      reportParseFailuresTotal.inc();
+      if (dispatched.kind === 'unrecognized') {
+        return c.json({ error: 'Unrecognized report format' }, 400);
       }
-    } else {
-      let rawReport: unknown;
-      try {
-        rawReport = JSON.parse(bodyText);
-      } catch {
-        reportParseFailuresTotal.inc();
-        return c.json({ error: 'Invalid JSON body' }, 400);
-      }
-
-      try {
-        parsed = parsePlaywrightReport(rawReport);
-      } catch (error) {
-        reportParseFailuresTotal.inc();
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return c.json({ error: `Failed to parse Playwright report: ${message}` }, 400);
-      }
+      return c.json({ error: `Failed to parse ${dispatched.parser} report: ${dispatched.message}` }, 400);
     }
+    const parsed = dispatched.report;
 
     // Insert test run and results in a single transaction for atomicity
     const testRun = await db.transaction(async (tx) => {

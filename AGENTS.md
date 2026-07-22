@@ -79,6 +79,24 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   already caused a flaky test in this repo's own suite (plan 027; see its
   `waitFor`-based fix in `apps/api/src/routes/admin.test.ts`). Poll for the
   reconcile to land; never `sleep`.
+- **Auto-quarantine lives entirely inside the `ignored` state and is opt-in
+  (plan 051).** `reconcileQuarantine()` (`services/quarantine.ts`) runs
+  post-ingest **after** `updateFlakyTests`, chained on the same promise in
+  `routes/reports.ts` — so the reconcile-race caveat above covers it too;
+  under `?wait=true` both are awaited (the quarantine settle bounded by the
+  same `withTimeout`). It runs **Promote** only when a project sets
+  `auto_quarantine_enabled` (default **false** ⇒ zero behavior change), but
+  **Release** (expired auto-mutes → `active`) runs *unconditionally* so
+  nothing stays stuck skipped. Provenance is `flaky_tests.mute_source`:
+  `'auto'` = machine-quarantined, carries `quarantine_expires_at`,
+  auto-released at TTL under a clean-slate rule (re-quarantine needs
+  `quarantine_min_runs` runs recorded *after* `quarantine_released_at`);
+  `'manual'` / `NULL` = human mute, **indefinite and immune to
+  auto-release**. `buildGrepInvert()` still derives from `ignored` (muted)
+  rows only — auto-quarantine adds a machine *writer* of `ignored`, it does
+  NOT add `active`/`flaky` to `grepInvert`, so the `projects.ts:191-193`
+  invariant holds. Threshold comparison is done in JS (fetch active rows,
+  compare `Number(flakeRate)`) to dodge Postgres `numeric >= text`.
 
 ## Conventions
 
@@ -91,6 +109,10 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   route count you must bump deliberately.
 - New `projects` child tables need `onDelete: 'cascade'` (project deletion
   relies on FK cascades).
+- Any new mute/unmute path must set `flaky_tests.mute_source` and append a
+  `quarantine_events` row — the audit trail (auto **and** manual transitions)
+  must stay complete (plan 051). Decimal columns (`flake_rate`, `threshold`)
+  store strings: write via `.toFixed(4)`, compare via `Number(...)`.
 - New dashboard chart types must be registered in `Chart.svelte`'s
   `echarts.use([...])` or they render blank (modular ECharts imports). An
   unregistered series type is a **silent no-op** — no throw, no dev warning

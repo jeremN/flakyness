@@ -6,7 +6,7 @@ import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
-import { reconcileQuarantine } from '../services/quarantine';
+import { reconcileQuarantine, type QuarantineTransition } from '../services/quarantine';
 import {
   sendFlakyTransitionWebhook,
   type FlakyTransitionPayload,
@@ -174,8 +174,10 @@ reports.post(
     // operate on the freshly-reconciled flaky_tests), in BOTH modes. Kept as
     // its own promise so wait=true can await the DB settle while webhook
     // delivery stays fire-and-forget.
-    const quarantinePromise = reconcilePromise.then(() =>
-      reconcileQuarantine(project.id, project)
+    const quarantinePromise = reconcilePromise.then(
+      () => reconcileQuarantine(project.id, project),
+      // Detect failed → nothing to quarantine; the flaky .catch already logged it.
+      (): QuarantineTransition[] => []
     );
 
     // Best-effort quarantine webhooks — fire-and-forget in both modes, exactly
@@ -267,7 +269,12 @@ reports.post(
       // Await the quarantine DB reconcile too, so an immediate GET
       // /projects/:id/quarantine reflects promotion/release with no poll —
       // honoring the same wait=true consistency contract as flaky detection.
-      await quarantinePromise.catch(() => {});
+      //
+      // Bound the quarantine DB settle by the same timeout as detection — a
+      // slow reconcile must not hang wait=true past RECONCILE_WAIT_TIMEOUT_MS.
+      // The background quarantinePromise keeps running (its fire-and-forget
+      // .catch remains its durable consumer); we only stop AWAITING it here.
+      await withTimeout(quarantinePromise, RECONCILE_WAIT_TIMEOUT_MS).catch(() => {});
     }
 
     return c.json({

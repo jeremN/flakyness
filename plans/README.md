@@ -292,6 +292,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 046 | A3b of the mutation-testing effort: render-test the 8 route components + ErrorState in **Vitest browser mode** (isolated `vitest.browser.config.ts`, `vitest-browser-svelte`, headless Chromium; default `test` stays node-only), plus an advisory `component-tests` CI job; every assertion mutation-proven — closes A3's deferred render half via the documented browser-mode unblock path | P3 | M | A3 (plan 045) | DONE (merged via PR #101, commit `905843f`) |
 | 047 | Phase B of the mutation-testing effort: nightly Stryker mutation testing — broad per-package run (apps/api + dashboard $lib), narrow per-file gate over the A1–A3b hardened set, isolated `pool:'threads'` Stryker vitest config, advisory nightly `Mutation` workflow | P3 | M | A1–A3b (plans 042–046) | OPEN (PR pending) |
 | 048 | Harden `projects.ts` + `rate-limit.ts` mutation coverage; ratchet their gate floors | P3 | S–M | #13 | DONE |
+| 049 | Promote `flakiness.ts` + parsers (`junit`/`playwright`) into the mutation gate with calibrated floors | P3 | M | #14 | DONE |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -679,13 +680,35 @@ rationale. Items 5–7 remain unplanned.
     - Raising real coverage on the coarse route files remains the honest way to lift
       these floors further; the residuals above are exactly where a future pass
       should start.
-14. **Promote `flakiness.ts` / `parsers/**` into the gated set once scored.** The broad
-    `apps/api` Stryker run (`pnpm --filter api test:mutation`) already mutates these
-    files, but `scripts/mutation-gate.mjs`'s hardened set only covers
-    `logger.ts`/`rate-limit.ts`/`projects.ts` — `flakiness.ts` and the parsers are
-    report-only today. Once a nightly run records their scores, evaluate adding them to
-    the `HARDENED` array in `mutation-gate.mjs` with baseline-calibrated floors,
-    following the same `floor(baseline) − 5` convention used for the current seven.
+14. **[RESOLVED — plan 049, 2026-07-22]** Promote `flakiness.ts` / `parsers/**` into
+    the gated set. They were report-only (mutated by the broad `apps/api` run but not
+    floored). Plan 049 hardened all three survivor-driven, test-only (ZERO product
+    source, no `// Stryker disable`), then added them to `mutation-gate.mjs`'s
+    `HARDENED` array at `floor(reliableLow) − 5` — the gate now floors **10** files.
+    - **`flakiness.ts`: 80.65% → 92.90%, floor 87.** Killed the `testFile`-fallback,
+      `lastSeen`-recency, and `flakeCount`-sum survivors, and added a whole
+      `getProjectStats` DB block (that function had ZERO db-level coverage — null-project,
+      active count, the 7-day resolved-week window, run totals). Score identical across
+      both runs (deterministic); its 2 Timeouts are the `chunks()` infinite-loop mutants
+      (genuine hangs the suite detects), not false timeouts. Accepted equivalents: the
+      `chunks()` >1000-row path, optional-chaining on always-present aggregate rows, the
+      empty-transaction guard.
+    - **`junit.ts`: 78.01% → 88.38%, floor 83.** Killed clamp/`parseTimeMs`/`parseTimestamp`
+      guards, `extractIssueMessage` branches (incl. a survivor first mis-accepted as
+      equivalent — `fast-xml-parser` auto-numbers digit-only tag text, making
+      `<failure message="m">42</failure>` observably `"m"` not `"m: 42"`, caught in review),
+      nested-`<testsuite>` flatten, status mapping, and startedAt/finishedAt chronology.
+      Deterministic. Accepted: zod schema-strictness mutants, the 50k-case `MAX_TESTCASES`
+      cap, `>`/`>=` boundary equivalents.
+    - **`playwright.ts`: 73.32% → 91.11% (reliable low of 91.11/91.37), floor 86.** Killed
+      file-suite `.ts`/`.js` detection, `determineStatus` outcome branches + their exact
+      status strings, duration/attempt handling, dedup-key/attachment shaping. 20 accepted
+      equivalents each hand-verified GREEN (not argued): zod strictness on unread fields,
+      scalar `.flatMap`/`clamp` no-ops, tie-break equality operators. A couple of genuine
+      dedup-key/enum survivors were honestly left and disclosed.
+    - Gate proven **green-on-clean** at all 10 entries (exit 0); gate unit 6/6; API suite
+      **413/413**. The existing 7 floors were untouched and still hold (`projects.ts`
+      scored 70.47% in the same consolidated run). Executed subagent-driven (SDD).
 15. **[RESOLVED on branch `test/stryker-nightly-mutation`] `logger.ts` and `projects.ts`'s
     per-file floors were miscalibrated too high — recalibrated to their reliable,
     reproduced baselines, for two DIFFERENT reasons (not one).** `logger.ts`'s floor moved

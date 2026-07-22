@@ -157,7 +157,7 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(res.status).toBe(400);
     });
 
-    it('should reject invalid Playwright report structure', async () => {
+    it('should reject a JSON body with no recognizable report shape (no suites key) with 400 unrecognized', async () => {
       const res = await app.request('/api/v1/reports?branch=main&commit=abc123', {
         method: 'POST',
         headers: {
@@ -167,9 +167,9 @@ describeWithDb('Reports API Integration Tests', () => {
         body: JSON.stringify({ invalid: 'report' }),
       });
       expect(res.status).toBe(400);
-      
+
       const body = await res.json();
-      expect(body.error).toContain('parse');
+      expect(body.error).toBe('Unrecognized report format');
     });
   });
 
@@ -472,7 +472,24 @@ describeWithDb('Reports API Integration Tests', () => {
       expect(res.status).toBe(400);
 
       const body = await res.json();
-      expect(body.error).toBe('Invalid JSON body');
+      expect(body.error).toBe('Unrecognized report format');
+    });
+
+    it('should reject a Playwright-shaped body that fails validation with the format-named 400', async () => {
+      const res = await app.request('/api/v1/reports?branch=main&commit=badpw', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testProjectToken}`,
+          'Content-Type': 'application/json',
+        },
+        // Has a `suites` key → detected as Playwright, but `suites` must be an
+        // array → parsePlaywrightReport throws → malformed (not unrecognized).
+        body: JSON.stringify({ config: {}, suites: 'not-an-array' }),
+      });
+      expect(res.status).toBe(400);
+
+      const body = await res.json();
+      expect(body.error).toContain('Failed to parse Playwright report');
     });
   });
 

@@ -295,6 +295,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 049 | Promote `flakiness.ts` + parsers (`junit`/`playwright`) into the mutation gate with calibrated floors | P3 | M | #14 | DONE |
 | 050 | Roadmap #1: `ReportParser` registry — dispatch ingestion by report shape (`detect`/`parse` interface, register-only extensibility) | P2 | M | — | DONE (merged via PR #106, commit `c759cf8`) |
 | 051 | Roadmap #2: opt-in per-project auto-quarantine — stricter `quarantine_threshold`, TTL release + clean-slate, `reconcileQuarantine` engine in the post-ingest reconcile, entry/exit webhooks, `quarantine_events` audit + manual-mute provenance. Default off = zero behavior change | P2 | M–L | 050 (soft; builds on the merged registry) | OPEN (PR pending) |
+| 052 | Roadmap #3: `NotificationChannel` abstraction — neutral events (`services/notifications/events.ts`) + per-channel formatters, replacing the two near-duplicate webhook senders; `generic` is a frozen byte-for-byte backward-compat contract, `slack` (`{ text, blocks }`) covers Slack **and** self-hosted Mattermost via an explicit `webhook_kind` override (else host auto-detect on `hooks.slack.com`); dashboard deep-links from a deployment-global `DASHBOARD_BASE_URL`. Teams remains the fast-follow (drop-in `formatTeams`) | P2 | M | 051 (soft; reuses the shared `webhookUrl` notification plumbing) | OPEN (PR pending) |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 

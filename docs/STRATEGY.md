@@ -69,6 +69,26 @@ donne capacité par capacité.
    (`services/notifications.ts:9-16`) — il ne s'afficherait pas dans Slack sans
    un formateur dédié.
 
+> **Statut (branche `feat/notification-channels-slack`) :** l'item #3 de la
+> roadmap ci-dessous est livré sur cette branche, pas encore mergé sur `main`
+> au moment de cette révision. Ce qui a changé : un module
+> `services/notifications/` remplace l'ancien webhook générique unique par une
+> abstraction de canal — un formateur `generic` (contrat de compatibilité
+> figé, identique octet pour octet à l'ancien payload, hormis `dashboardUrl`
+> qui peut désormais porter un lien) et un formateur `slack`
+> (`{ text, blocks }`, compatible Slack **et** Mattermost auto-hébergé via le
+> champ `webhook_kind` en override explicite ; sinon détection automatique sur
+> l'hôte `hooks.slack.com`). Les deux formats gagnent des deep-links dashboard
+> quand la variable d'environnement globale `DASHBOARD_BASE_URL` est
+> configurée. **Teams reste le fast-follow** — un formateur `formatTeams`
+> supplémentaire s'ajoute au même point d'extension sans changer
+> l'abstraction. Ce qui ne change pas : toujours aucun retry, aucune
+> signature de payload (mêmes limites qu'avant, documentées dans
+> `docs/API.md`). La correction #2 ci-dessus (« Slack n'est pas livré ») et la
+> case « Slack absent » de la ligne Notifications du tableau plus haut sont
+> donc résolues par ce travail ; le reste de cette section — écrite avant
+> cette livraison — est laissé tel quel.
+
 ### Le point bloquant que le doc précédent ne voyait pas
 
 **Toutes les routes de lecture sont non authentifiées, et
@@ -123,7 +143,7 @@ d'origine, re-chiffré sur ce qui existe.
 | **0** | **Read-token gardé par env + arrêt de l'énumération globale de `/projects`** | **Prérequis d'évaluation** dans le segment souveraineté, pas un upsell. Coût dérisoire au regard du blocage qu'il lève | **0,5-1 j** | *(absent)* |
 | 1 | Abstraction `ReportParser` (registry + module de types neutre + dispatch par forme) | JUnit est déjà livré : le marché est ouvert. Ce qui reste, c'est ce qui rend vraie la ligne « 2-3 j par framework » | **1-1,5 j** | 3-4 j |
 | 2 | Auto-quarantine réelle (règle de promotion + TTL + traçabilité du mute) | Met à parité avec BuildPulse/Trunk. Toute la plomberie aval existe déjà — **mais exige une décision produit, voir ci-dessous** | **2-3 j** | 4-6 j |
-| 3 | Interface `NotificationChannel` + formateur Slack (+ Teams) | Gain rapide, visible en démo. Le transport générique existe, il manque l'abstraction et le formatage | **1-1,5 j** | 1-2 j |
+| 3 | Interface `NotificationChannel` + formateur Slack (+ Teams) — **livré** (branche `feat/notification-channels-slack`, voir statut plus haut) ; Teams reste le fast-follow | Gain rapide, visible en démo. Le transport générique existe, il manque l'abstraction et le formatage | **1-1,5 j** | 1-2 j |
 | 4 | Rule engine de seuils (règles par branche/tag/fichier, compteurs consécutifs) + UI admin | Dépend de #2. Les 3 knobs numériques existent déjà et sont per-project ; ce qui manque, c'est l'expressivité et l'accès sans `curl` | **UI 1 j + règles 2-3 j** | 3-4 j |
 | 5 | Multi-tenant (+ store de rate-limit partagé) | Utile seulement en hébergement multi-clients. Le blocage mono-réplique s'ajoute au chantier | **7-10 j** | 5-8 j |
 | 6 | SSO / comptes / rôles | Après #0, ce n'est plus un prérequis d'évaluation mais un vrai upsell enterprise. À déclencher sur demande | 4-6 j | 3-5 j |

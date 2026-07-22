@@ -734,6 +734,15 @@ Requires the admin Bearer token (see [Admin Endpoints](#admin-endpoints)), not a
 
 Only `"ignored"` (mute) and `"active"` (unmute) are accepted. `"resolved"` is system-managed and rejected with `400`. Reconcile passes (triggered on every report ingest) never overwrite an `"ignored"` status back to `"active"` or `"resolved"` — an operator must explicitly unmute.
 
+A manual mute sets `mute_source` to `"manual"` and clears any auto-quarantine
+expiry — manual mutes are **indefinite** and never auto-released by the
+auto-quarantine engine (which only ever releases `mute_source: "auto"` rows).
+A manual unmute clears `mute_source` back to `null` and stamps
+`quarantine_released_at`. Both actions append one row to the internal
+`quarantine_events` audit trail (`event: "manual_mute"` /
+`"manual_unmute"`, `source: "manual"`) — there is no API endpoint to read
+this table in v1; it exists for future auditing/UI.
+
 **Response:**
 ```json
 {

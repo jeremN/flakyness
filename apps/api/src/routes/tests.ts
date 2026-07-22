@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, desc, and, gte } from 'drizzle-orm';
-import { db, testResults, testRuns, flakyTests } from '../db';
+import { db, testResults, testRuns, flakyTests, quarantineEvents } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
 import { adminAuth, readAuth } from '../middleware/auth';
 
@@ -330,17 +330,30 @@ testsRouter.patch('/flaky/:id', adminAuth(), async (c) => {
     return c.json({ error: "status must be 'ignored' or 'active'" }, 400);
   }
 
-  const [flakyTest] = await db
+  const now = new Date();
+  const [updated] = await db
     .update(flakyTests)
-    .set({ status: parsedBody.data.status })
+    .set(
+      parsedBody.data.status === 'ignored'
+        ? { status: 'ignored', muteSource: 'manual', quarantineExpiresAt: null }
+        : { status: 'active', muteSource: null, quarantineExpiresAt: null, quarantineReleasedAt: now }
+    )
     .where(eq(flakyTests.id, parsed.data))
     .returning();
 
-  if (!flakyTest) {
+  if (!updated) {
     return c.json({ error: 'Flaky test not found' }, 404);
   }
 
-  return c.json({ flakyTest });
+  await db.insert(quarantineEvents).values({
+    projectId: updated.projectId,
+    testName: updated.testName,
+    event: parsedBody.data.status === 'ignored' ? 'manual_mute' : 'manual_unmute',
+    source: 'manual',
+    flakeRate: updated.flakeRate,
+  });
+
+  return c.json({ flakyTest: updated });
 });
 
 export default testsRouter;

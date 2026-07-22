@@ -40,6 +40,9 @@ describeWithDb('reconcileQuarantine', () => {
     expect(row.status).toBe('ignored');
     expect(row.muteSource).toBe('auto');
     expect(row.quarantineExpiresAt).not.toBeNull();
+    // TTL magnitude: with ttlDays=7, expiry must be well beyond `now` — kills a
+    // mutant that sets expiresAt = now (dropping the + ttlDays*86_400_000 term).
+    expect(row.quarantineExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 60 * 60 * 1000);
     const events = await db.select().from(quarantineEvents).where(eq(quarantineEvents.projectId, projectId));
     expect(events.map(e => e.event)).toEqual(['entered']);
   });
@@ -62,6 +65,17 @@ describeWithDb('reconcileQuarantine', () => {
   it('releases an auto-mute past its TTL, back to active with released_at set', async () => {
     await seedFlaky({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: new Date(Date.now() - 1000), flakeRate: '0.5000' });
     const out = await reconcileQuarantine(projectId, project());
+    expect(out).toEqual([expect.objectContaining({ testName: 't', event: 'released' })]);
+    const [row] = await db.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
+    expect(row.status).toBe('active');
+    expect(row.muteSource).toBeNull();
+    expect(row.quarantineExpiresAt).toBeNull();
+    expect(row.quarantineReleasedAt).not.toBeNull();
+  });
+
+  it('releases an expired auto-mute even when auto-quarantine is disabled (release is unconditional)', async () => {
+    await seedFlaky({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: new Date(Date.now() - 1000), flakeRate: '0.5000' });
+    const out = await reconcileQuarantine(projectId, project({ autoQuarantineEnabled: false }));
     expect(out).toEqual([expect.objectContaining({ testName: 't', event: 'released' })]);
     const [row] = await db.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
     expect(row.status).toBe('active');

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { deliverNotification } from './deliver';
-import type { FlakyTransitionEvent } from './events';
+import type { FlakyTransitionEvent, QuarantineEvent } from './events';
 
 const flaky: FlakyTransitionEvent = {
   kind: 'flaky_transition',
@@ -53,5 +53,36 @@ describe('deliverNotification', () => {
       event: flaky,
     });
     expect(body().dashboardUrl).toBe('https://d.io/flaky');
+  });
+
+  it('passes the testName to buildLinks for a quarantine event (test deep-link present in body)', async () => {
+    const quarantine: QuarantineEvent = {
+      kind: 'quarantine',
+      transition: 'entered',
+      project: { id: 'p-1', name: 'demo' },
+      testName: 'login test',
+      flakeRate: 0.42,
+      expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+    };
+    const body = captureBody();
+    await deliverNotification({
+      url: 'https://x.io/hook',
+      storedKind: 'slack',
+      baseUrl: 'https://d.io',
+      event: quarantine,
+    });
+    // buildLinks got a defined testName → Slack text carries the /tests/<encoded> deep-link
+    expect(body().text).toContain('https://d.io/tests/login%20test');
+  });
+
+  it('does NOT pass a testName for a flaky event (no /tests/ deep-link in body)', async () => {
+    const body = captureBody();
+    await deliverNotification({
+      url: 'https://x.io/hook',
+      storedKind: 'slack',
+      baseUrl: 'https://d.io',
+      event: flaky,
+    });
+    expect(body().text).not.toContain('/tests/');
   });
 });

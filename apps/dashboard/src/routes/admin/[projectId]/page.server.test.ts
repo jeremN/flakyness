@@ -17,7 +17,7 @@ vi.mock('$lib/server/adminApi', () => ({
   MissingAdminTokenError: class MissingAdminTokenError extends Error {},
 }));
 
-import { listProjects, patchProject, rotateToken, pruneProject, deleteProject } from '$lib/server/adminApi';
+import { listProjects, patchProject, rotateToken, pruneProject, deleteProject, adminConfigured } from '$lib/server/adminApi';
 import { load, actions } from './+page.server';
 
 const mockedList = vi.mocked(listProjects);
@@ -25,6 +25,7 @@ const mockedPatch = vi.mocked(patchProject);
 const mockedRotate = vi.mocked(rotateToken);
 const mockedPrune = vi.mocked(pruneProject);
 const mockedDelete = vi.mocked(deleteProject);
+const mockedAdminConfigured = vi.mocked(adminConfigured);
 
 const project = {
   id: 'p1',
@@ -68,6 +69,18 @@ describe('admin/[projectId] load', () => {
     await expect(load({ params: { projectId: 'nope' } } as any)).rejects.toMatchObject({
       status: 404,
     });
+  });
+
+  it('403s when ADMIN_TOKEN is not configured', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 403 });
+    expect(mockedList).not.toHaveBeenCalled();
+  });
+
+  it('forwards an AdminApiError status when the list call fails', async () => {
+    const { AdminApiError } = await import('$lib/server/adminApi');
+    mockedList.mockRejectedValue(new AdminApiError(503, 'API down'));
+    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 503 });
   });
 });
 
@@ -137,6 +150,13 @@ describe('admin/[projectId] prune actions', () => {
 });
 
 describe('admin/[projectId] delete action', () => {
+  it('rejects with 403 when ADMIN_TOKEN is not configured', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }))) as any;
+    expect(result.status).toBe(403);
+    expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
   it('rejects when the typed name does not match', async () => {
     const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'wrong' }))) as any;
     expect(result.status).toBe(400);

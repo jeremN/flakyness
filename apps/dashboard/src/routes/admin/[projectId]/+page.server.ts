@@ -13,7 +13,14 @@ import {
 import { validateConfigForm, buildConfigPatch, CONFIG_FIELD_SPECS } from '$lib/admin-validation';
 
 export const load: PageServerLoad = async ({ params }) => {
-  const { projects } = await listProjects();
+  if (!adminConfigured()) throw error(403, 'ADMIN_TOKEN not set.');
+  let projects;
+  try {
+    ({ projects } = await listProjects());
+  } catch (e) {
+    const status = e instanceof AdminApiError ? e.statusCode : 502;
+    throw error(status, e instanceof Error ? e.message : 'Failed to load project');
+  }
   const project = projects.find((p) => p.id === params.projectId);
   if (!project) throw error(404, 'Project not found');
   return { project };

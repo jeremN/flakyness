@@ -16,6 +16,11 @@ export const projects = pgTable('projects', {
   // means "no webhook configured". Set only via the admin-token PATCH route
   // (same trust level as the operator's shell) — no SSRF deny-list in v1.
   webhookUrl: varchar('webhook_url', { length: 2048 }),
+  // Channel formatter for the outbound webhook: NULL = auto-detect from the URL
+  // (hooks.slack.com → Slack, else generic), 'slack'/'generic' = explicit
+  // override (how a self-hosted Mattermost URL opts into Slack formatting).
+  // See services/notifications/channel.ts.
+  webhookKind: varchar('webhook_kind', { length: 16 }),
   // Per-project data retention. NULL means "keep forever" (the default for
   // every existing install). When set, `POST /admin/projects/:id/prune`
   // deletes test_runs older than this many days; test_results cascade.

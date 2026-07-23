@@ -7,12 +7,7 @@ import { reportRateLimit } from '../middleware/rate-limit';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
 import { reconcileQuarantine, type QuarantineTransition } from '../services/quarantine';
-import {
-  sendFlakyTransitionWebhook,
-  type FlakyTransitionPayload,
-  sendQuarantineWebhook,
-  type QuarantineWebhookPayload,
-} from '../services/notifications';
+import { deliverNotification, type FlakyTransitionEvent, type QuarantineEvent } from '../services/notifications';
 import { logger } from '../middleware/logger';
 import { reportsIngestedTotal, reportParseFailuresTotal } from '../metrics';
 
@@ -186,17 +181,27 @@ reports.post(
     quarantinePromise
       .then(async (transitions) => {
         if (!project.webhookUrl || transitions.length === 0) return;
+        const baseUrl = process.env.DASHBOARD_BASE_URL ?? null;
         for (const t of transitions) {
-          const delivered = await sendQuarantineWebhook(project.webhookUrl, {
-            event: t.event === 'entered' ? 'quarantine_entered' : 'quarantine_released',
+          const event: QuarantineEvent = {
+            kind: 'quarantine',
+            transition: t.event,
             project: { id: project.id, name: project.name },
             testName: t.testName,
             flakeRate: t.flakeRate,
-            expiresAt: t.expiresAt ? t.expiresAt.toISOString() : null,
-          } satisfies QuarantineWebhookPayload);
+            expiresAt: t.expiresAt,
+          };
+          const delivered = await deliverNotification({
+            url: project.webhookUrl,
+            storedKind: project.webhookKind,
+            baseUrl,
+            event,
+          });
           if (!delivered) {
             logger.error('Quarantine webhook delivery failed', {
-              projectId: project.id, projectName: project.name, testName: t.testName,
+              projectId: project.id,
+              projectName: project.name,
+              testName: t.testName,
             });
           }
         }
@@ -219,17 +224,19 @@ reports.post(
         if (!project.webhookUrl || (newlyFlaky.length === 0 && newlyResolved.length === 0)) {
           return;
         }
-
-        const payload: FlakyTransitionPayload = {
-          event: 'flaky_tests_changed',
+        const event: FlakyTransitionEvent = {
+          kind: 'flaky_transition',
           project: { id: project.id, name: project.name },
           newlyFlaky,
           newlyResolved,
           run: { branch: testRun.branch, commitSha: testRun.commitSha },
-          dashboardUrl: null,
         };
-
-        const delivered = await sendFlakyTransitionWebhook(project.webhookUrl, payload);
+        const delivered = await deliverNotification({
+          url: project.webhookUrl,
+          storedKind: project.webhookKind,
+          baseUrl: process.env.DASHBOARD_BASE_URL ?? null,
+          event,
+        });
         if (!delivered) {
           logger.error('Flaky transition webhook delivery failed', {
             projectId: project.id,

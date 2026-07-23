@@ -52,6 +52,7 @@ const projectConfigPatchSchema = z
       )
       .nullable()
       .optional(),
+    webhookKind: z.enum(['slack', 'generic']).nullable().optional(),
     // Per-project data retention in days; NULL means "keep forever" (see
     // schema.ts). Must never undercut the project's resolved flakiness
     // windowDays — enforced below, after parsing.
@@ -80,6 +81,7 @@ adminRouter.get('/projects', async (c) => {
       windowDays: projects.windowDays,
       minRuns: projects.minRuns,
       webhookUrl: projects.webhookUrl,
+      webhookKind: projects.webhookKind,
       retentionDays: projects.retentionDays,
       autoQuarantineEnabled: projects.autoQuarantineEnabled,
       quarantineThreshold: projects.quarantineThreshold,
@@ -108,6 +110,7 @@ adminRouter.get('/projects', async (c) => {
     windowDays: p.windowDays,
     minRuns: p.minRuns,
     webhookUrl: p.webhookUrl,
+    webhookKind: p.webhookKind,
     retentionDays: p.retentionDays,
     autoQuarantineEnabled: p.autoQuarantineEnabled,
     quarantineThreshold: p.quarantineThreshold !== null ? Number(p.quarantineThreshold) : null,
@@ -298,6 +301,9 @@ adminRouter.patch(
     if ('webhookUrl' in data) {
       updates.webhookUrl = data.webhookUrl ?? null;
     }
+    if ('webhookKind' in data) {
+      updates.webhookKind = data.webhookKind ?? null;
+    }
     if ('retentionDays' in data) {
       updates.retentionDays = data.retentionDays ?? null;
     }
@@ -321,6 +327,7 @@ adminRouter.patch(
         windowDays: projects.windowDays,
         minRuns: projects.minRuns,
         webhookUrl: projects.webhookUrl,
+        webhookKind: projects.webhookKind,
         retentionDays: projects.retentionDays,
         autoQuarantineEnabled: projects.autoQuarantineEnabled,
         quarantineThreshold: projects.quarantineThreshold,

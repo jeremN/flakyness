@@ -136,5 +136,11 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `forks` config used elsewhere. Browser-mode `.svelte` components are NOT
   mutation-tested (Stryker has no browser-mode support) — the A3b render
   tests remain their guard.
+- New notification event kinds go through neutral events
+  (`services/notifications/events.ts`) + a per-channel formatter, never a new
+  bespoke sender. The **`generic` formatter is a frozen backward-compat
+  contract** (asserted byte-for-byte); channel is chosen by
+  `resolveWebhookKind` (explicit `webhook_kind` overrides host sniff).
+  Deep-links come from `DASHBOARD_BASE_URL`, read only at the route edge.
 - Commits: single-line conventional-commit subject. NO `Co-Authored-By`
   trailers. `main` is branch-protected — work on branches, PRs need green CI.

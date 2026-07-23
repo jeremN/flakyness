@@ -463,6 +463,63 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(res.status).toBe(400);
     });
 
+    it('sets and clears webhookKind, and returns it', async () => {
+      const projectId = await createProject('webhook-kind-set');
+
+      const setRes = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookKind: 'slack' }),
+      });
+      expect(setRes.status).toBe(200);
+      expect((await setRes.json()).project.webhookKind).toBe('slack');
+
+      const clearedRes = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookKind: null }),
+      });
+      expect((await clearedRes.json()).project.webhookKind).toBeNull();
+    });
+
+    it('rejects an invalid webhookKind', async () => {
+      const projectId = await createProject('webhook-kind-invalid');
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookKind: 'teams' }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('includes webhookKind in the project list projection', async () => {
+      const projectId = await createProject('webhook-kind-list');
+      await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ webhookKind: 'generic' }),
+      });
+
+      const listRes = await app.request('/api/v1/admin/projects', {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const listBody = await listRes.json();
+      const found = listBody.projects.find((p: any) => p.id === projectId);
+      expect(found.webhookKind).toBe('generic');
+    });
+
     it('rejects an out-of-range flakeThreshold', async () => {
       const projectId = await createProject('bad-threshold');
       const res = await app.request(`/api/v1/admin/projects/${projectId}`, {

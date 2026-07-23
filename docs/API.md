@@ -795,6 +795,7 @@ GET /api/v1/admin/projects
       "windowDays": null,
       "minRuns": null,
       "webhookUrl": null,
+      "webhookKind": null,
       "retentionDays": null,
       "autoQuarantineEnabled": false,
       "quarantineThreshold": null,
@@ -817,6 +818,11 @@ overrides — see [Update Project Flakiness Config](#update-project-flakiness-co
 `webhookUrl` is an optional outbound notification URL — see
 [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). `null` means
 no webhook is configured.
+
+`webhookKind` picks the payload format sent to `webhookUrl` — `"slack"`,
+`"generic"`, or `null` (the default) to auto-detect from the URL host. See
+**Channel selection** under
+[Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks).
 
 `retentionDays` is an optional per-project data retention window — see
 [Update Project Flakiness Config](#update-project-flakiness-config) and
@@ -896,6 +902,7 @@ sending a field as `null` explicitly clears it back to the built-in default
   "windowDays": 30,
   "minRuns": 5,
   "webhookUrl": "https://example.com/hooks/flackyness",
+  "webhookKind": "slack",
   "retentionDays": 60,
   "autoQuarantineEnabled": true,
   "quarantineThreshold": 0.25,
@@ -910,6 +917,7 @@ sending a field as `null` explicitly clears it back to the built-in default
 | `windowDays` | integer \| null | `[1, 90]` | Analysis window in days used by background flakiness reconciliation. `null` resets to the default (`14`). |
 | `minRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is analyzed. `null` resets to the default (`3`). |
 | `webhookUrl` | string \| null | max 2048 chars, `http:`/`https:` only | Outbound URL notified on flaky-test transitions — see [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks) — **and** on auto-quarantine entry/exit — see [Auto-Quarantine Webhooks](#auto-quarantine-webhooks). Both share this one URL. `null` disables both. |
+| `webhookKind` | `"slack"` \| `"generic"` \| null | — | Explicit payload-format override for `webhookUrl`. `null` (default) auto-detects from the URL host (`hooks.slack.com` → Slack format, else generic). Set to `"slack"` for a self-hosted **Mattermost** URL, which accepts Slack's payload but isn't on `hooks.slack.com`. See **Channel selection** under [Flaky-Test Transition Webhooks](#flaky-test-transition-webhooks). |
 | `retentionDays` | integer \| null | `[1, 3650]` | Days of `test_runs` history to keep — see [Prune Project Data](#prune-project-data). `null` (the default) means **keep forever**; no global default exists. |
 | `autoQuarantineEnabled` | boolean | — | Turns auto-quarantine on/off for this project. Defaults to `false` (opt-in; current behavior unchanged). |
 | `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
@@ -928,6 +936,7 @@ sending a field as `null` explicitly clears it back to the built-in default
     "windowDays": 30,
     "minRuns": 5,
     "webhookUrl": "https://example.com/hooks/flackyness",
+    "webhookKind": "slack",
     "retentionDays": 60,
     "autoQuarantineEnabled": true,
     "quarantineThreshold": 0.25,
@@ -978,12 +987,29 @@ Content-Type: application/json
 { "webhookUrl": "https://example.com/hooks/flackyness" }
 ```
 
+**Channel selection:** the payload format sent to `webhookUrl` is picked by
+`webhookKind` (set alongside `webhookUrl` in the same PATCH body):
+
+| `webhookKind` | Behavior |
+|---|---|
+| `null` (default) | Auto-detect from the URL: a `hooks.slack.com` host gets the Slack format below; anything else gets the generic format. |
+| `"slack"` | Always send the Slack format, regardless of host. |
+| `"generic"` | Always send the generic format, regardless of host. |
+
+A self-hosted **Mattermost** instance accepts Slack's incoming-webhook
+payload but isn't on `hooks.slack.com`, so auto-detect won't catch it — set
+`webhookKind` explicitly to opt in:
+```json
+{ "webhookUrl": "https://mattermost.example.com/hooks/xyz", "webhookKind": "slack" }
+```
+
 **Trigger:** the background reconciliation that already runs after every
 `POST /api/v1/reports` ingest (see [Upload Playwright Report](#upload-playwright-report)).
 If that reconciliation finds at least one newly-flaky or newly-resolved test
 **and** the project has a `webhookUrl` configured, the API sends **one** POST
-request per ingest:
+request per ingest, in the format `webhookKind` (or auto-detection) selects:
 
+**Generic payload:**
 ```http
 POST <webhookUrl>
 Content-Type: application/json
@@ -999,12 +1025,52 @@ Content-Type: application/json
 }
 ```
 
+**Slack payload** (same event, `DASHBOARD_BASE_URL=https://flackyness.example.com`):
+```http
+POST <webhookUrl>
+Content-Type: application/json
+```
+```json
+{
+  "text": "<https://flackyness.example.com/flaky|*my-project*> on `main` — ⚠️ 1 newly flaky: login test flakes on retry  ·  ✅ 1 resolved: checkout test",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "<https://flackyness.example.com/flaky|*my-project*> on `main` — ⚠️ 1 newly flaky: login test flakes on retry  ·  ✅ 1 resolved: checkout test"
+      }
+    }
+  ]
+}
+```
+`text` is a plain Slack mrkdwn summary — Slack's required notification
+fallback, and also the part Mattermost renders reliably (its Block Kit
+support is partial, so `blocks` degrades to `text` there). `blocks` is the
+richer Slack rendering of the same content. The `<url|label>` markup only
+appears when `DASHBOARD_BASE_URL` is set (see below); without it, the
+project/test name renders as plain mrkdwn text. Project and test names are
+mrkdwn-escaped (`& < >`) before interpolation, so a test name can't inject
+markup or a live link.
+
 `newlyFlaky` and `newlyResolved` are test names (`newlyFlaky` may be empty if
 only resolutions happened, and vice versa — the webhook only fires when at
 least one of the two is non-empty). A test that was previously `ignored`
 (muted) does **not** count as a transition even if it still meets the flake
-threshold — an operator-muted test stays silent. `dashboardUrl` is reserved
-for a future release and is always `null` in v1.
+threshold — an operator-muted test stays silent. `dashboardUrl` (generic
+payload only) links to the project's flaky-test list when the deployment
+sets `DASHBOARD_BASE_URL`, and is `null` otherwise — it was always `null` in
+earlier releases; existing consumers that ignore the field are unaffected.
+
+**Dashboard deep-links (`DASHBOARD_BASE_URL`):** a deployment-global
+environment variable, not a per-project setting. Set it to the dashboard's
+public `http(s)` base URL (e.g. `https://flackyness.example.com`, no
+trailing slash needed) to have webhook payloads link back into the
+dashboard: `<base>/flaky` for this event, `<base>/tests/<url-encoded-test-name>`
+for a specific test (auto-quarantine events, below). Unset, empty, or a
+non-`http(s)` value disables deep-links everywhere — `dashboardUrl: null` in
+the generic payload, plain-text (no `<url|label>`) in the Slack payload.
+This is the default and fully backward-compatible.
 
 **Delivery semantics (v1):**
 - One best-effort POST per ingest; a 5-second timeout.
@@ -1032,6 +1098,10 @@ with `autoQuarantineEnabled: true`; see
 [Get Quarantine List](#get-quarantine-list-ci-consumable) for how a
 quarantined test shows up in `muted`/`grepInvert`.
 
+Channel selection is shared with the flaky-transition webhook above:
+`webhookKind` (or host auto-detection) picks generic vs. Slack format for
+this webhook too — see **Channel selection** above.
+
 **Trigger:** the same background reconciliation that runs after every
 `POST /api/v1/reports` ingest, immediately after flaky-test detection
 settles (auto-quarantine reads the freshly-reconciled `flaky_tests` rows).
@@ -1041,6 +1111,7 @@ its TTL, **and** the project has a `webhookUrl` configured, the API sends
 than one of these, unlike the flaky-transition webhook which sends at most
 one per ingest):
 
+**Generic payload:**
 ```http
 POST <webhookUrl>
 Content-Type: application/json
@@ -1055,12 +1126,35 @@ Content-Type: application/json
 }
 ```
 
+**Slack payload** (same event, `DASHBOARD_BASE_URL=https://flackyness.example.com`
+— the test name links to its trend page, `<base>/tests/<url-encoded-test-name>`):
+```json
+{
+  "text": "🔒 <https://flackyness.example.com/flaky|*my-project*>: quarantined <https://flackyness.example.com/tests/login%20test%20flakes%20on%20retry|login test flakes on retry> (flake rate 42%), muted until 2024-12-18",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🔒 <https://flackyness.example.com/flaky|*my-project*>: quarantined <https://flackyness.example.com/tests/login%20test%20flakes%20on%20retry|login test flakes on retry> (flake rate 42%), muted until 2024-12-18"
+      }
+    }
+  ]
+}
+```
+A `quarantine_released` event renders as `🔓 <project>: released <test> from
+quarantine` (no flake rate or TTL), with the same link markup rules. Without
+`DASHBOARD_BASE_URL`, the project/test names render as plain mrkdwn text.
+
 `event` is `quarantine_entered` when a test crosses `quarantineThreshold` and
 is auto-muted, or `quarantine_released` when an auto-mute's TTL expires and
 the test returns to `active`. `flakeRate` is the test's flake rate at the
 time of the transition (`null` if unavailable). `expiresAt` is the ISO
 timestamp the quarantine will auto-release at — only populated for
-`quarantine_entered`; it is always `null` for `quarantine_released`.
+`quarantine_entered`; it is always `null` for `quarantine_released`. The
+generic payload's field names/shape are unchanged by this work — it never
+had a `dashboardUrl` field and still doesn't; the Slack payload's link
+markup is the only way this event carries a dashboard link.
 
 **Delivery semantics (v1):** identical to the flaky-transition webhook above
 — one best-effort POST per transition, a 5-second timeout, no retries, no

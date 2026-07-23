@@ -23,6 +23,7 @@
   2. **The admin list load returns `adminProjects`, NOT `projects`** — the layout already puts `projects: Project[]` on every page's `data`; a page-load `projects` key would shadow it and read confusingly. Use a distinct key.
   3. **Page components type `form` with a hand-written interface, not the generated `ActionData`** — `ActionData` is a discriminated union of every action's success return *and* its `fail` payloads, and narrowing it to reach `form.errors`/`form.token` fights the type system. A manual `interface Props { data: PageData; form: XxxFormResult | null }` (matching the repo's existing `interface Props` style) is clean. `data` still uses the generated `PageData`.
   4. **Server-test result access uses `as any`** — calling an action directly returns `ActionFailure<…> | {…success…}`; accessing `.status`/`.data`/`.action` on that union errors under `strict`. Cast results to `any` (the repo already uses `as any` freely in `*.server.test.ts`, e.g. `analysis/page.server.test.ts`).
+- **vitest-browser locator API (verified against `@vitest/browser@4.1.10` in Task 4):** the `page` locator has **`getByLabelText`**, NOT `getByLabel` (which is Playwright's name). Render tests (`*.svelte.test.ts`) use `page.getByLabelText(...)`. The **Playwright E2E** in Task 7 keeps `page.getByLabel(...)` (Playwright's own locator has it). Also: never write a single-statement `beforeEach(() => mock.mockReset())` — an unbraced arrow *returns* the mock, and Vitest runs a hook-returned function as an afterEach teardown (phantom call); always brace: `beforeEach(() => { mock.mockReset(); })`. Passing a flat-optional `form.x` into a component prop typed `string` needs a `!` assertion (`form.token!`).
 - **Commits:** single-line conventional-commit subject. **NO `Co-Authored-By` trailers.** Never `--no-verify`. Work stays on branch `feat/admin-console-ui` (already created; `main` is branch-protected).
 - **RTK note for the implementer:** the shell hook garbles `pnpm` stdout — prefix pnpm commands with `rtk proxy` (e.g. `rtk proxy pnpm --filter dashboard test`).
 
@@ -1585,8 +1586,8 @@ const layout = {
 describe('admin/[projectId]/+page settings', () => {
   it('pre-fills numeric fields and leaves nulls blank', async () => {
     render(Page, { props: { data: { ...layout, project: project() }, form: null } });
-    await expect.element(page.getByLabel('Window days (1–90)')).toHaveValue('14');
-    await expect.element(page.getByLabel('Quarantine TTL days (1–365)')).toHaveValue('');
+    await expect.element(page.getByLabelText('Window days (1–90)')).toHaveValue('14');
+    await expect.element(page.getByLabelText('Quarantine TTL days (1–365)')).toHaveValue('');
   });
 
   it('renders per-field validation errors from a patch fail', async () => {
@@ -1811,7 +1812,7 @@ Append these three sections after the settings `<section>`:
   <h2 class="text-lg font-semibold text-gray-900 mb-2">API token</h2>
   {#if form?.action === 'rotate' && form.token}
     <div class="mb-4">
-      <TokenReveal token={form.token} warning={form.warning} />
+      <TokenReveal token={form.token!} warning={form.warning!} />
     </div>
   {/if}
   {#if form?.action === 'rotate' && form.message}
@@ -1926,9 +1927,9 @@ describe('admin/[projectId]/+page lifecycle', () => {
     render(Page, { props: { data: { ...layout, project: project() }, form: null } });
     const btn = page.getByRole('button', { name: 'Delete permanently' });
     await expect.element(btn).toBeDisabled();
-    await page.getByLabel('Type the project name to confirm').fill('wrong');
+    await page.getByLabelText('Type the project name to confirm').fill('wrong');
     await expect.element(btn).toBeDisabled();
-    await page.getByLabel('Type the project name to confirm').fill('Proj One');
+    await page.getByLabelText('Type the project name to confirm').fill('Proj One');
     await expect.element(btn).toBeEnabled();
   });
 });

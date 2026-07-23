@@ -51,6 +51,18 @@ export default defineConfig({
       PORT: DASHBOARD_PORT,
       HOST: '127.0.0.1',
       PUBLIC_API_URL: API_URL,
+      // adapter-node's CSRF origin check (SvelteKit core, not app code)
+      // rejects same-origin POSTs unless it can resolve the request's real
+      // origin. Without ORIGIN (or PROTOCOL_HEADER) set, it *assumes*
+      // https — see get_origin() in @sveltejs/adapter-node/files/handler.js
+      // — so over this plain-http E2E server every form action 403s with
+      // "Cross-site POST form submissions are forbidden" even though
+      // browser and server agree on the origin. Discovered by admin.spec.ts
+      // (plan 053 Task 7), the first spec to exercise a POST action; no
+      // prior spec caught it because every other route is read-only. See
+      // the matching docker-compose.yml fix for the same gap in real
+      // deployments.
+      ORIGIN: BASE_URL,
     },
   },
 });

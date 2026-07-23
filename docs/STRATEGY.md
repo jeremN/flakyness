@@ -144,13 +144,27 @@ d'origine, re-chiffré sur ce qui existe.
 | 1 | Abstraction `ReportParser` (registry + module de types neutre + dispatch par forme) | JUnit est déjà livré : le marché est ouvert. Ce qui reste, c'est ce qui rend vraie la ligne « 2-3 j par framework » | **1-1,5 j** | 3-4 j |
 | 2 | Auto-quarantine réelle (règle de promotion + TTL + traçabilité du mute) | Met à parité avec BuildPulse/Trunk. Toute la plomberie aval existe déjà — **mais exige une décision produit, voir ci-dessous** | **2-3 j** | 4-6 j |
 | 3 | Interface `NotificationChannel` + formateur Slack (+ Teams) — **livré** (branche `feat/notification-channels-slack`, voir statut plus haut) ; Teams reste le fast-follow | Gain rapide, visible en démo. Le transport générique existe, il manque l'abstraction et le formatage | **1-1,5 j** | 1-2 j |
-| 4 | Rule engine de seuils (règles par branche/tag/fichier, compteurs consécutifs) + UI admin | Dépend de #2. Les 3 knobs numériques existent déjà et sont per-project ; ce qui manque, c'est l'expressivité et l'accès sans `curl` | **UI 1 j + règles 2-3 j** | 3-4 j |
+| 4 | 4a — UI admin ; 4b — rule engine de seuils (règles par branche/tag/fichier, compteurs consécutifs). **4a livrée** (branche `feat/admin-console-ui`, voir statut plus haut) ; 4b reste à faire, spec/plan séparé | Dépend de #2 pour 4b. Les 3 knobs numériques existent déjà et sont per-project ; 4a couvre l'accès sans `curl`, 4b reste à écrire pour l'expressivité | **UI 1 j (fait) + règles 2-3 j** | 3-4 j |
 | 5 | Multi-tenant (+ store de rate-limit partagé) | Utile seulement en hébergement multi-clients. Le blocage mono-réplique s'ajoute au chantier | **7-10 j** | 5-8 j |
 | 6 | SSO / comptes / rôles | Après #0, ce n'est plus un prérequis d'évaluation mais un vrai upsell enterprise. À déclencher sur demande | 4-6 j | 3-5 j |
 | — | Modules par framework (Cypress, Jest, pytest, RSpec…) | S'ouvre une fois #1 posé — chaque parseur devient un module indépendant | ~1,5-2,5 j / framework | ~2-3 j |
 
 **Total #0→#4 : ~8-11 j** (contre 11-16 j au chiffrage v1) pour un produit
 vendable et différenciant, sécurité de lecture incluse.
+
+> **Statut (branche `feat/admin-console-ui`) :** 4a est livrée sur cette
+> branche, pas encore mergée sur `main` au moment de cette révision. Ce qui a
+> changé : un `/admin` gardé par le même `DASHBOARD_PASSWORD` (Basic Auth,
+> `hooks.server.ts`) que le reste du dashboard donne accès à la liste des
+> projets, la création (avec révélation du token une seule fois, jamais
+> re-consultable), l'édition des réglages par projet, la rotation de token, le
+> prune en deux temps (dry-run → confirm) et la suppression avec confirmation
+> tapée. Aucune nouvelle route API : le console appelle les endpoints admin
+> existants via un client serveur-only (`$lib/server/adminApi.ts`) qui porte
+> `ADMIN_TOKEN` — le token ne quitte jamais le serveur, la vraie frontière de
+> sécurité reste l'API elle-même (le SSO de #6 la remplacera plus tard). 4b
+> (règles par branche/tag/fichier) n'est pas commencé et reste une
+> spec/plan séparée.
 
 ### Le piège technique de #1
 

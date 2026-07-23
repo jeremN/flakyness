@@ -97,6 +97,26 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   NOT add `active`/`flaky` to `grepInvert`, so the `projects.ts:191-193`
   invariant holds. Threshold comparison is done in JS (fetch active rows,
   compare `Number(flakeRate)`) to dodge Postgres `numeric >= text`.
+- **The dashboard `/admin` console spends `ADMIN_TOKEN` server-side (plan
+  053).** Reads/writes go through `$lib/server/adminApi.ts` (server-only) and
+  SvelteKit form actions — the token never reaches the browser. The console is
+  gated by the same `hooks.server.ts` `DASHBOARD_PASSWORD` Basic Auth as every
+  other route; the API admin endpoints stay `ADMIN_TOKEN`-gated as the real
+  boundary (roadmap #6 owns per-user auth). Delete requires server-side typed
+  name confirmation; prune uses the API's two-phase dry-run→confirm.
+- **The dashboard needs `ORIGIN` (or `PROTOCOL_HEADER`) set for any admin
+  form action to work, found while writing plan 053's E2E spec — the first
+  test in the suite to exercise a POST.** `@sveltejs/adapter-node`'s CSRF
+  check compares the request's `Origin` header against its own guess at
+  `event.url.origin`; without `ORIGIN`/`PROTOCOL_HEADER`, `get_origin()`
+  defaults to assuming `https`, so every same-origin POST served over plain
+  `http` (the E2E build, and `docker-compose.yml`'s default) 403s as
+  `"Cross-site POST form submissions are forbidden"` even though browser and
+  server agree on the origin. Fixed by setting `ORIGIN` in both
+  `apps/dashboard/playwright.config.ts`'s `webServer.env` (E2E) and
+  `docker-compose.yml`'s `dashboard.environment` (real deployments, defaults
+  to `http://localhost:3000`) — set it to the externally visible URL, not
+  the container's own port, when behind a reverse proxy.
 
 ## Conventions
 

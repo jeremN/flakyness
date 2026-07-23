@@ -45,6 +45,11 @@ describe('validateWebhookUrl', () => {
   it('rejects an unparseable URL', () => {
     expect(validateWebhookUrl('not a url')).toBe('must be a valid URL');
   });
+  it('accepts exactly 2048 chars', () => {
+    const url = 'https://x.test/' + 'a'.repeat(2048 - 'https://x.test/'.length);
+    expect(url.length).toBe(2048);
+    expect(validateWebhookUrl(url)).toBeNull();
+  });
   it('rejects over 2048 chars', () => {
     expect(validateWebhookUrl('https://x.test/' + 'a'.repeat(2048))).toBe(
       'must be at most 2048 characters'
@@ -80,6 +85,14 @@ describe('validateConfigForm', () => {
   });
   it('does not cross-check when only one of the two is set', () => {
     expect(validateConfigForm({ retentionDays: '10' }).valid).toBe(true);
+  });
+  it('does not cross-check when windowDays is set and retentionDays is blank', () => {
+    expect(validateConfigForm({ windowDays: '30', retentionDays: '' }).valid).toBe(true);
+  });
+  it('accepts retentionDays equal to windowDays (boundary: < not <=)', () => {
+    const r = validateConfigForm({ windowDays: '30', retentionDays: '30' });
+    expect(r.valid).toBe(true);
+    expect(r.errors.retentionDays).toBeUndefined();
   });
 });
 

@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('$lib/server/adminApi', () => ({
   listProjects: vi.fn(),
   patchProject: vi.fn(),
+  rotateToken: vi.fn(),
+  pruneProject: vi.fn(),
+  deleteProject: vi.fn(),
   adminConfigured: vi.fn(() => true),
   AdminApiError: class AdminApiError extends Error {
     statusCode: number;
@@ -14,11 +17,14 @@ vi.mock('$lib/server/adminApi', () => ({
   MissingAdminTokenError: class MissingAdminTokenError extends Error {},
 }));
 
-import { listProjects, patchProject } from '$lib/server/adminApi';
+import { listProjects, patchProject, rotateToken, pruneProject, deleteProject } from '$lib/server/adminApi';
 import { load, actions } from './+page.server';
 
 const mockedList = vi.mocked(listProjects);
 const mockedPatch = vi.mocked(patchProject);
+const mockedRotate = vi.mocked(rotateToken);
+const mockedPrune = vi.mocked(pruneProject);
+const mockedDelete = vi.mocked(deleteProject);
 
 const project = {
   id: 'p1',
@@ -102,5 +108,47 @@ describe('admin/[projectId] patch action', () => {
     const result = (await actions.patch(formEvent({ windowDays: '20' }))) as any;
     expect(result.status).toBe(400);
     expect(result.data.message).toBe('retentionDays must be >= windowDays');
+  });
+});
+
+describe('admin/[projectId] rotate action', () => {
+  it('returns the show-once token', async () => {
+    mockedRotate.mockResolvedValue({ project: { id: 'p1', name: 'Proj' }, token: 'new_tok', warning: 'gone' });
+    const result = (await actions.rotate(formEvent({}))) as any;
+    expect(mockedRotate).toHaveBeenCalledWith('p1');
+    expect(result).toMatchObject({ action: 'rotate', token: 'new_tok', warning: 'gone' });
+  });
+});
+
+describe('admin/[projectId] prune actions', () => {
+  it('dry-run returns the preview counts', async () => {
+    mockedPrune.mockResolvedValue({ dryRun: true, cutoff: '2026-01-01', runsToDelete: 5, resultsToDelete: 20 });
+    const result = (await actions.pruneDryRun(formEvent({}))) as any;
+    expect(mockedPrune).toHaveBeenCalledWith('p1', false);
+    expect(result).toMatchObject({ action: 'prune', prune: { dryRun: true, runsToDelete: 5 } });
+  });
+
+  it('confirm executes the prune', async () => {
+    mockedPrune.mockResolvedValue({ dryRun: false, cutoff: '2026-01-01', runsDeleted: 5, resultsDeleted: 20 });
+    const result = (await actions.pruneConfirm(formEvent({}))) as any;
+    expect(mockedPrune).toHaveBeenCalledWith('p1', true);
+    expect(result).toMatchObject({ action: 'prune', prune: { dryRun: false, runsDeleted: 5 } });
+  });
+});
+
+describe('admin/[projectId] delete action', () => {
+  it('rejects when the typed name does not match', async () => {
+    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'wrong' }))) as any;
+    expect(result.status).toBe(400);
+    expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  it('deletes and redirects to /admin when the typed name matches', async () => {
+    mockedDelete.mockResolvedValue({ success: true, message: 'gone' });
+    // The success path throws redirect(303, '/admin'); catch it to inspect.
+    const thrown: any = await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' })).catch((e) => e);
+    expect(mockedDelete).toHaveBeenCalledWith('p1');
+    expect(thrown.status).toBe(303);
+    expect(thrown.location).toBe('/admin');
   });
 });

@@ -1,15 +1,26 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
+  import TokenReveal from '$lib/components/TokenReveal.svelte';
+  import { formatDate } from '$lib/format';
 
   // `data` uses the generated PageData; `form` is hand-typed (Global Constraint
-  // 3) — the union of all four actions' returns is not worth narrowing. Task 6
-  // adds `token`/`warning`/`prune` to this same interface.
+  // 3) — the union of all four actions' returns is not worth narrowing.
   interface DetailFormResult {
     action?: 'patch' | 'rotate' | 'prune' | 'delete';
     success?: boolean;
     errors?: Record<string, string>;
     message?: string;
+    token?: string;
+    warning?: string;
+    prune?: {
+      dryRun: boolean;
+      cutoff: string;
+      runsToDelete?: number;
+      resultsToDelete?: number;
+      runsDeleted?: number;
+      resultsDeleted?: number;
+    };
   }
   interface Props {
     data: PageData;
@@ -28,6 +39,9 @@
   function val(n: number | null): string {
     return n === null ? '' : String(n);
   }
+
+  let confirmName = $state('');
+  const canDelete = $derived(confirmName === project.name);
 </script>
 
 <svelte:head>
@@ -111,5 +125,90 @@
     </label>
 
     <button type="submit" class="pill-btn pill-btn-primary self-start">Save settings</button>
+  </form>
+</section>
+
+<!-- Rotate token -->
+<section class="card p-6 max-w-2xl mb-8">
+  <h2 class="text-lg font-semibold text-gray-900 mb-2">API token</h2>
+  {#if form?.action === 'rotate' && form.token}
+    <div class="mb-4">
+      <TokenReveal token={form.token!} warning={form.warning!} />
+    </div>
+  {/if}
+  {#if form?.action === 'rotate' && form.message}
+    <p class="text-sm text-red-600 mb-3">{form.message}</p>
+  {/if}
+  <p class="text-sm text-muted mb-3">
+    Rotating issues a new token and invalidates the current one immediately — CI using the old
+    token will fail until its secret is updated.
+  </p>
+  <form method="POST" action="?/rotate" use:enhance>
+    <button type="submit" class="pill-btn pill-btn-ghost">Rotate token</button>
+  </form>
+</section>
+
+<!-- Prune -->
+<section class="card p-6 max-w-2xl mb-8">
+  <h2 class="text-lg font-semibold text-gray-900 mb-2">Prune old data</h2>
+  {#if form?.action === 'prune' && form.prune}
+    {#if form.prune.dryRun}
+      <p class="text-sm text-gray-700 mb-3">
+        This will delete {form.prune.runsToDelete} runs / {form.prune.resultsToDelete} results
+        older than {formatDate(form.prune.cutoff)}.
+      </p>
+      <form method="POST" action="?/pruneConfirm" use:enhance class="mb-4">
+        <button
+          type="submit"
+          class="pill-btn bg-red-600 text-white hover:bg-red-700"
+        >
+          Confirm prune
+        </button>
+      </form>
+    {:else}
+      <p class="text-sm text-green-600 mb-3">
+        Deleted {form.prune.runsDeleted} runs / {form.prune.resultsDeleted} results.
+      </p>
+    {/if}
+  {/if}
+  {#if form?.action === 'prune' && form.message}
+    <p class="text-sm text-red-600 mb-3">{form.message}</p>
+  {/if}
+  <form method="POST" action="?/pruneDryRun" use:enhance>
+    <button type="submit" class="pill-btn pill-btn-ghost">Preview prune…</button>
+  </form>
+</section>
+
+<!-- Delete -->
+<section class="card p-6 max-w-2xl border border-red-200">
+  <h2 class="text-lg font-semibold text-red-700 mb-2">Delete project</h2>
+  <p class="text-sm text-muted mb-3">
+    Permanently deletes “{project.name}” and all its runs, results, and flaky-test history. This
+    cannot be undone.
+  </p>
+  {#if form?.action === 'delete' && form.message}
+    <p class="text-sm text-red-600 mb-3">{form.message}</p>
+  {/if}
+  <form method="POST" action="?/delete" use:enhance class="flex flex-col gap-3">
+    <input type="hidden" name="name" value={project.name} />
+    <label for="confirmName" class="text-sm text-gray-700">
+      Type <span class="font-mono font-semibold">{project.name}</span> to confirm:
+    </label>
+    <input
+      id="confirmName"
+      name="confirmName"
+      type="text"
+      autocomplete="off"
+      bind:value={confirmName}
+      aria-label="Type the project name to confirm"
+      class="w-full max-w-sm border border-subtle rounded-lg px-3 py-2 text-sm"
+    />
+    <button
+      type="submit"
+      disabled={!canDelete}
+      class="pill-btn bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed self-start"
+    >
+      Delete permanently
+    </button>
   </form>
 </section>

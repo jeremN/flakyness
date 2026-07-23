@@ -57,3 +57,39 @@ describe('admin/[projectId]/+page settings', () => {
     await expect.element(page.getByText('Settings saved.')).toBeInTheDocument();
   });
 });
+
+describe('admin/[projectId]/+page lifecycle', () => {
+  it('shows the token reveal after a rotate', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project() },
+        form: { action: 'rotate', token: 'rot_tok', warning: 'gone forever' },
+      },
+    });
+    await expect.element(page.getByText('rot_tok')).toBeInTheDocument();
+  });
+
+  it('shows prune preview counts and a confirm button on a dry run', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project() },
+        form: {
+          action: 'prune',
+          prune: { dryRun: true, cutoff: '2026-01-01T00:00:00Z', runsToDelete: 5, resultsToDelete: 20 },
+        },
+      },
+    });
+    await expect.element(page.getByText(/will delete 5 runs \/ 20 results/)).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Confirm prune' })).toBeInTheDocument();
+  });
+
+  it('keeps Delete disabled until the exact name is typed', async () => {
+    render(Page, { props: { data: { ...layout, project: project() }, form: null } });
+    const btn = page.getByRole('button', { name: 'Delete permanently' });
+    await expect.element(btn).toBeDisabled();
+    await page.getByLabelText('Type the project name to confirm').fill('wrong');
+    await expect.element(btn).toBeDisabled();
+    await page.getByLabelText('Type the project name to confirm').fill('Proj One');
+    await expect.element(btn).toBeEnabled();
+  });
+});

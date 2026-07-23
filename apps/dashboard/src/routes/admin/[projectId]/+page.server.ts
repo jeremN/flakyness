@@ -1,8 +1,11 @@
 import type { PageServerLoad, Actions } from './$types';
-import { error, fail } from '@sveltejs/kit';
+import { error, fail, redirect } from '@sveltejs/kit';
 import {
   listProjects,
   patchProject,
+  rotateToken,
+  pruneProject,
+  deleteProject,
   adminConfigured,
   AdminApiError,
   MissingAdminTokenError,
@@ -46,5 +49,53 @@ export const actions = {
     } catch (e) {
       return actionError('patch', e);
     }
+  },
+
+  rotate: async ({ params }) => {
+    if (!adminConfigured()) return fail(403, { action: 'rotate', message: 'ADMIN_TOKEN not set.' });
+    try {
+      const result = await rotateToken(params.projectId);
+      return { action: 'rotate', token: result.token, warning: result.warning };
+    } catch (e) {
+      return actionError('rotate', e);
+    }
+  },
+
+  pruneDryRun: async ({ params }) => {
+    if (!adminConfigured()) return fail(403, { action: 'prune', message: 'ADMIN_TOKEN not set.' });
+    try {
+      const prune = await pruneProject(params.projectId, false);
+      return { action: 'prune', prune };
+    } catch (e) {
+      return actionError('prune', e);
+    }
+  },
+
+  pruneConfirm: async ({ params }) => {
+    if (!adminConfigured()) return fail(403, { action: 'prune', message: 'ADMIN_TOKEN not set.' });
+    try {
+      const prune = await pruneProject(params.projectId, true);
+      return { action: 'prune', prune };
+    } catch (e) {
+      return actionError('prune', e);
+    }
+  },
+
+  delete: async ({ request, params }) => {
+    if (!adminConfigured()) return fail(403, { action: 'delete', message: 'ADMIN_TOKEN not set.' });
+    const form = await request.formData();
+    const name = String(form.get('name') ?? '');
+    const confirmName = String(form.get('confirmName') ?? '');
+    // Server-side footgun guard: the typed name must match the name we showed.
+    // (The client also disables the button; this is the real check.)
+    if (confirmName !== name || name === '') {
+      return fail(400, { action: 'delete', message: 'Type the exact project name to confirm.' });
+    }
+    try {
+      await deleteProject(params.projectId);
+    } catch (e) {
+      return actionError('delete', e);
+    }
+    throw redirect(303, '/admin');
   },
 } satisfies Actions;

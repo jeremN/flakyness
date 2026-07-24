@@ -147,6 +147,32 @@ describe('update action', () => {
     await actions.update(formEvent({ ruleId: 'r1', action: 'exempt' }));
     expect(mockedPatch).toHaveBeenCalledWith('p1', 'r1', expect.objectContaining({ action: 'exempt', conditionType: null }));
   });
+
+  it('rejects an invalid rule before calling the API', async () => {
+    const result = (await actions.update(
+      formEvent({ ruleId: 'r1', action: 'exempt', conditionType: 'flake_rate' })
+    )) as any;
+    expect(result.status).toBe(400);
+    expect(result.data.errors).toBeTruthy();
+    expect(mockedPatch).not.toHaveBeenCalled();
+  });
+
+  it('forwards an API error as a fail with the API message', async () => {
+    const { AdminApiError } = await import('$lib/server/adminApi');
+    mockedPatch.mockRejectedValue(new AdminApiError(400, 'flake_rate needs flakeThreshold'));
+    const result = (await actions.update(
+      formEvent({ ruleId: 'r1', action: 'quarantine', conditionType: 'flake_rate', flakeThreshold: '0.3' })
+    )) as any;
+    expect(result.status).toBe(400);
+    expect(result.data.message).toBe('flake_rate needs flakeThreshold');
+  });
+
+  it('403s up front when ADMIN_TOKEN is not configured, without calling the API', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    const result = (await actions.update(formEvent({ ruleId: 'r1', action: 'exempt' }))) as any;
+    expect(result.status).toBe(403);
+    expect(mockedPatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('toggle action', () => {
@@ -168,6 +194,13 @@ describe('toggle action', () => {
     const result = (await actions.toggle(formEvent({ ruleId: 'r1', enabled: 'true' }))) as any;
     expect(result.status).toBe(409);
     expect(result.data.message).toBe('conflict');
+  });
+
+  it('403s up front when ADMIN_TOKEN is not configured, without calling the API', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    const result = (await actions.toggle(formEvent({ ruleId: 'r1', enabled: 'true' }))) as any;
+    expect(result.status).toBe(403);
+    expect(mockedPatch).not.toHaveBeenCalled();
   });
 });
 
@@ -191,6 +224,19 @@ describe('delete action', () => {
     const result = (await actions.delete(formEvent({ ruleId: 'r1' }))) as any;
     expect(result.status).toBe(409);
     expect(result.data.message).toBe('in use');
+  });
+
+  it('maps a non-AdminApiError throw to a generic 502', async () => {
+    mockedDelete.mockRejectedValue(new Error('boom'));
+    const result = (await actions.delete(formEvent({ ruleId: 'r1' }))) as any;
+    expect(result.status).toBe(502);
+  });
+
+  it('403s up front when ADMIN_TOKEN is not configured, without calling the API', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    const result = (await actions.delete(formEvent({ ruleId: 'r1' }))) as any;
+    expect(result.status).toBe(403);
+    expect(mockedDelete).not.toHaveBeenCalled();
   });
 });
 
@@ -241,6 +287,21 @@ describe('reorder action', () => {
     mockedListRules.mockRejectedValue(new AdminApiError(503, 'API down'));
     const result = (await actions.reorder(formEvent({ ruleId: 'r1', direction: 'up' }))) as any;
     expect(result.status).toBe(503);
+    expect(mockedReorder).not.toHaveBeenCalled();
+  });
+
+  it('forwards an AdminApiError from the reorder call itself as a fail', async () => {
+    const { AdminApiError } = await import('$lib/server/adminApi');
+    mockedListRules.mockResolvedValue({ rules: [ruleRow('r1', 0), ruleRow('r2', 1)] });
+    mockedReorder.mockRejectedValue(new AdminApiError(500, 'db down'));
+    const result = (await actions.reorder(formEvent({ ruleId: 'r2', direction: 'up' }))) as any;
+    expect(result.status).toBe(500);
+  });
+
+  it('403s up front when ADMIN_TOKEN is not configured, without calling the API', async () => {
+    mockedAdminConfigured.mockReturnValueOnce(false);
+    const result = (await actions.reorder(formEvent({ ruleId: 'r1', direction: 'up' }))) as any;
+    expect(result.status).toBe(403);
     expect(mockedReorder).not.toHaveBeenCalled();
   });
 });

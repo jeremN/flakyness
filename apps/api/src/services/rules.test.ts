@@ -21,6 +21,11 @@ describe('globToRegExp', () => {
     expect(globToRegExp('a.b').test('a.b')).toBe(true);
     expect(globToRegExp('a.b').test('axb')).toBe(false);
   });
+  it('? matches exactly one char within a segment', () => {
+    expect(globToRegExp('a?c').test('abc')).toBe(true);
+    expect(globToRegExp('a?c').test('a/c')).toBe(false);
+    expect(globToRegExp('a?c').test('ac')).toBe(false);
+  });
 });
 
 // A base rule; individual tests override fields.
@@ -36,10 +41,24 @@ describe('evaluateRules — matching + first-match-wins', () => {
     expect(d.kind).toBe('no-match');
   });
   it('a matching exempt rule owns the decision and stops evaluation', () => {
-    const rules = [rule({ position: 0, action: 'exempt', conditionType: null, selectorTag: 'critical' }),
-                   rule({ position: 1 })];
+    const rules = [rule({ id: 'r1', position: 0, action: 'exempt', conditionType: null, selectorTag: 'critical' }),
+                   rule({ id: 'r2', position: 1 })];
     const d = evaluateRules(rules, [r('failed', 'main', 'e2e/a.spec.ts', ['critical']), r('failed')]);
     expect(d).toMatchObject({ kind: 'exempt', ruleId: 'r1' });
+  });
+  it('a non-matching rule is skipped so a later rule can own the decision', () => {
+    // ruleA's selector excludes every result in the slice; ruleB is a wildcard
+    // quarantine rule whose condition fires. Proves the outer loop `continue`s
+    // past ruleA rather than aborting evaluation.
+    const ruleA = rule({ id: 'r1', position: 0, selectorBranch: 'release/*' });
+    const ruleB = rule({ id: 'r2', position: 1, flakeThreshold: 0.5, minRuns: 1 });
+    const d = evaluateRules([ruleA, ruleB], [r('failed', 'main')]);
+    expect(d).toMatchObject({ kind: 'quarantine', ruleId: 'r2' });
+  });
+  it('a result missing the selector tag falls outside the rule slice', () => {
+    const only = rule({ selectorTag: 'critical', flakeThreshold: 0.5, minRuns: 1 });
+    const d = evaluateRules([only], [r('failed', 'main', 'e2e/a.spec.ts', [])]);
+    expect(d).toMatchObject({ kind: 'no-match' });
   });
   it('AND-combines provided selectors; an omitted selector is a wildcard', () => {
     const only = rule({ selectorBranch: 'main', selectorFile: 'e2e/**' });
@@ -79,9 +98,15 @@ describe('evaluateRules — consecutive condition', () => {
     expect(d.kind).toBe('quarantine');
   });
   it('a passed OR flaky result resets the streak', () => {
+    // Four results (not three) so a break-vs-continue mutation is
+    // distinguishable: correct code (`break`) stops accumulating at the
+    // flaky result, so the two failures behind it never count toward the
+    // streak; a `break` → `continue` mutation would let them accumulate
+    // past the threshold instead.
     const d = evaluateRules([consec(3)], [
-      r('failed', 'main', 'e2e/a.spec.ts', [], '2026-07-24T03:00:00Z'),
-      r('flaky',  'main', 'e2e/a.spec.ts', [], '2026-07-24T02:00:00Z'),
+      r('failed', 'main', 'e2e/a.spec.ts', [], '2026-07-24T04:00:00Z'),
+      r('flaky',  'main', 'e2e/a.spec.ts', [], '2026-07-24T03:00:00Z'),
+      r('failed', 'main', 'e2e/a.spec.ts', [], '2026-07-24T02:00:00Z'),
       r('failed', 'main', 'e2e/a.spec.ts', [], '2026-07-24T01:00:00Z'),
     ]);
     expect(d.kind).toBe('leave'); // only 1 in a row from newest

@@ -52,6 +52,10 @@ import { pathToFileURL } from 'node:url';
 //  - playwright.ts: reliable low 91.11% (of 91.11/91.37; pure parser). Floor 86.
 // Raising real coverage on the coarse route files is the honest way to lift
 // these floors further (see plans/README.md #13/#15).
+// Plan 054 (quarantine rule engine) baselined services/rules.ts 2026-07-24 via
+// `stryker run --mutate src/services/rules.ts` (pure module, no DB): 89.23%,
+// identical across 2 scoped runs (deterministic, same pattern as
+// flakiness.ts/junit.ts). Floor 84.
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -60,6 +64,7 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/flakiness.ts',    floor: 87 }, // baseline: 92.90% (reliable, reproduced 2x; 2 genuine chunks() infinite-loop timeouts)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/junit.ts',         floor: 83 }, // baseline: 88.38% (deterministic — identical across 2 runs)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/playwright.ts',    floor: 86 }, // baseline: 91.11% (reliable low of 91.11/91.37)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/rules.ts',        floor: 84 }, // baseline: 89.23% (reliable, reproduced 2x)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

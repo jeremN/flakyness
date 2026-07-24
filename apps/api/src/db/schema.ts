@@ -136,10 +136,42 @@ export const quarantineEvents = pgTable('quarantine_events', {
   flakeRate: decimal('flake_rate', { precision: 5, scale: 4 }),
   threshold: decimal('threshold', { precision: 5, scale: 4 }),
   ttlDays: integer('ttl_days'),
+  // Which rule promoted this test, when the rule engine (4b) drove it; NULL for
+  // legacy single-threshold mutes and all manual/release events. ON DELETE SET
+  // NULL so deleting a rule preserves the historical audit row.
+  ruleId: uuid('rule_id').references(() => quarantineRules.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   projectCreatedIdx: index('quarantine_events_project_created_idx')
     .on(table.projectId, table.createdAt),
+}));
+
+// Ordered per-project quarantine policy rules (roadmap 4b). NULL selectors are
+// wildcards; lower `position` = higher priority (first-match-wins). When a
+// project has >=1 enabled rule, reconcileQuarantine takes the rule path; else
+// the legacy single-threshold path (plan 051) runs unchanged.
+export const quarantineRules = pgTable('quarantine_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  position: integer('position').notNull(),
+  name: varchar('name', { length: 255 }),
+  enabled: boolean('enabled').notNull().default(true),
+  // Glob for branch/file; membership for tag. NULL = any.
+  selectorBranch: varchar('selector_branch', { length: 255 }),
+  selectorFile: varchar('selector_file', { length: 500 }),
+  selectorTag: varchar('selector_tag', { length: 255 }),
+  action: varchar('action', { length: 16 }).notNull(), // quarantine | exempt
+  conditionType: varchar('condition_type', { length: 16 }), // flake_rate | consecutive | NULL (exempt)
+  flakeThreshold: decimal('flake_threshold', { precision: 5, scale: 4 }),
+  minRuns: integer('min_runs'),
+  windowDays: integer('window_days'),
+  consecutiveFailures: integer('consecutive_failures'),
+  ttlDays: integer('ttl_days'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  projectPositionIdx: index('quarantine_rules_project_position_idx')
+    .on(table.projectId, table.position),
 }));
 
 // Type exports for use in application
@@ -153,3 +185,5 @@ export type FlakyTest = typeof flakyTests.$inferSelect;
 export type NewFlakyTest = typeof flakyTests.$inferInsert;
 export type QuarantineEvent = typeof quarantineEvents.$inferSelect;
 export type NewQuarantineEvent = typeof quarantineEvents.$inferInsert;
+export type QuarantineRule = typeof quarantineRules.$inferSelect;
+export type NewQuarantineRule = typeof quarantineRules.$inferInsert;

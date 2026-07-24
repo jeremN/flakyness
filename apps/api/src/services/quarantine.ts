@@ -1,6 +1,7 @@
 import { and, eq, lt, gt, sql } from 'drizzle-orm';
-import { db, flakyTests, testResults, testRuns, quarantineEvents } from '../db';
+import { db, flakyTests, testResults, testRuns, quarantineEvents, quarantineRules } from '../db';
 import { resolveProjectConfig, type ProjectFlakinessOverrides } from './flakiness';
+import { evaluateRules, type EvalRule, type TestSliceResult } from './rules';
 
 export interface QuarantineConfig {
   enabled: boolean;
@@ -37,6 +38,7 @@ export interface QuarantineTransition {
   event: 'entered' | 'released';
   flakeRate: number | null;
   expiresAt: Date | null;
+  ruleId?: string | null; // set when the rule engine drove the promotion
 }
 
 /**
@@ -73,40 +75,16 @@ export async function reconcileQuarantine(
 
   // Phase 3: PROMOTE — only when enabled.
   if (cfg.enabled) {
-    // Fetch active rows and compare the (numeric) flakeRate in JS — avoids a
-    // Postgres `numeric >= text` operator-resolution pitfall and matches the
-    // codebase's compute-in-JS idiom. Active flaky rows are bounded per project.
-    const activeRows = await db
+    const rules = await db
       .select()
-      .from(flakyTests)
-      .where(and(
-        eq(flakyTests.projectId, projectId),
-        eq(flakyTests.status, 'active'),
-      ));
-    const candidates = activeRows.filter((r) => Number(r.flakeRate ?? 0) >= cfg.threshold);
+      .from(quarantineRules)
+      .where(and(eq(quarantineRules.projectId, projectId), eq(quarantineRules.enabled, true)))
+      .orderBy(quarantineRules.position);
 
-    for (const cand of candidates) {
-      // Clean slate: if released before, require >= minRuns fresh runs after release.
-      if (cand.quarantineReleasedAt) {
-        const [{ count }] = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(testResults)
-          .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
-          .where(and(
-            eq(testRuns.projectId, projectId),
-            eq(testResults.testName, cand.testName),
-            gt(testResults.createdAt, cand.quarantineReleasedAt),
-          ));
-        if (Number(count) < cfg.minRuns) continue;
-      } else if ((cand.totalRuns ?? 0) < cfg.minRuns) {
-        continue;
-      }
-
-      const expiresAt = new Date(now.getTime() + cfg.ttlDays * 86_400_000);
-      await db.update(flakyTests)
-        .set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt })
-        .where(eq(flakyTests.id, cand.id));
-      transitions.push({ testName: cand.testName, event: 'entered', flakeRate: cand.flakeRate ? Number(cand.flakeRate) : null, expiresAt });
+    if (rules.length === 0) {
+      await promoteLegacy(projectId, cfg, now, transitions); // plan-051 path, unchanged
+    } else {
+      await promoteWithRules(projectId, project, cfg, rules, now, transitions);
     }
   }
 
@@ -118,10 +96,162 @@ export async function reconcileQuarantine(
       event: t.event,
       source: 'auto' as const,
       flakeRate: t.flakeRate != null ? t.flakeRate.toFixed(4) : null,
-      threshold: t.event === 'entered' ? cfg.threshold.toFixed(4) : null,
-      ttlDays: t.event === 'entered' ? cfg.ttlDays : null,
+      // Rule-driven mutes: rule_id is the authoritative provenance, so the
+      // project threshold/ttl would be misleading (a consecutive rule has no
+      // threshold; a rule may override ttl) → null them. Legacy/no-match mutes
+      // (ruleId null) keep the project cfg values.
+      threshold: t.event === 'entered' ? (t.ruleId ? null : cfg.threshold.toFixed(4)) : null,
+      ttlDays: t.event === 'entered' ? (t.ruleId ? null : cfg.ttlDays) : null,
+      ruleId: t.event === 'entered' ? (t.ruleId ?? null) : null,
     })));
   }
 
   return transitions;
+}
+
+/**
+ * The plan-051 single-threshold promotion, unchanged: fetch active rows,
+ * apply the (numeric) flakeRate>=threshold filter in JS (avoids a Postgres
+ * `numeric >= text` operator-resolution pitfall), then delegate the per-row
+ * decision to `legacyThresholdDecision`.
+ */
+async function promoteLegacy(
+  projectId: string,
+  cfg: QuarantineConfig,
+  now: Date,
+  transitions: QuarantineTransition[],
+): Promise<void> {
+  const activeRows = await db.select().from(flakyTests)
+    .where(and(eq(flakyTests.projectId, projectId), eq(flakyTests.status, 'active')));
+  for (const active of activeRows) {
+    const t = await legacyThresholdDecision(projectId, active, cfg, now);
+    if (t) transitions.push(t);
+  }
+}
+
+const DAY = 86_400_000;
+
+/** Reduce a stored rule row to the engine's numeric shape. A rule with no
+ *  explicit `windowDays` resolves to the project's flakiness window so every
+ *  rule (quarantine AND exempt) evaluates over a concrete window (spec §2). */
+function toEvalRule(row: typeof quarantineRules.$inferSelect, defaultWindowDays: number): EvalRule {
+  return {
+    id: row.id, position: row.position, action: row.action as 'quarantine' | 'exempt',
+    conditionType: row.conditionType as EvalRule['conditionType'],
+    selectorBranch: row.selectorBranch, selectorFile: row.selectorFile, selectorTag: row.selectorTag,
+    flakeThreshold: row.flakeThreshold !== null ? Number(row.flakeThreshold) : null,
+    minRuns: row.minRuns, windowDays: row.windowDays ?? defaultWindowDays,
+    consecutiveFailures: row.consecutiveFailures, ttlDays: row.ttlDays,
+  };
+}
+
+async function promoteWithRules(
+  projectId: string,
+  project: ProjectQuarantineOverrides,
+  cfg: QuarantineConfig,
+  ruleRows: (typeof quarantineRules.$inferSelect)[],
+  now: Date,
+  transitions: QuarantineTransition[],
+): Promise<void> {
+  const flakiness = resolveProjectConfig(project);
+  const rules = ruleRows.map((row) => toEvalRule(row, flakiness.windowDays));
+  // Evaluation window = widest effective rule window (null → project → global 14), capped 90.
+  const windowDays = Math.min(90, Math.max(...rules.map((r) => r.windowDays ?? flakiness.windowDays)));
+  const cutoff = new Date(now.getTime() - windowDays * DAY);
+
+  // One fetch of the whole window; the engine slices per rule in memory (no N+1).
+  const rows = await db.select({
+      testName: testResults.testName, testFile: testResults.testFile, status: testResults.status,
+      tags: testResults.tags, branch: testRuns.branch, createdAt: testResults.createdAt,
+    })
+    .from(testResults).innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+    .where(and(eq(testRuns.projectId, projectId), gt(testResults.createdAt, cutoff)));
+
+  const byTest = new Map<string, { file: string | null; results: TestSliceResult[] }>();
+  for (const row of rows) {
+    const entry = byTest.get(row.testName) ?? { file: row.testFile, results: [] };
+    entry.results.push({ status: row.status, branch: row.branch, testFile: row.testFile, tags: row.tags ?? [], createdAt: row.createdAt });
+    byTest.set(row.testName, entry);
+  }
+
+  // ALL flaky_tests rows for the project: active rows drive the no-match legacy
+  // fallback; ignored rows let us leave MANUAL mutes untouched — they are
+  // indefinite and must never become an auto mute (which the Release phase would
+  // later auto-release).
+  const allRows = await db.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
+  const rowByName = new Map(allRows.map((r) => [r.testName, r]));
+  const candidateNames = new Set<string>([...byTest.keys(), ...allRows.filter((r) => r.status === 'active').map((r) => r.testName)]);
+
+  for (const testName of candidateNames) {
+    const entry = byTest.get(testName);
+    const existing = rowByName.get(testName);
+    const decision = evaluateRules(rules, entry?.results ?? [], now);
+
+    if (decision.kind === 'quarantine') {
+      if (existing?.status === 'ignored') continue; // already quarantined (auto — Release owns its TTL) or manually muted (immune); never re-enter
+      const active = existing?.status === 'active' ? existing : undefined;
+      const ttlDays = decision.ttlDays ?? cfg.ttlDays;
+      // Clean slate only applies to a previously-released row.
+      if (active?.quarantineReleasedAt && !(await hasFreshRuns(projectId, testName, active.quarantineReleasedAt, cfg.minRuns))) continue;
+      const expiresAt = new Date(now.getTime() + ttlDays * DAY);
+      const flakeRate = sliceFlakeRate(entry?.results ?? []);
+      await db.insert(flakyTests).values({
+          projectId, testName, testFile: entry?.file ?? active?.testFile ?? null,
+          firstDetected: active?.firstDetected ?? now, lastSeen: now,
+          flakeCount: 0, totalRuns: entry?.results.length ?? active?.totalRuns ?? 0,
+          flakeRate: flakeRate.toFixed(4), status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt,
+        })
+        .onConflictDoUpdate({
+          target: [flakyTests.projectId, flakyTests.testName],
+          set: { status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt, lastSeen: now },
+        });
+      transitions.push({ testName, event: 'entered', flakeRate, expiresAt, ruleId: decision.ruleId });
+    } else if (decision.kind === 'no-match') {
+      // No rule owns this test → the exact plan-051 project-threshold decision,
+      // via the same helper promoteLegacy uses (single source of truth).
+      const active = existing?.status === 'active' ? existing : undefined;
+      if (!active) continue;
+      const t = await legacyThresholdDecision(projectId, active, cfg, now);
+      if (t) transitions.push(t);
+    }
+    // exempt / leave → no promotion.
+  }
+}
+
+/**
+ * The plan-051 single-threshold decision for ONE active flaky_tests row.
+ * Returns the transition (and applies the mute) if the row crosses the project
+ * threshold and clears the clean-slate guard, else null. Shared by the legacy
+ * path and the rule path's no-match fallback so the two never diverge.
+ */
+async function legacyThresholdDecision(
+  projectId: string,
+  active: typeof flakyTests.$inferSelect,
+  cfg: QuarantineConfig,
+  now: Date,
+): Promise<QuarantineTransition | null> {
+  if (Number(active.flakeRate ?? 0) < cfg.threshold) return null;
+  if (active.quarantineReleasedAt) {
+    if (!(await hasFreshRuns(projectId, active.testName, active.quarantineReleasedAt, cfg.minRuns))) return null;
+  } else if ((active.totalRuns ?? 0) < cfg.minRuns) {
+    return null;
+  }
+  const expiresAt = new Date(now.getTime() + cfg.ttlDays * DAY);
+  await db.update(flakyTests)
+    .set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt })
+    .where(eq(flakyTests.id, active.id));
+  return { testName: active.testName, event: 'entered', flakeRate: active.flakeRate ? Number(active.flakeRate) : null, expiresAt, ruleId: null };
+}
+
+function sliceFlakeRate(results: TestSliceResult[]): number {
+  if (results.length === 0) return 0;
+  const bad = results.filter((r) => r.status === 'failed' || r.status === 'flaky').length;
+  return bad / results.length;
+}
+
+async function hasFreshRuns(projectId: string, testName: string, since: Date, minRuns: number): Promise<boolean> {
+  const [{ count }] = await db.select({ count: sql<number>`count(*)` })
+    .from(testResults).innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+    .where(and(eq(testRuns.projectId, projectId), eq(testResults.testName, testName), gt(testResults.createdAt, since)));
+  return Number(count) >= minRuns;
 }

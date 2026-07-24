@@ -50,4 +50,28 @@ describe('describeRule', () => {
   it('drops the runs/window clauses when those fields are null', () => {
     expect(describeRule(rule({ minRuns: null, windowDays: null }))).toBe('flake ≥ 0.30');
   });
+
+  it('falls back to "?" when flakeThreshold is null on a flake_rate rule', () => {
+    expect(describeRule(rule({ flakeThreshold: null, minRuns: 5, windowDays: 14 }))).toBe(
+      'flake ≥ ? over ≥ 5 runs / 14d'
+    );
+  });
+
+  it('falls back to "?" when consecutiveFailures is null on a consecutive rule', () => {
+    expect(
+      describeRule(rule({ conditionType: 'consecutive', flakeThreshold: null, minRuns: null, consecutiveFailures: null, windowDays: 14 }))
+    ).toBe('? consecutive fails / 14d');
+  });
+
+  it('returns "no condition" for a quarantine rule with null conditionType', () => {
+    expect(
+      describeRule(rule({ conditionType: null, flakeThreshold: null, minRuns: null, windowDays: null }))
+    ).toBe('no condition');
+  });
+
+  it('omits the window suffix when windowDays is null on a consecutive rule', () => {
+    expect(
+      describeRule(rule({ conditionType: 'consecutive', flakeThreshold: null, minRuns: null, consecutiveFailures: 5, windowDays: null }))
+    ).toBe('5 consecutive fails');
+  });
 });

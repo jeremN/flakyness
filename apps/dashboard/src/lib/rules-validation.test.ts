@@ -116,12 +116,12 @@ describe('validateRuleForm', () => {
     expect(r.errors.flakeThreshold).toBeTruthy();
   });
 
-  it('rejects flakeThreshold at exactly the maximum', () => {
+  it('accepts flakeThreshold at exactly the maximum', () => {
     const r = validateRuleForm(raw({ flakeThreshold: '1' }));
     expect(r.valid).toBe(true);
   });
 
-  it('rejects minRuns at exactly the maximum', () => {
+  it('accepts minRuns at exactly the maximum', () => {
     const r = validateRuleForm(raw({ minRuns: '100' }));
     expect(r.valid).toBe(true);
   });
@@ -150,6 +150,51 @@ describe('validateRuleForm', () => {
     const r = validateRuleForm(raw({ minRuns: '1' }));
     expect(r.valid).toBe(true);
   });
+
+  it('rejects minRuns above the maximum', () => {
+    const r = validateRuleForm(raw({ minRuns: '101' }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.minRuns).toBeTruthy();
+  });
+
+  it('accepts windowDays at the minimum', () => {
+    const r = validateRuleForm(raw({ windowDays: '1' }));
+    expect(r.valid).toBe(true);
+  });
+
+  it('rejects windowDays as a decimal', () => {
+    const r = validateRuleForm(raw({ windowDays: '2.5' }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.windowDays).toBeTruthy();
+  });
+
+  it('accepts consecutiveFailures at the maximum', () => {
+    const r = validateRuleForm({ action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: '100' });
+    expect(r.valid).toBe(true);
+  });
+
+  it('rejects consecutiveFailures above the maximum', () => {
+    const r = validateRuleForm({ action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: '101' });
+    expect(r.valid).toBe(false);
+    expect(r.errors.consecutiveFailures).toBeTruthy();
+  });
+
+  it('rejects consecutiveFailures as a decimal', () => {
+    const r = validateRuleForm({ action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: '2.5' });
+    expect(r.valid).toBe(false);
+    expect(r.errors.consecutiveFailures).toBeTruthy();
+  });
+
+  it('accepts ttlDays at the minimum', () => {
+    const r = validateRuleForm(raw({ ttlDays: '1' }));
+    expect(r.valid).toBe(true);
+  });
+
+  it('rejects ttlDays as a decimal', () => {
+    const r = validateRuleForm(raw({ ttlDays: '2.5' }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.ttlDays).toBeTruthy();
+  });
 });
 
 describe('buildRulePayload', () => {
@@ -162,7 +207,7 @@ describe('buildRulePayload', () => {
   });
 
   it('forces every condition field to null for an exempt rule', () => {
-    const body = buildRulePayload({ action: 'exempt', conditionType: 'flake_rate', flakeThreshold: '0.9', consecutiveFailures: '3' }, false);
+    const body = buildRulePayload({ action: 'exempt', conditionType: 'flake_rate', flakeThreshold: '0.9', minRuns: '5', windowDays: '10', consecutiveFailures: '3' }, false);
     expect(body).toMatchObject({
       action: 'exempt', conditionType: null, flakeThreshold: null,
       minRuns: null, windowDays: null, consecutiveFailures: null, enabled: false,

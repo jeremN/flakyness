@@ -7,6 +7,11 @@ import {
   rotateToken,
   pruneProject,
   deleteProject,
+  listRules,
+  createRule,
+  patchRule,
+  deleteRule,
+  reorderRules,
   adminConfigured,
   AdminApiError,
   MissingAdminTokenError,
@@ -99,6 +104,50 @@ describe('adminApi auth + wiring', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1');
     expect(init.method).toBe('DELETE');
+  });
+
+  it('GETs a project rules list', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ rules: [] }));
+    await listRules('p1');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1/rules');
+    expect(init.method).toBe('GET');
+    expect(init.headers.Authorization).toBe('Bearer admintok');
+  });
+
+  it('POSTs a new rule with a JSON body', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ rule: {} }, 201));
+    await createRule('p1', { action: 'exempt' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1/rules');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ action: 'exempt' });
+  });
+
+  it('PATCHes a rule by id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ rule: {} }));
+    await patchRule('p1', 'r1', { enabled: false });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1/rules/r1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({ enabled: false });
+  });
+
+  it('DELETEs a rule by id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ success: true }));
+    await deleteRule('p1', 'r1');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1/rules/r1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('POSTs the full id order to reorder', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ success: true }));
+    await reorderRules('p1', ['r2', 'r1']);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/admin/projects/p1/rules/reorder');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ order: ['r2', 'r1'] });
   });
 
   it('forwards the API error body and status on a non-2xx', async () => {

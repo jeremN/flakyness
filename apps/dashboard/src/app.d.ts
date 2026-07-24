@@ -160,6 +160,26 @@ export interface AdminProject {
   };
 }
 
+export interface QuarantineRule {
+  id: string;
+  projectId: string;
+  position: number;
+  name: string | null;
+  enabled: boolean;
+  selectorBranch: string | null;
+  selectorFile: string | null;
+  selectorTag: string | null;
+  action: 'quarantine' | 'exempt';
+  conditionType: 'flake_rate' | 'consecutive' | null;
+  flakeThreshold: number | null;
+  minRuns: number | null;
+  windowDays: number | null;
+  consecutiveFailures: number | null;
+  ttlDays: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreateProjectResult {
   project: { id: string; name: string; gitlabProjectId: string | null; createdAt: string };
   token: string;

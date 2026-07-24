@@ -1383,5 +1383,41 @@ describeAdmin('Admin API Integration Tests', () => {
       const listBody = await listRes.json();
       expect(listBody.rules.map((r: { id: string }) => r.id)).toContain(created.rule.id);
     });
+
+    it('rejects a reorder whose id set contains duplicates (400)', async () => {
+      const projectId = await createRulesProject('reorder-duplicate');
+      const first = await (await createRule(projectId, { name: 'first' })).json();
+      await createRule(projectId, { name: 'second' });
+
+      // Same length and membership as the current set, but `first.rule.id`
+      // is repeated instead of including the second rule's id — must still
+      // be rejected, not silently accepted.
+      const res = await app.request(`/api/v1/admin/projects/${projectId}/rules/reorder`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ order: [first.rule.id, first.rule.id] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for POST rule on a non-existent project', async () => {
+      const res = await createRule('00000000-0000-0000-0000-000000000000');
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Project not found');
+    });
+
+    it('returns 404 for GET rules on a non-existent project', async () => {
+      const res = await app.request(
+        '/api/v1/admin/projects/00000000-0000-0000-0000-000000000000/rules',
+        { headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Project not found');
+    });
   });
 });

@@ -1328,9 +1328,9 @@ Returns the project's rules ordered by `position` (evaluation order).
 }
 ```
 
-Returns `400` for a malformed project id. Does **not** 404 for a
-well-formed but non-existent project id — it returns an empty `rules` array,
-matching the read behavior of `GET /api/v1/projects/:id/flaky-tests`.
+Returns `400` for a malformed project id, and `404` `{ "error": "Project not
+found" }` for a well-formed but non-existent project id — matching every
+sibling admin mutation route in this file.
 
 #### Create Rule
 
@@ -1350,7 +1350,8 @@ highest position (evaluated last / lowest priority).
 **Response (201):** `{ "rule": { ... } }` — same shape as the list above.
 Returns `400` on a validation failure (e.g. `action: "exempt"` with a
 `conditionType` set, or `conditionType: "consecutive"` without
-`consecutiveFailures`).
+`consecutiveFailures`), and `404` `{ "error": "Project not found" }` for a
+well-formed but non-existent project id.
 
 #### Update Rule
 

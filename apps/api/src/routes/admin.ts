@@ -617,6 +617,13 @@ adminRouter.get('/projects/:id/rules', async (c) => {
   }
   const projectId = parsed.data;
 
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId),
+  });
+  if (!project) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
   const rows = await db
     .select()
     .from(quarantineRules)
@@ -640,6 +647,13 @@ adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema)
   }
   const projectId = parsed.data;
   const body = c.req.valid('json');
+
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.id, projectId),
+  });
+  if (!project) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
 
   const [{ max }] = await db
     .select({ max: sql<number>`coalesce(max(${quarantineRules.position}), -1)::int` })
@@ -758,7 +772,11 @@ adminRouter.post(
       .where(eq(quarantineRules.projectId, projectId));
     const currentSet = new Set(current.map((r) => r.id));
 
-    if (order.length !== currentSet.size || !order.every((ruleId) => currentSet.has(ruleId))) {
+    if (
+      order.length !== currentSet.size ||
+      new Set(order).size !== order.length ||
+      !order.every((ruleId) => currentSet.has(ruleId))
+    ) {
       return c.json({ error: "order must be exactly the project's current rule ids" }, 400);
     }
 

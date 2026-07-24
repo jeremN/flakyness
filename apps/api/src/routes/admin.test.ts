@@ -1143,4 +1143,245 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe('Quarantine Rules API', () => {
+    async function createRulesProject(label: string): Promise<string> {
+      const res = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: `rules-test-${label}-${Date.now()}` }),
+      });
+      const body = await res.json();
+      return body.project.id as string;
+    }
+
+    async function createRule(projectId: string, overrides: Record<string, unknown> = {}) {
+      const res = await app.request(`/api/v1/admin/projects/${projectId}/rules`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'quarantine',
+          conditionType: 'flake_rate',
+          flakeThreshold: 0.2,
+          ...overrides,
+        }),
+      });
+      return res;
+    }
+
+    it('creates a rule and returns it with a numeric flakeThreshold (201)', async () => {
+      const projectId = await createRulesProject('create');
+      const res = await createRule(projectId, { name: 'my rule', flakeThreshold: 0.3 });
+      expect(res.status).toBe(201);
+
+      const body = await res.json();
+      expect(body.rule.id).toBeDefined();
+      expect(body.rule.name).toBe('my rule');
+      expect(body.rule.action).toBe('quarantine');
+      expect(body.rule.conditionType).toBe('flake_rate');
+      expect(typeof body.rule.flakeThreshold).toBe('number');
+      expect(body.rule.flakeThreshold).toBeCloseTo(0.3, 4);
+    });
+
+    it('rejects an exempt rule that also sets a conditionType (400)', async () => {
+      const projectId = await createRulesProject('exempt-with-condition');
+      const res = await createRule(projectId, {
+        action: 'exempt',
+        conditionType: 'flake_rate',
+        flakeThreshold: 0.2,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a consecutive rule missing consecutiveFailures (400)', async () => {
+      const projectId = await createRulesProject('consecutive-missing-count');
+      const res = await createRule(projectId, {
+        conditionType: 'consecutive',
+        flakeThreshold: undefined,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    // globToRegExp (services/rules.ts) escapes every regex metacharacter and
+    // never throws, so there is no string that fails the schema's glob
+    // refine — an "invalid glob" input does not exist. Instead this proves a
+    // valid glob round-trips through create untouched.
+    it('round-trips a valid glob selector through create', async () => {
+      const projectId = await createRulesProject('valid-glob');
+      const res = await createRule(projectId, { selectorBranch: 'release/*' });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.rule.selectorBranch).toBe('release/*');
+    });
+
+    it('lists rules ordered by position, not insertion order', async () => {
+      const projectId = await createRulesProject('ordering');
+      // Seeded out of insertion order: the first rule created gets the
+      // highest position, the last created gets the lowest. If the route
+      // ever drops `.orderBy(position)`, this list would come back in
+      // insertion order (high, mid, low) instead of position order.
+      const high = await (await createRule(projectId, { name: 'high', position: 10 })).json();
+      const low = await (await createRule(projectId, { name: 'low', position: 1 })).json();
+      const mid = await (await createRule(projectId, { name: 'mid', position: 5 })).json();
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}/rules`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.rules.map((r: { id: string }) => r.id)).toEqual([
+        low.rule.id,
+        mid.rule.id,
+        high.rule.id,
+      ]);
+    });
+
+    it('patches a threshold and reflects it in the response', async () => {
+      const projectId = await createRulesProject('patch-threshold');
+      const created = await (await createRule(projectId, { flakeThreshold: 0.2 })).json();
+
+      const res = await app.request(
+        `/api/v1/admin/projects/${projectId}/rules/${created.rule.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${adminToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ flakeThreshold: 0.5 }),
+        }
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.rule.flakeThreshold).toBeCloseTo(0.5, 4);
+    });
+
+    it('rejects a patch that would leave the rule inconsistent (400)', async () => {
+      const projectId = await createRulesProject('patch-inconsistent');
+      const created = await (
+        await createRule(projectId, { conditionType: 'flake_rate', flakeThreshold: 0.2 })
+      ).json();
+
+      // Flipping action to 'exempt' while the merged row still carries the
+      // flake_rate condition from the existing row must be rejected — an
+      // exempt rule takes no condition.
+      const res = await app.request(
+        `/api/v1/admin/projects/${projectId}/rules/${created.rule.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${adminToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ action: 'exempt' }),
+        }
+      );
+      expect(res.status).toBe(400);
+    });
+
+    it('reorders rules given the exact id set and persists the new positions', async () => {
+      const projectId = await createRulesProject('reorder');
+      const first = await (await createRule(projectId, { name: 'first' })).json();
+      const second = await (await createRule(projectId, { name: 'second' })).json();
+      const third = await (await createRule(projectId, { name: 'third' })).json();
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}/rules/reorder`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          order: [third.rule.id, first.rule.id, second.rule.id],
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).success).toBe(true);
+
+      const listRes = await app.request(`/api/v1/admin/projects/${projectId}/rules`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const listBody = await listRes.json();
+      expect(listBody.rules.map((r: { id: string }) => r.id)).toEqual([
+        third.rule.id,
+        first.rule.id,
+        second.rule.id,
+      ]);
+      expect(listBody.rules.map((r: { position: number }) => r.position)).toEqual([0, 1, 2]);
+    });
+
+    it('rejects a reorder whose id set does not match the project\'s current rules (400)', async () => {
+      const projectId = await createRulesProject('reorder-mismatch');
+      const first = await (await createRule(projectId, { name: 'first' })).json();
+      await createRule(projectId, { name: 'second' });
+
+      // Missing the second rule's id -- not the project's exact current set.
+      const res = await app.request(`/api/v1/admin/projects/${projectId}/rules/reorder`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ order: [first.rule.id] }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('deletes a rule (200), then 404s on a second delete', async () => {
+      const projectId = await createRulesProject('delete');
+      const created = await (await createRule(projectId)).json();
+
+      const firstDelete = await app.request(
+        `/api/v1/admin/projects/${projectId}/rules/${created.rule.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+      expect(firstDelete.status).toBe(200);
+      expect((await firstDelete.json()).success).toBe(true);
+
+      const secondDelete = await app.request(
+        `/api/v1/admin/projects/${projectId}/rules/${created.rule.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+      expect(secondDelete.status).toBe(404);
+    });
+
+    it('returns 404 for a ruleId from another project (PATCH and DELETE)', async () => {
+      const projectA = await createRulesProject('cross-project-a');
+      const projectB = await createRulesProject('cross-project-b');
+      const created = await (await createRule(projectA)).json();
+
+      const patchRes = await app.request(
+        `/api/v1/admin/projects/${projectB}/rules/${created.rule.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${adminToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: 'hijacked' }),
+        }
+      );
+      expect(patchRes.status).toBe(404);
+
+      const deleteRes = await app.request(
+        `/api/v1/admin/projects/${projectB}/rules/${created.rule.id}`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${adminToken}` } }
+      );
+      expect(deleteRes.status).toBe(404);
+
+      // Still there under its own project, proving the DELETE above was a
+      // true no-op rather than an id-only match that ignored projectId.
+      const listRes = await app.request(`/api/v1/admin/projects/${projectA}/rules`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      const listBody = await listRes.json();
+      expect(listBody.rules.map((r: { id: string }) => r.id)).toContain(created.rule.id);
+    });
+  });
 });

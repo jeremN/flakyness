@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
-import { db, projects, testRuns, testResults, flakyTests } from '../db';
+import { db, projects, testRuns, testResults, flakyTests, quarantineRules } from '../db';
 import { adminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { logger } from '../middleware/logger';
 import { resolveProjectConfig } from '../services/flakiness';
+import { globToRegExp } from '../services/rules';
 
 const adminRouter = new Hono();
 
@@ -63,6 +64,105 @@ const projectConfigPatchSchema = z
     quarantineTtlDays: z.number().int().min(1).max(365).nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
+
+// Quarantine rules (roadmap 4b) — ordered per-project policy rules consumed
+// by services/rules.ts's evaluateRules(). See docs/API.md's "Quarantine
+// Rules" section for selector/condition semantics and first-match-wins +
+// fallback-to-legacy-threshold behavior.
+const globField = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    // globToRegExp (services/rules.ts) escapes every regex metacharacter, so
+    // it never throws — every string is a syntactically valid glob. This
+    // refine is harmless defense-in-depth, not a reachable failure path.
+    .refine(
+      (g) => {
+        try {
+          void globToRegExp(g);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: 'invalid glob' }
+    )
+    .nullable()
+    .optional();
+
+// Plain shape with no cross-field check, so `.partial()` works for the PATCH
+// schema below — zod rejects .partial() on a schema wrapped in .superRefine().
+const quarantineRuleShape = z.object({
+  name: z.string().max(255).nullable().optional(),
+  enabled: z.boolean().optional(),
+  position: z.number().int().min(0).optional(),
+  selectorBranch: globField(255),
+  selectorFile: globField(500),
+  selectorTag: z.string().min(1).max(255).nullable().optional(),
+  action: z.enum(['quarantine', 'exempt']),
+  conditionType: z.enum(['flake_rate', 'consecutive']).nullable().optional(),
+  flakeThreshold: z.number().min(0).max(1).nullable().optional(),
+  minRuns: z.number().int().min(1).max(100).nullable().optional(),
+  windowDays: z.number().int().min(1).max(90).nullable().optional(),
+  consecutiveFailures: z.number().int().min(1).max(100).nullable().optional(),
+  ttlDays: z.number().int().min(1).max(365).nullable().optional(),
+});
+
+// A `quarantine` rule needs exactly one condition (flake_rate ->
+// flakeThreshold, consecutive -> consecutiveFailures); an `exempt` rule takes
+// none. Applied to POST's full body AND to PATCH's merged (existing + patch)
+// row in the handler below, so a partial PATCH can never leave a rule in an
+// inconsistent state (e.g. action -> 'exempt' while a condition remains).
+function checkRuleConsistency(o: z.infer<typeof quarantineRuleShape>, ctx: z.RefinementCtx): void {
+  if (o.action === 'exempt') {
+    if (o.conditionType != null || o.flakeThreshold != null || o.consecutiveFailures != null) {
+      ctx.addIssue({ code: 'custom', message: 'exempt rules take no condition' });
+    }
+    return;
+  }
+  if (o.conditionType == null) {
+    ctx.addIssue({ code: 'custom', message: 'quarantine rules need a conditionType' });
+    return;
+  }
+  if (o.conditionType === 'flake_rate' && o.flakeThreshold == null) {
+    ctx.addIssue({ code: 'custom', message: 'flake_rate needs flakeThreshold' });
+  }
+  if (o.conditionType === 'consecutive' && o.consecutiveFailures == null) {
+    ctx.addIssue({ code: 'custom', message: 'consecutive needs consecutiveFailures' });
+  }
+}
+
+const quarantineRuleSchema = quarantineRuleShape.superRefine(checkRuleConsistency);
+// PATCH: same shape, every field optional, no cross-field check here — the
+// handler re-validates the merged (existing + patch) row against
+// quarantineRuleSchema so an invalid combination is still rejected.
+const quarantineRulePatchSchema = quarantineRuleShape.partial();
+
+const reorderRulesSchema = z.object({ order: z.array(uuidSchema).min(1) });
+
+/** DB row -> JSON response shape (decimal column surfaced as a number). */
+function serializeRule(row: typeof quarantineRules.$inferSelect) {
+  return {
+    ...row,
+    flakeThreshold: row.flakeThreshold !== null ? Number(row.flakeThreshold) : null,
+  };
+}
+
+/**
+ * Validated body -> Drizzle column values: flakeThreshold as a fixed(4)
+ * string (decimal columns store strings, see AGENTS.md conventions);
+ * `position` stripped out since it's only ever set by create (append) or
+ * reorder, never a plain create/patch field.
+ */
+function toRuleColumns(body: Record<string, unknown>): Partial<typeof quarantineRules.$inferInsert> {
+  const columns: Record<string, unknown> = { ...body };
+  if ('flakeThreshold' in body) {
+    columns.flakeThreshold = body.flakeThreshold == null ? null : Number(body.flakeThreshold).toFixed(4);
+  }
+  delete columns.position;
+  return columns as Partial<typeof quarantineRules.$inferInsert>;
+}
 
 /**
  * GET /api/v1/admin/projects
@@ -503,6 +603,177 @@ adminRouter.delete('/projects/:id', async (c) => {
     message: `Project "${project.name}" and all associated data deleted.`,
   });
 });
+
+/**
+ * GET /api/v1/admin/projects/:id/rules
+ *
+ * List a project's quarantine rules in evaluation order (ascending
+ * `position` — first match wins; see docs/API.md).
+ */
+adminRouter.get('/projects/:id/rules', async (c) => {
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
+
+  const rows = await db
+    .select()
+    .from(quarantineRules)
+    .where(eq(quarantineRules.projectId, projectId))
+    .orderBy(quarantineRules.position);
+
+  return c.json({ rules: rows.map(serializeRule) });
+});
+
+/**
+ * POST /api/v1/admin/projects/:id/rules
+ *
+ * Append a new quarantine rule. Without an explicit `position`, the rule is
+ * appended after the current highest position (evaluated last / lowest
+ * priority).
+ */
+adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema), async (c) => {
+  const parsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const projectId = parsed.data;
+  const body = c.req.valid('json');
+
+  const [{ max }] = await db
+    .select({ max: sql<number>`coalesce(max(${quarantineRules.position}), -1)::int` })
+    .from(quarantineRules)
+    .where(eq(quarantineRules.projectId, projectId));
+
+  const [row] = await db
+    .insert(quarantineRules)
+    .values({
+      projectId,
+      position: body.position ?? max + 1,
+      ...toRuleColumns(body),
+      // `action` is required (NOT NULL) and always present at runtime — the
+      // schema enforces it — but toRuleColumns()'s Partial<> return type
+      // loosens it to optional, which confuses Drizzle's overload
+      // resolution. Assert the merged object back to a full insert row.
+    } as typeof quarantineRules.$inferInsert)
+    .returning();
+
+  return c.json({ rule: serializeRule(row) }, 201);
+});
+
+/**
+ * PATCH /api/v1/admin/projects/:id/rules/:ruleId
+ *
+ * Partial update. The merged (existing + patch) row is re-validated against
+ * the full rule schema so a patch can't leave the rule in an inconsistent
+ * state (e.g. action -> 'exempt' while a condition remains).
+ */
+adminRouter.patch(
+  '/projects/:id/rules/:ruleId',
+  zValidator('json', quarantineRulePatchSchema),
+  async (c) => {
+    const idParsed = uuidSchema.safeParse(c.req.param('id'));
+    if (!idParsed.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+    const ruleIdParsed = uuidSchema.safeParse(c.req.param('ruleId'));
+    if (!ruleIdParsed.success) {
+      return c.json({ error: 'Invalid rule ID format' }, 400);
+    }
+    const projectId = idParsed.data;
+    const ruleId = ruleIdParsed.data;
+    const patch = c.req.valid('json');
+
+    const [existing] = await db
+      .select()
+      .from(quarantineRules)
+      .where(and(eq(quarantineRules.id, ruleId), eq(quarantineRules.projectId, projectId)));
+    if (!existing) {
+      return c.json({ error: 'Rule not found' }, 404);
+    }
+
+    const merged = { ...serializeRule(existing), ...patch };
+    const check = quarantineRuleSchema.safeParse(merged);
+    if (!check.success) {
+      return c.json({ error: check.error.issues[0]?.message ?? 'Invalid rule' }, 400);
+    }
+
+    const [row] = await db
+      .update(quarantineRules)
+      .set({ ...toRuleColumns(patch), updatedAt: new Date() })
+      .where(eq(quarantineRules.id, ruleId))
+      .returning();
+
+    return c.json({ rule: serializeRule(row) });
+  }
+);
+
+/**
+ * DELETE /api/v1/admin/projects/:id/rules/:ruleId
+ */
+adminRouter.delete('/projects/:id/rules/:ruleId', async (c) => {
+  const idParsed = uuidSchema.safeParse(c.req.param('id'));
+  if (!idParsed.success) {
+    return c.json({ error: 'Invalid project ID format' }, 400);
+  }
+  const ruleIdParsed = uuidSchema.safeParse(c.req.param('ruleId'));
+  if (!ruleIdParsed.success) {
+    return c.json({ error: 'Invalid rule ID format' }, 400);
+  }
+  const projectId = idParsed.data;
+  const ruleId = ruleIdParsed.data;
+
+  const deleted = await db
+    .delete(quarantineRules)
+    .where(and(eq(quarantineRules.id, ruleId), eq(quarantineRules.projectId, projectId)))
+    .returning();
+
+  if (deleted.length === 0) {
+    return c.json({ error: 'Rule not found' }, 404);
+  }
+  return c.json({ success: true });
+});
+
+/**
+ * POST /api/v1/admin/projects/:id/rules/reorder
+ *
+ * Body's `order` must be exactly the project's current rule ids (in any
+ * order); each id's index in the array becomes its new `position`.
+ */
+adminRouter.post(
+  '/projects/:id/rules/reorder',
+  zValidator('json', reorderRulesSchema),
+  async (c) => {
+    const parsed = uuidSchema.safeParse(c.req.param('id'));
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+    const projectId = parsed.data;
+    const { order } = c.req.valid('json');
+
+    const current = await db
+      .select({ id: quarantineRules.id })
+      .from(quarantineRules)
+      .where(eq(quarantineRules.projectId, projectId));
+    const currentSet = new Set(current.map((r) => r.id));
+
+    if (order.length !== currentSet.size || !order.every((ruleId) => currentSet.has(ruleId))) {
+      return c.json({ error: "order must be exactly the project's current rule ids" }, 400);
+    }
+
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < order.length; i++) {
+        await tx
+          .update(quarantineRules)
+          .set({ position: i, updatedAt: new Date() })
+          .where(eq(quarantineRules.id, order[i]));
+      }
+    });
+
+    return c.json({ success: true });
+  }
+);
 
 /**
  * GET /api/v1/admin/health

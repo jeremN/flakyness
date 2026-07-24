@@ -1251,6 +1251,149 @@ curl -sX POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   "$FLACKYNESS_URL/api/v1/admin/projects/$PROJECT_ID/prune?confirm=true"
 ```
 
+### Quarantine Rules
+
+Ordered per-project policy rules (roadmap 4b) that decide whether a test
+gets **quarantined** (auto-muted) or **exempted** (never auto-muted),
+replacing the single project-wide `quarantineThreshold` (see
+[Update Project Flakiness Config](#update-project-flakiness-config)) with
+finer-grained, selector-scoped policy. When a project has at least one
+**enabled** rule, auto-quarantine reconciliation evaluates the rule list;
+otherwise it falls back unchanged to the legacy single-threshold behavior.
+
+**Rule shape:**
+
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `id` | uuid | — | Server-generated, read-only. |
+| `name` | string \| null | max 255 chars | Optional label. |
+| `enabled` | boolean | — | Disabled rules are skipped during evaluation but stay in the list (position included). Defaults to `true` on create. |
+| `position` | integer | `>= 0` | Evaluation order — **lower runs first, and the first matching rule wins.** Managed by create (append) and [Reorder Rules](#reorder-rules); not a plain create/patch field beyond the initial create-time value. |
+| `selectorBranch` | string \| null | max 255 chars | Glob (`*` within a path segment, `**` across segments, `?` one char) matched against the run's branch. `null` matches any branch. |
+| `selectorFile` | string \| null | max 500 chars | Glob matched against the test's file path. `null` matches any file. |
+| `selectorTag` | string \| null | max 255 chars | Exact tag membership (the test must carry this tag). `null` matches any tags. |
+| `action` | `"quarantine"` \| `"exempt"` | — | `"quarantine"`: mute the test when its condition fires. `"exempt"`: never auto-mute the test, unconditionally — no `conditionType`/threshold fields allowed. |
+| `conditionType` | `"flake_rate"` \| `"consecutive"` \| null | — | Required (non-null) for `action: "quarantine"`; must be `null` for `action: "exempt"`. |
+| `flakeThreshold` | number \| null | `[0, 1]` | Required when `conditionType: "flake_rate"`. Flake-rate bar within the rule's evaluation window. |
+| `minRuns` | integer \| null | `[1, 100]` | Minimum runs in-window before a `flake_rate` condition can fire. |
+| `windowDays` | integer \| null | `[1, 90]` | Evaluation window for `flake_rate`. |
+| `consecutiveFailures` | integer \| null | `[1, 100]` | Required when `conditionType: "consecutive"`. Consecutive-failure streak (newest-first) needed to fire. |
+| `ttlDays` | integer \| null | `[1, 365]` | TTL applied to a quarantine entered via this rule. |
+
+A rule's selectors are `AND`ed together (all non-null selectors must match);
+a `null` selector field imposes no constraint. Every rule under a project
+must have a valid `action`; `conditionType`/threshold fields are validated
+together — e.g. `conditionType: "flake_rate"` without `flakeThreshold` is
+rejected with `400`, as is any condition field set alongside
+`action: "exempt"`.
+
+**First-match-wins + fallback:** rules are evaluated in ascending `position`
+order; the first rule whose selectors match the test owns the decision and
+evaluation stops there (later rules are not consulted for that test). If no
+rule's selectors match a test, evaluation falls back to the project's legacy
+single-threshold `quarantineThreshold` config.
+
+#### List Rules
+
+```http
+GET /api/v1/admin/projects/:id/rules
+```
+
+Returns the project's rules ordered by `position` (evaluation order).
+
+**Response (200):**
+```json
+{
+  "rules": [
+    {
+      "id": "uuid",
+      "projectId": "uuid",
+      "position": 0,
+      "name": "exempt release branches",
+      "enabled": true,
+      "selectorBranch": "release/*",
+      "selectorFile": null,
+      "selectorTag": null,
+      "action": "exempt",
+      "conditionType": null,
+      "flakeThreshold": null,
+      "minRuns": null,
+      "windowDays": null,
+      "consecutiveFailures": null,
+      "ttlDays": null,
+      "createdAt": "2024-12-01T00:00:00.000Z",
+      "updatedAt": "2024-12-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+Returns `400` for a malformed project id. Does **not** 404 for a
+well-formed but non-existent project id — it returns an empty `rules` array,
+matching the read behavior of `GET /api/v1/projects/:id/flaky-tests`.
+
+#### Create Rule
+
+```http
+POST /api/v1/admin/projects/:id/rules
+```
+
+**Body:** any subset of the rule shape above, plus a required `action` (and
+its matching condition fields for `action: "quarantine"`). Without an
+explicit `position`, the rule is appended after the project's current
+highest position (evaluated last / lowest priority).
+
+```json
+{ "action": "quarantine", "conditionType": "flake_rate", "flakeThreshold": 0.3, "selectorBranch": "main" }
+```
+
+**Response (201):** `{ "rule": { ... } }` — same shape as the list above.
+Returns `400` on a validation failure (e.g. `action: "exempt"` with a
+`conditionType` set, or `conditionType: "consecutive"` without
+`consecutiveFailures`).
+
+#### Update Rule
+
+```http
+PATCH /api/v1/admin/projects/:id/rules/:ruleId
+```
+
+**Body:** any subset of the rule shape's writable fields (all optional).
+The **merged** row (existing values overlaid with the patch) is re-validated
+against the full rule schema, so a partial patch can never leave the rule in
+an inconsistent state — e.g. patching `{ "action": "exempt" }` on a rule
+that still carries a `flakeThreshold` from before is rejected with `400`
+rather than silently landing a broken rule.
+
+**Response (200):** `{ "rule": { ... } }`. Returns `400` on a validation
+failure and `404` if `ruleId` doesn't exist under this `id`.
+
+#### Delete Rule
+
+```http
+DELETE /api/v1/admin/projects/:id/rules/:ruleId
+```
+
+**Response (200):** `{ "success": true }`. Returns `404` if `ruleId` doesn't
+exist under this `id` (including a `ruleId` that belongs to a different
+project).
+
+#### Reorder Rules
+
+```http
+POST /api/v1/admin/projects/:id/rules/reorder
+```
+
+**Body:** `order` must be exactly the project's current rule ids, in the
+desired evaluation order (each id's index becomes its new `position`):
+```json
+{ "order": ["uuid-of-rule-now-first", "uuid-of-rule-now-second"] }
+```
+
+**Response (200):** `{ "success": true }`. Returns `400` if `order` is not
+exactly the project's current rule id set (missing an id, containing an
+extra/unknown id, or a duplicate) — nothing is written in that case.
+
 ### System Health
 
 ```http

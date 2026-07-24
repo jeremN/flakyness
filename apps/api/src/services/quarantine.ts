@@ -75,11 +75,11 @@ export async function reconcileQuarantine(
 
   // Phase 3: PROMOTE — only when enabled.
   if (cfg.enabled) {
-    const rules = (await db
+    const rules = await db
       .select()
       .from(quarantineRules)
       .where(and(eq(quarantineRules.projectId, projectId), eq(quarantineRules.enabled, true)))
-      .orderBy(quarantineRules.position)) as (typeof quarantineRules.$inferSelect)[];
+      .orderBy(quarantineRules.position);
 
     if (rules.length === 0) {
       await promoteLegacy(projectId, cfg, now, transitions); // plan-051 path, unchanged
@@ -168,23 +168,24 @@ async function promoteWithRules(
     byTest.set(row.testName, entry);
   }
 
-  // Active flaky rows drive the legacy fallback for no-match tests, and are the
-  // set that can be quarantined at the project threshold even without runs in
-  // the (possibly narrower) rule window.
-  const activeRows = await db.select().from(flakyTests)
-    .where(and(eq(flakyTests.projectId, projectId), eq(flakyTests.status, 'active')));
-  const activeByName = new Map(activeRows.map((r) => [r.testName, r]));
-
-  // Candidate universe: every test seen in the window PLUS every active flaky row.
-  const candidateNames = new Set<string>([...byTest.keys(), ...activeByName.keys()]);
+  // ALL flaky_tests rows for the project: active rows drive the no-match legacy
+  // fallback; ignored rows let us leave MANUAL mutes untouched — they are
+  // indefinite and must never become an auto mute (which the Release phase would
+  // later auto-release).
+  const allRows = await db.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
+  const rowByName = new Map(allRows.map((r) => [r.testName, r]));
+  const candidateNames = new Set<string>([...byTest.keys(), ...allRows.filter((r) => r.status === 'active').map((r) => r.testName)]);
 
   for (const testName of candidateNames) {
     const entry = byTest.get(testName);
+    const existing = rowByName.get(testName);
     const decision = evaluateRules(rules, entry?.results ?? []);
 
     if (decision.kind === 'quarantine') {
+      // Manual/indefinite mutes (muteSource !== 'auto') are immune to auto-quarantine.
+      if (existing?.status === 'ignored' && existing.muteSource !== 'auto') continue;
+      const active = existing?.status === 'active' ? existing : undefined;
       const ttlDays = decision.ttlDays ?? cfg.ttlDays;
-      const active = activeByName.get(testName);
       // Clean slate only applies to a previously-released row.
       if (active?.quarantineReleasedAt && !(await hasFreshRuns(projectId, testName, active.quarantineReleasedAt, cfg.minRuns))) continue;
       const expiresAt = new Date(now.getTime() + ttlDays * DAY);
@@ -203,7 +204,7 @@ async function promoteWithRules(
     } else if (decision.kind === 'no-match') {
       // No rule owns this test → the exact plan-051 project-threshold decision,
       // via the same helper promoteLegacy uses (single source of truth).
-      const active = activeByName.get(testName);
+      const active = existing?.status === 'active' ? existing : undefined;
       if (!active) continue;
       const t = await legacyThresholdDecision(projectId, active, cfg, now);
       if (t) transitions.push(t);

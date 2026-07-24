@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { db, projects, testRuns, testResults, flakyTests, quarantineRules, quarantineEvents } from '../db';
 import { reconcileQuarantine, type ProjectQuarantineOverrides } from './quarantine';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 const DB = process.env.DATABASE_URL;
 const created: string[] = [];
@@ -66,5 +66,18 @@ describe.skipIf(!DB)('reconcileQuarantine — rule path', () => {
     await reconcileQuarantine(p.id, asOverrides(p));
     const [row] = await db.select().from(flakyTests).where(eq(flakyTests.projectId, p.id));
     expect(row.status).toBe('ignored');
+  });
+
+  it('a manually-muted test is immune to a matching quarantine rule (never converted to auto)', async () => {
+    const p = await project();
+    await db.insert(quarantineRules).values({ projectId: p.id, position: 0, action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: 3, selectorBranch: 'main' });
+    for (let d = 0; d < 3; d++) await run(p.id, 'MAN', 'failed', 'main', d); // would fire the consecutive rule
+    // Operator manually muted it: indefinite, no expiry.
+    await db.insert(flakyTests).values({ projectId: p.id, testName: 'MAN', flakeRate: '0.5000', totalRuns: 3, status: 'ignored', muteSource: 'manual' });
+    await reconcileQuarantine(p.id, asOverrides(p));
+    const [row] = await db.select().from(flakyTests).where(and(eq(flakyTests.projectId, p.id), eq(flakyTests.testName, 'MAN')));
+    expect(row.muteSource).toBe('manual');       // NOT stomped to 'auto'
+    expect(row.quarantineExpiresAt).toBeNull();  // no TTL → Release can never touch it
+    expect(row.status).toBe('ignored');          // still muted
   });
 });

@@ -775,6 +775,14 @@ Authorization: Bearer your-admin-token
 
 > ⚠️ **Security:** Set a strong `ADMIN_TOKEN` in production. Generate with: `openssl rand -hex 32`
 
+> **Dashboard console:** the SvelteKit dashboard ships a `/admin` web console
+> (plan 053) that drives these same endpoints — list, create, edit settings,
+> rotate token, prune, delete. It is gated by the dashboard's own
+> `DASHBOARD_PASSWORD` Basic Auth (`hooks.server.ts`), and spends `ADMIN_TOKEN`
+> server-side only (`$lib/server/adminApi.ts`) — the token never reaches the
+> browser. No endpoint contract changes; the console is a thin client of the
+> API below.
+
 ### List All Projects
 
 ```http

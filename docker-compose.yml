@@ -70,6 +70,17 @@ services:
       PUBLIC_API_URL: http://localhost:8080
       PORT: 3000
       HOST: 0.0.0.0
+      # Required for the admin console's write actions (create/patch/rotate/
+      # prune/delete — plan 053) to work at all. adapter-node's CSRF check
+      # compares the browser's Origin header against its own guess at the
+      # request's origin; without ORIGIN (or PROTOCOL_HEADER) set, it
+      # defaults to assuming https (see get_origin() in
+      # @sveltejs/adapter-node/files/handler.js), so every same-origin POST
+      # over plain http 403s as "cross-site". Set this to the externally
+      # visible URL the dashboard is served from (with a reverse proxy in
+      # front, that is the proxy's https URL, not this container's own
+      # http port).
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
       # Optional — gates every dashboard route behind HTTP Basic Auth
       # (apps/dashboard/src/hooks.server.ts). Unset by default here so a
       # fresh `docker compose up` doesn't lock anyone out; set it in `.env`

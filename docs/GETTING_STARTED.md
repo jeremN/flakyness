@@ -238,6 +238,7 @@ ADMIN_TOKEN=$(openssl rand -hex 32)
 DASHBOARD_PASSWORD=$(openssl rand -hex 32)
 READ_TOKEN=$(openssl rand -hex 32)
 PUBLIC_API_URL=https://your-domain.com
+ORIGIN=https://your-domain.com
 EOF
 
 # Start production stack
@@ -247,13 +248,26 @@ docker compose --profile production up -d
 docker compose exec api pnpm db:migrate
 ```
 
+> ⚠️ **Set `ORIGIN` to the dashboard's externally visible URL, or every admin
+> form action 403s.** `@sveltejs/adapter-node`'s CSRF check compares the
+> browser's `Origin` header against its own guess at the request's origin;
+> unset, it assumes `https` regardless of how the dashboard is actually
+> served, so a plain-`http` deployment rejects its own same-origin POSTs as
+> `"Cross-site POST form submissions are forbidden"`. `docker-compose.yml`
+> defaults it to `http://localhost:3000` so a bare `docker compose up`
+> still works — override it to your real URL (behind a reverse proxy, that's
+> the proxy's `https` URL, not this container's own port) once you expose
+> the dashboard beyond `localhost`.
+
 > ⚠️ **If you set `ADMIN_TOKEN`, also set `DASHBOARD_PASSWORD` — this is not
 > optional once the dashboard is reachable by anyone other than you.** The
-> dashboard's only mutating action (mute/unmute a flaky test) holds
-> `ADMIN_TOKEN` and spends it on behalf of *whoever submits the form* — it
-> does not itself check that the requester is who they claim. Without
+> dashboard's mutating actions — mute/unmute a flaky test, and the full
+> `/admin` console (create/edit/rotate/prune/delete a project) — hold
+> `ADMIN_TOKEN` and spend it on behalf of *whoever submits the form* — they
+> do not themselves check that the requester is who they claim. Without
 > `DASHBOARD_PASSWORD`, any visitor who can load the dashboard can mute a
-> test, and a muted test feeds the CI quarantine skip-list (see
+> test or delete a project; a muted test also feeds the CI quarantine
+> skip-list (see
 > [Get Quarantine List](API.md#get-quarantine-list-ci-consumable)), which
 > makes a *downstream* pipeline silently stop running that test. Setting
 > `DASHBOARD_PASSWORD` gates **every** dashboard route behind HTTP Basic Auth

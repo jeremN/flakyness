@@ -136,3 +136,47 @@ export interface TestHistory {
     commitSha: string;
   }>;
 }
+
+export interface AdminProject {
+  id: string;
+  name: string;
+  gitlabProjectId: string | null;
+  hasToken: boolean;
+  createdAt: string;
+  flakeThreshold: number | null;
+  windowDays: number | null;
+  minRuns: number | null;
+  webhookUrl: string | null;
+  webhookKind: 'slack' | 'generic' | null;
+  retentionDays: number | null;
+  autoQuarantineEnabled: boolean;
+  quarantineThreshold: number | null;
+  quarantineMinRuns: number | null;
+  quarantineTtlDays: number | null;
+  stats: {
+    totalRuns: number;
+    totalTests: number;
+    activeFlakyTests: number;
+  };
+}
+
+export interface CreateProjectResult {
+  project: { id: string; name: string; gitlabProjectId: string | null; createdAt: string };
+  token: string;
+  warning: string;
+}
+
+export interface RotateTokenResult {
+  project: { id: string; name: string };
+  token: string;
+  warning: string;
+}
+
+export interface PruneResult {
+  dryRun: boolean;
+  cutoff: string;
+  runsToDelete?: number;
+  resultsToDelete?: number;
+  runsDeleted?: number;
+  resultsDeleted?: number;
+}

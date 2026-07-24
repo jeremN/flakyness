@@ -166,6 +166,28 @@ vendable et différenciant, sécurité de lecture incluse.
 > (règles par branche/tag/fichier) n'est pas commencé et reste une
 > spec/plan séparée.
 
+> **Statut (branche `feat/quarantine-rule-engine`) :** 4b est maintenant
+> livrée sur cette branche, pas encore mergée sur `main` au moment de cette
+> révision — la dernière phrase du callout ci-dessus (« 4b n'est pas commencé »)
+> date d'avant ce travail. Ce qui a changé : une table `quarantine_rules` par
+> projet (règles ordonnées par `position`, sélecteurs glob branche/fichier/tag,
+> condition `flake_rate` ou `consecutive`, action `quarantine` ou `exempt`), un
+> moteur d'évaluation pur (`services/rules.ts`, first-match-wins) et son
+> intégration dans `reconcileQuarantine` : dès qu'un projet a ≥1 règle activée,
+> la promotion passe par les règles — avec repli sur le seuil legacy du projet
+> quand aucune règle ne matche un test donné, pour un comportement identique à
+> la 051 en l'absence de règles. Une règle `consecutive` peut mettre en
+> quarantaine un test pas encore globalement flaky (aucune ligne `flaky_tests`
+> active) : la promotion fait donc un *upsert* plutôt qu'un update. Chaque mute
+> déclenché par une règle garde `mute_source='auto'` et écrit une ligne
+> `quarantine_events` désormais tracée par `rule_id` ; les mutes manuels
+> (`mute_source` `'manual'`/`NULL`) restent immuables, comme avant. Mesure de
+> base de la flakiness et `buildGrepInvert` inchangés. CRUD + réordonnancement
+> des règles est exposé côté API admin
+> (`/api/v1/admin/projects/:id/rules`) ; **l'UI console pour gérer les règles
+> reste le fast-follow sanctionné** (spec/plan séparée, réutilisant le
+> `adminApi` serveur-only et les form actions de 4a).
+
 ### Le piège technique de #1
 
 Le sniff actuel est binaire : `<` ⇒ JUnit, sinon ⇒ Playwright. Le `else`

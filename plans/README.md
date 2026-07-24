@@ -297,6 +297,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 051 | Roadmap #2: opt-in per-project auto-quarantine — stricter `quarantine_threshold`, TTL release + clean-slate, `reconcileQuarantine` engine in the post-ingest reconcile, entry/exit webhooks, `quarantine_events` audit + manual-mute provenance. Default off = zero behavior change | P2 | M–L | 050 (soft; builds on the merged registry) | OPEN (PR pending) |
 | 052 | Roadmap #3: `NotificationChannel` abstraction — neutral events (`services/notifications/events.ts`) + per-channel formatters, replacing the two near-duplicate webhook senders; `generic` is a frozen byte-for-byte backward-compat contract, `slack` (`{ text, blocks }`) covers Slack **and** self-hosted Mattermost via an explicit `webhook_kind` override (else host auto-detect on `hooks.slack.com`); dashboard deep-links from a deployment-global `DASHBOARD_BASE_URL`. Teams remains the fast-follow (drop-in `formatTeams`) | P2 | M | 051 (soft; reuses the shared `webhookUrl` notification plumbing) | OPEN (PR pending) |
 | 053 | Roadmap #4a: password-gated `/admin` dashboard console — project list, create with show-once token reveal, per-project settings editor, token rotation, two-phase prune, typed-confirm delete. Reads/writes go through a server-only `$lib/server/adminApi.ts` client and SvelteKit form actions so `ADMIN_TOKEN` never reaches the browser; gated by the existing `DASHBOARD_PASSWORD` Basic Auth. No new API endpoints — 4b (rule engine) is a separate follow-up | P2 | M | 052 (soft; independent surface, same admin API) | OPEN (PR pending) |
+| 054 | Roadmap #4b: quarantine rule engine — ordered per-project `quarantine_rules` (glob selectors on branch/file/tag; `flake_rate` or `consecutive` condition; `quarantine`/`exempt` action, first-match-wins), pure evaluation engine (`services/rules.ts`), `reconcileQuarantine` integration (rule-driven promote upserts `flaky_tests`, `rule_id` audit provenance via `quarantine_events`, manual mutes immune, no-match falls back to the legacy project threshold), admin CRUD + reorder API. Rules console UI is the sanctioned fast-follow | P2 | M | 051 (hard; extends its `reconcileQuarantine` promote phase) | OPEN (PR pending) |
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -759,6 +760,24 @@ rationale. Items 5–7 remain unplanned.
     `quarantine.ts` is also **not yet in the automated Stryker mutation gate** — its assertions
     are hand-proven (each engine test mutation-checked at review), but a future pass could
     promote it into the gate like `flakiness.ts`/parsers (cf. #14).
+
+17. **[OPEN — deferred from plan 054's design, roadmap #4b] Rules console UI is the sanctioned
+    fast-follow.** Plan 054 ships the quarantine rule engine (`services/rules.ts`) and its admin
+    CRUD + reorder API (`/api/v1/admin/projects/:id/rules`), but no dashboard surface — creating,
+    editing, and reordering rules today means calling the admin API directly (`curl`/Postman).
+    The fast-follow reuses plan 053 (4a)'s server-only `$lib/server/adminApi.ts` client and
+    SvelteKit form-action pattern rather than inventing a new one. Deliberately out of scope for
+    054 — see `docs/superpowers/specs/2026-07-24-quarantine-rule-engine-design.md`'s "Scope
+    boundaries (YAGNI)".
+18. **[OPEN — deferred from plan 054's design, roadmap #4b] Candidate-set N+1 → batched-query
+    optimization.** When a project has ≥1 enabled rule, `reconcileQuarantine`'s `promoteWithRules`
+    evaluates every test with ≥1 result in the rule-evaluation window (not just active
+    `flaky_tests` rows — a `consecutive` rule must be able to catch a not-yet-globally-flaky test)
+    against every enabled rule: a bounded `candidate tests × rules` cost, each an in-memory slice
+    check, on top of the one `hasFreshRuns` clean-slate `count(*)` per quarantine-crossing
+    candidate already accepted in #16 above. Acceptable at operator scale (tens of rules/
+    candidates per project today); the design doc explicitly notes a batched-query optimization
+    as a deliberately deferred follow-up rather than built speculatively ahead of real volume.
 
 ## Findings considered and rejected
 

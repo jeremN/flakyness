@@ -117,6 +117,25 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `docker-compose.yml`'s `dashboard.environment` (real deployments, defaults
   to `http://localhost:3000`) — set it to the externally visible URL, not
   the container's own port, when behind a reverse proxy.
+- **Quarantine promotion is rule-driven once a project has ≥1 enabled
+  `quarantine_rules` row (plan 054).** `reconcileQuarantine()` prefers
+  `promoteWithRules` over the plan-051 `promoteLegacy` path whenever
+  `quarantine_rules` has enabled rows for the project (ordered by
+  `position`, first-match-wins on selectors; an `exempt` action stops
+  promotion outright); a test that matches no rule falls back to the
+  project's legacy `quarantineThreshold` decision, so the two paths never
+  diverge. A `consecutive` rule can quarantine a test that is **not yet**
+  globally flaky (no `active` `flaky_tests` row) — the promote path
+  therefore **upserts** the `flaky_tests` `ignored` row rather than
+  updating one in place, widening the candidate set beyond active rows.
+  Manual/`NULL` `mute_source` mutes stay immune either way — never
+  converted to `auto`, never auto-released. A rule-driven promotion still
+  writes `mute_source='auto'` plus a `quarantine_events` row, now carrying
+  `rule_id` for provenance. `buildGrepInvert()` and base flakiness
+  measurement are untouched — rules only gate the *promote* phase. CRUD +
+  reorder for rules is live on the API (`/api/v1/admin/projects/:id/rules`,
+  `routes/admin.ts`); a dashboard console UI to manage them is a deferred
+  fast-follow (see `plans/README.md`).
 
 ## Conventions
 

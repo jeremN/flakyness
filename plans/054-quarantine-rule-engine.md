@@ -519,7 +519,7 @@ Replace **Phase 3 (PROMOTE)** (the `if (cfg.enabled) { ... }` block) with a bran
   }
 ```
 
-Extract the existing single-threshold body verbatim into `promoteLegacy` (this is a pure refactor — the code that was inside `if (cfg.enabled)`):
+Refactor the existing single-threshold body into `promoteLegacy`, which delegates the per-row decision to a shared `legacyThresholdDecision` helper (defined below). This is a behavior-preserving refactor of the code that was inside `if (cfg.enabled)` — the `flakeRate < threshold` filter, the clean-slate guard, and the update/transition are all preserved, just moved into the shared helper so the rule path's no-match branch reuses the exact same logic:
 
 ```ts
 async function promoteLegacy(
@@ -530,19 +530,9 @@ async function promoteLegacy(
 ): Promise<void> {
   const activeRows = await db.select().from(flakyTests)
     .where(and(eq(flakyTests.projectId, projectId), eq(flakyTests.status, 'active')));
-  const candidates = activeRows.filter((r) => Number(r.flakeRate ?? 0) >= cfg.threshold);
-  for (const cand of candidates) {
-    if (cand.quarantineReleasedAt) {
-      const [{ count }] = await db.select({ count: sql<number>`count(*)` })
-        .from(testResults).innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
-        .where(and(eq(testRuns.projectId, projectId), eq(testResults.testName, cand.testName), gt(testResults.createdAt, cand.quarantineReleasedAt)));
-      if (Number(count) < cfg.minRuns) continue;
-    } else if ((cand.totalRuns ?? 0) < cfg.minRuns) {
-      continue;
-    }
-    const expiresAt = new Date(now.getTime() + cfg.ttlDays * 86_400_000);
-    await db.update(flakyTests).set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt }).where(eq(flakyTests.id, cand.id));
-    transitions.push({ testName: cand.testName, event: 'entered', flakeRate: cand.flakeRate ? Number(cand.flakeRate) : null, expiresAt, ruleId: null });
+  for (const active of activeRows) {
+    const t = await legacyThresholdDecision(projectId, active, cfg, now);
+    if (t) transitions.push(t);
   }
 }
 ```
@@ -626,18 +616,40 @@ async function promoteWithRules(
         });
       transitions.push({ testName, event: 'entered', flakeRate, expiresAt, ruleId: decision.ruleId });
     } else if (decision.kind === 'no-match') {
-      // Fall through to the project single-threshold decision for this test.
+      // No rule owns this test → the exact plan-051 project-threshold decision,
+      // via the same helper promoteLegacy uses (single source of truth).
       const active = activeByName.get(testName);
-      if (!active || Number(active.flakeRate ?? 0) < cfg.threshold) continue;
-      if (active.quarantineReleasedAt) {
-        if (!(await hasFreshRuns(projectId, testName, active.quarantineReleasedAt, cfg.minRuns))) continue;
-      } else if ((active.totalRuns ?? 0) < cfg.minRuns) continue;
-      const expiresAt = new Date(now.getTime() + cfg.ttlDays * DAY);
-      await db.update(flakyTests).set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt }).where(eq(flakyTests.id, active.id));
-      transitions.push({ testName, event: 'entered', flakeRate: active.flakeRate ? Number(active.flakeRate) : null, expiresAt, ruleId: null });
+      if (!active) continue;
+      const t = await legacyThresholdDecision(projectId, active, cfg, now);
+      if (t) transitions.push(t);
     }
     // exempt / leave → no promotion.
   }
+}
+
+/**
+ * The plan-051 single-threshold decision for ONE active flaky_tests row.
+ * Returns the transition (and applies the mute) if the row crosses the project
+ * threshold and clears the clean-slate guard, else null. Shared by the legacy
+ * path and the rule path's no-match fallback so the two never diverge.
+ */
+async function legacyThresholdDecision(
+  projectId: string,
+  active: typeof flakyTests.$inferSelect,
+  cfg: QuarantineConfig,
+  now: Date,
+): Promise<QuarantineTransition | null> {
+  if (Number(active.flakeRate ?? 0) < cfg.threshold) return null;
+  if (active.quarantineReleasedAt) {
+    if (!(await hasFreshRuns(projectId, active.testName, active.quarantineReleasedAt, cfg.minRuns))) return null;
+  } else if ((active.totalRuns ?? 0) < cfg.minRuns) {
+    return null;
+  }
+  const expiresAt = new Date(now.getTime() + cfg.ttlDays * DAY);
+  await db.update(flakyTests)
+    .set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt })
+    .where(eq(flakyTests.id, active.id));
+  return { testName: active.testName, event: 'entered', flakeRate: active.flakeRate ? Number(active.flakeRate) : null, expiresAt, ruleId: null };
 }
 
 function sliceFlakeRate(results: TestSliceResult[]): number {

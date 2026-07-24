@@ -30,6 +30,8 @@ export type RuleDecision =
   | { kind: 'leave'; ruleId: string }   // a quarantine rule owns it but its condition did not fire
   | { kind: 'no-match' };
 
+const DAY = 86_400_000;
+
 /**
  * Translate a glob (`*` within a path segment, `**` across segments, `?` one
  * char; every other char literal) into an anchored full-string RegExp. No
@@ -81,14 +83,20 @@ function consecutiveFires(rule: EvalRule, slice: TestSliceResult[]): boolean {
 
 /**
  * First-matching-rule wins. A rule matches a test when >=1 of the test's
- * results falls in the rule's selector slice; that rule owns the decision and
+ * results falls in the rule's selector slice AND inside the rule's own window
+ * (`windowDays` back from `now`; a null `windowDays` disables the time
+ * filter). Each rule's condition is measured over its OWN per-rule window, not
+ * the union window the caller fetched — so two rules with different
+ * `windowDays` each see only their own slice. That rule owns the decision and
  * evaluation stops. Returns `no-match` when no rule's selectors match — the
- * caller then applies the legacy project-threshold decision.
+ * caller then applies the legacy project-threshold decision. Pure: `now` is a
+ * parameter, never read from the clock here.
  */
-export function evaluateRules(rules: EvalRule[], results: TestSliceResult[]): RuleDecision {
+export function evaluateRules(rules: EvalRule[], results: TestSliceResult[], now: Date): RuleDecision {
   for (const rule of rules) {
-    const slice = results.filter((res) => resultMatchesSelectors(rule, res));
-    if (slice.length === 0) continue; // selectors don't match this test → next rule
+    const cutoff = rule.windowDays != null ? now.getTime() - rule.windowDays * DAY : -Infinity;
+    const slice = results.filter((res) => resultMatchesSelectors(rule, res) && res.createdAt.getTime() >= cutoff);
+    if (slice.length === 0) continue; // selectors/window don't match this test → next rule
     if (rule.action === 'exempt') return { kind: 'exempt', ruleId: rule.id };
     const fires = rule.conditionType === 'consecutive'
       ? consecutiveFires(rule, slice)

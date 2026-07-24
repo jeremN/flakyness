@@ -35,6 +35,26 @@ describe.skipIf(!DB)('reconcileQuarantine — rule path', () => {
     expect(ev.ruleId).toBeTruthy();      // provenance: which rule fired
   });
 
+  it('does NOT re-enter an already auto-quarantined test on a repeat reconcile (no duplicate webhook/audit; Release owns its TTL)', async () => {
+    const p = await project();
+    await db.insert(quarantineRules).values({ projectId: p.id, position: 0, action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: 3, selectorBranch: 'main' });
+    for (let d = 0; d < 3; d++) await run(p.id, 'RT', 'failed', 'main', d); // fires consecutive:3 now and stays in-window
+
+    const first = await reconcileQuarantine(p.id, asOverrides(p));
+    expect(first.filter((t) => t.testName === 'RT' && t.event === 'entered')).toHaveLength(1);
+
+    // Second reconcile: the same 3 failures still fire the rule, but the row is
+    // now auto-ignored. An already-quarantined row must be skipped — re-entering
+    // would spam a duplicate `entered` webhook + audit row and keep pushing the
+    // TTL out so Release never fires.
+    const second = await reconcileQuarantine(p.id, asOverrides(p));
+    expect(second.filter((t) => t.testName === 'RT' && t.event === 'entered')).toHaveLength(0);
+
+    const enteredRows = await db.select().from(quarantineEvents)
+      .where(and(eq(quarantineEvents.projectId, p.id), eq(quarantineEvents.event, 'entered')));
+    expect(enteredRows).toHaveLength(1); // exactly one audit row across both reconciles
+  });
+
   it('exempt rule shields a test the fallback threshold would have quarantined', async () => {
     const p = await project({ quarantineThreshold: '0.10' });
     await db.insert(quarantineRules).values({ projectId: p.id, position: 0, action: 'exempt', selectorTag: 'critical' });

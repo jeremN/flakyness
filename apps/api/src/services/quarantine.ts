@@ -96,8 +96,12 @@ export async function reconcileQuarantine(
       event: t.event,
       source: 'auto' as const,
       flakeRate: t.flakeRate != null ? t.flakeRate.toFixed(4) : null,
-      threshold: t.event === 'entered' ? cfg.threshold.toFixed(4) : null,
-      ttlDays: t.event === 'entered' ? cfg.ttlDays : null,
+      // Rule-driven mutes: rule_id is the authoritative provenance, so the
+      // project threshold/ttl would be misleading (a consecutive rule has no
+      // threshold; a rule may override ttl) → null them. Legacy/no-match mutes
+      // (ruleId null) keep the project cfg values.
+      threshold: t.event === 'entered' ? (t.ruleId ? null : cfg.threshold.toFixed(4)) : null,
+      ttlDays: t.event === 'entered' ? (t.ruleId ? null : cfg.ttlDays) : null,
       ruleId: t.event === 'entered' ? (t.ruleId ?? null) : null,
     })));
   }
@@ -127,14 +131,16 @@ async function promoteLegacy(
 
 const DAY = 86_400_000;
 
-/** Reduce a stored rule row to the engine's numeric shape. */
-function toEvalRule(row: typeof quarantineRules.$inferSelect): EvalRule {
+/** Reduce a stored rule row to the engine's numeric shape. A rule with no
+ *  explicit `windowDays` resolves to the project's flakiness window so every
+ *  rule (quarantine AND exempt) evaluates over a concrete window (spec §2). */
+function toEvalRule(row: typeof quarantineRules.$inferSelect, defaultWindowDays: number): EvalRule {
   return {
     id: row.id, position: row.position, action: row.action as 'quarantine' | 'exempt',
     conditionType: row.conditionType as EvalRule['conditionType'],
     selectorBranch: row.selectorBranch, selectorFile: row.selectorFile, selectorTag: row.selectorTag,
     flakeThreshold: row.flakeThreshold !== null ? Number(row.flakeThreshold) : null,
-    minRuns: row.minRuns, windowDays: row.windowDays,
+    minRuns: row.minRuns, windowDays: row.windowDays ?? defaultWindowDays,
     consecutiveFailures: row.consecutiveFailures, ttlDays: row.ttlDays,
   };
 }
@@ -148,7 +154,7 @@ async function promoteWithRules(
   transitions: QuarantineTransition[],
 ): Promise<void> {
   const flakiness = resolveProjectConfig(project);
-  const rules = ruleRows.map(toEvalRule);
+  const rules = ruleRows.map((row) => toEvalRule(row, flakiness.windowDays));
   // Evaluation window = widest effective rule window (null → project → global 14), capped 90.
   const windowDays = Math.min(90, Math.max(...rules.map((r) => r.windowDays ?? flakiness.windowDays)));
   const cutoff = new Date(now.getTime() - windowDays * DAY);
@@ -179,11 +185,10 @@ async function promoteWithRules(
   for (const testName of candidateNames) {
     const entry = byTest.get(testName);
     const existing = rowByName.get(testName);
-    const decision = evaluateRules(rules, entry?.results ?? []);
+    const decision = evaluateRules(rules, entry?.results ?? [], now);
 
     if (decision.kind === 'quarantine') {
-      // Manual/indefinite mutes (muteSource !== 'auto') are immune to auto-quarantine.
-      if (existing?.status === 'ignored' && existing.muteSource !== 'auto') continue;
+      if (existing?.status === 'ignored') continue; // already quarantined (auto — Release owns its TTL) or manually muted (immune); never re-enter
       const active = existing?.status === 'active' ? existing : undefined;
       const ttlDays = decision.ttlDays ?? cfg.ttlDays;
       // Clean slate only applies to a previously-released row.

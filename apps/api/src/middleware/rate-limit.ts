@@ -1,6 +1,7 @@
 import { rateLimiter } from 'hono-rate-limiter';
 import { createMiddleware } from 'hono/factory';
 import type { Context, MiddlewareHandler } from 'hono';
+import { extractBearerToken, tokensMatch } from './token';
 
 // Rate limiting is disabled under the test runner by default (hammering
 // endpoints in tests would otherwise trip the limits). Unlike the previous
@@ -52,7 +53,8 @@ export function getClientIp(c: Context): string {
 export function createRateLimit(
   config: { windowMs: number; limit: number },
   keyGenerator: (c: Context) => string,
-  message: string
+  message: string,
+  skip?: (c: Context) => boolean
 ): MiddlewareHandler {
   const real = rateLimiter({
     windowMs: config.windowMs,
@@ -63,6 +65,9 @@ export function createRateLimit(
   });
   return createMiddleware(async (c, next) => {
     if (!rateLimitEnabled) return next();
+    // A request the caller marks as exempt bypasses the bucket entirely — it is
+    // never counted, so exempt traffic can't exhaust the limit for anyone else.
+    if (skip?.(c)) return next();
     return real(c, next);
   });
 }
@@ -89,12 +94,36 @@ export const apiRateLimit = createRateLimit(
 );
 
 /**
+ * True when the request carries a bearer token that matches ADMIN_TOKEN. The
+ * admin limiter skips these: brute-force protection exists to throttle wrong or
+ * absent tokens, not an already-authenticated admin whose token IS the auth
+ * boundary. Throttling valid admin traffic only breaks the legitimate
+ * server-mediated dashboard console, whose calls all share one dashboard-server
+ * IP and would otherwise exhaust a per-IP bucket.
+ *
+ * MUST mirror adminAuth's extraction/compare exactly — it reuses the same
+ * ./token helpers — so a request is never classed valid here yet rejected by
+ * auth (or vice versa). Returns false (never throws) on a missing header via
+ * the `token !== null` guard, and false when ADMIN_TOKEN is unconfigured.
+ * Exported for direct, deterministic unit testing of each branch.
+ */
+export function hasValidAdminBearer(c: Context): boolean {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (!adminToken) return false;
+  const token = extractBearerToken(c.req.header('Authorization'));
+  return token !== null && tokensMatch(token, adminToken);
+}
+
+/**
  * Rate limiter for admin endpoints. Very restrictive to slow brute force.
- * Limit: 5/min per IP. MUST be mounted BEFORE adminAuth (see admin.ts) or it
+ * Limit: 5/min per IP, applied ONLY to requests with a missing or invalid admin
+ * token — a request bearing a valid ADMIN_TOKEN is exempt (see
+ * hasValidAdminBearer). MUST be mounted BEFORE adminAuth (see admin.ts) or it
  * never runs.
  */
 export const adminRateLimit = createRateLimit(
   ADMIN_RATE_LIMIT,
   getClientIp,
-  'Admin rate limit exceeded.'
+  'Admin rate limit exceeded.',
+  hasValidAdminBearer
 );

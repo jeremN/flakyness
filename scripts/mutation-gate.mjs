@@ -69,6 +69,8 @@ export const HARDENED = [
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/href.ts',              floor: 95 }, // baseline: 100.00%
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/rule-summary.ts',      floor: 95 }, // baseline: 100.00% (plan 055; pure/deterministic)
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/rules-validation.ts',  floor: 83 }, // baseline: 88.05% (plan 055; survivors led by equivalent `?? ''` fallbacks over always-string readRuleForm output)
 ];
 
 // Stryker mutation score: (Killed + Timeout) / (Killed + Timeout + Survived + NoCoverage).

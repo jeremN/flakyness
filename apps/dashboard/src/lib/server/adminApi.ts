@@ -5,6 +5,7 @@ import type {
   CreateProjectResult,
   RotateTokenResult,
   PruneResult,
+  QuarantineRule,
 } from '../../app.d';
 
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
@@ -95,4 +96,34 @@ export function pruneProject(id: string, confirm: boolean): Promise<PruneResult>
 
 export function deleteProject(id: string): Promise<{ success: boolean; message: string }> {
   return adminFetch(`/api/v1/admin/projects/${id}`, { method: 'DELETE' });
+}
+
+export function listRules(id: string): Promise<{ rules: QuarantineRule[] }> {
+  return adminFetch(`/api/v1/admin/projects/${id}/rules`);
+}
+
+export function createRule(
+  id: string,
+  body: Record<string, number | string | boolean | null>
+): Promise<{ rule: QuarantineRule }> {
+  return adminFetch(`/api/v1/admin/projects/${id}/rules`, { method: 'POST', body });
+}
+
+export function patchRule(
+  id: string,
+  ruleId: string,
+  body: Record<string, number | string | boolean | null>
+): Promise<{ rule: QuarantineRule }> {
+  return adminFetch(`/api/v1/admin/projects/${id}/rules/${ruleId}`, { method: 'PATCH', body });
+}
+
+export function deleteRule(id: string, ruleId: string): Promise<{ success: boolean }> {
+  return adminFetch(`/api/v1/admin/projects/${id}/rules/${ruleId}`, { method: 'DELETE' });
+}
+
+export function reorderRules(id: string, order: string[]): Promise<{ success: boolean }> {
+  return adminFetch(`/api/v1/admin/projects/${id}/rules/reorder`, {
+    method: 'POST',
+    body: { order },
+  });
 }

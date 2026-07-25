@@ -54,6 +54,9 @@
   <p class="text-muted">
     {project.stats.totalRuns} runs · {project.stats.activeFlakyTests} active flaky
   </p>
+  <a href="/admin/{project.id}/rules" class="text-sm text-purple-600 hover:underline">
+    Manage quarantine rules &rarr;
+  </a>
 </div>
 
 <!-- Settings -->

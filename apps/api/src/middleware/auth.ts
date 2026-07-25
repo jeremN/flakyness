@@ -1,8 +1,15 @@
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { db, projects } from '../db';
+import { extractBearerToken, tokensMatch } from './token';
+
+// extractBearerToken/tokensMatch moved to the DB-free ./token module (so the
+// rate limiter can reuse them without importing the database). Re-exported here
+// to keep existing `./middleware/auth` importers (e.g. index.ts's /metrics
+// check) working unchanged.
+export { extractBearerToken, tokensMatch } from './token';
 
 /**
  * Hash a token using SHA-256
@@ -16,35 +23,6 @@ export function hashToken(token: string): string {
  */
 export function generateToken(): string {
   return `flackyness_${randomBytes(24).toString('hex')}`;
-}
-
-/**
- * Extract the token from a `Bearer <token>` Authorization header.
- * Returns null if the header is missing or not in the expected format.
- */
-export function extractBearerToken(authHeader: string | undefined | null): string | null {
-  if (!authHeader) return null;
-
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Bearer') return null;
-
-  return parts[1];
-}
-
-/**
- * Constant-time token comparison, shared by adminAuth and any other route
- * gated by a bearer token compared against a single expected value (e.g. the
- * /metrics endpoint's METRICS_TOKEN).
- *
- * Hashing both tokens before comparing ensures:
- * 1. Both buffers are always the same length (32 bytes SHA-256)
- * 2. No timing leak on token length
- * 3. Uses Node.js native crypto.timingSafeEqual (constant-time)
- */
-export function tokensMatch(candidate: string, expected: string): boolean {
-  const candidateHash = createHash('sha256').update(candidate).digest();
-  const expectedHash = createHash('sha256').update(expected).digest();
-  return timingSafeEqual(candidateHash, expectedHash);
 }
 
 /**

@@ -247,3 +247,87 @@ describe('mute route rate-limits before auth (regression guard)', () => {
     }
   });
 });
+
+describe('hasValidAdminBearer (admin limiter exemption predicate)', () => {
+  // The predicate reads only c.req.header('Authorization'); fake exactly that.
+  function authCtx(authHeader?: string): Context {
+    return {
+      req: { header: (n: string) => (n === 'Authorization' ? authHeader : undefined) },
+    } as unknown as Context;
+  }
+
+  const prevToken = process.env.ADMIN_TOKEN;
+  afterEach(() => {
+    if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prevToken;
+  });
+
+  it('is true for a Bearer that matches ADMIN_TOKEN', async () => {
+    const { hasValidAdminBearer } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasValidAdminBearer(authCtx('Bearer the-admin-token'))).toBe(true);
+  });
+
+  it('is false for a Bearer that does NOT match ADMIN_TOKEN', async () => {
+    // Mutating tokensMatch (or the predicate) to always-true would wrongly
+    // exempt every attacker guess from the brute-force limiter; this reds that.
+    const { hasValidAdminBearer } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasValidAdminBearer(authCtx('Bearer wrong-token'))).toBe(false);
+  });
+
+  it('is false (never throws) when there is no Authorization header', async () => {
+    // Guards the `token !== null` short-circuit: without it, tokensMatch(null,…)
+    // throws on a header-less request, so the limiter would 500 instead of
+    // throttling. This asserts the header-less case is classified, not crashed.
+    const { hasValidAdminBearer } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasValidAdminBearer(authCtx(undefined))).toBe(false);
+  });
+
+  it('is false when ADMIN_TOKEN is not configured', async () => {
+    // Guards the `!adminToken` branch: an unconfigured admin must NOT be treated
+    // as "everyone is a valid admin" (which would disable the limiter wholesale).
+    const { hasValidAdminBearer } = await import('./rate-limit');
+    delete process.env.ADMIN_TOKEN;
+    expect(hasValidAdminBearer(authCtx('Bearer anything'))).toBe(false);
+  });
+});
+
+describe('admin limiter exempts a valid admin token (not just throttles bad ones)', () => {
+  it('lets a valid-ADMIN_TOKEN flood through well past the 5/min limit', async () => {
+    const { Hono } = await import('hono');
+    const { adminRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+    const { adminAuth } = await import('./auth');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'valid-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      // Same order production uses: limiter first, then auth.
+      app.use('*', adminRateLimit);
+      app.use('*', adminAuth());
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // Valid requests are SKIPPED, so they never touch the (module-shared)
+      // store — deterministic regardless of test order. limit + 2 requests with
+      // a wrong/absent token would 429; with the valid token, none may. Removing
+      // the `if (skip?.(c))` bypass — or forcing hasValidAdminBearer false —
+      // reds this (the flood starts 429-ing once past the limit).
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request('/x', {
+          headers: { Authorization: 'Bearer valid-admin-token' },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).not.toContain(429);
+      expect(codes.every((s) => s === 200)).toBe(true);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});

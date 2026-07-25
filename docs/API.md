@@ -1492,8 +1492,14 @@ All errors follow this format:
 | Endpoint | Limit |
 |----------|-------|
 | `POST /api/v1/reports` | 60 requests/minute per token |
-| `Admin endpoints` | 20 requests/minute per IP |
+| Admin endpoints (missing/invalid `ADMIN_TOKEN`) | 5 requests/minute per IP |
+| Admin endpoints (valid `ADMIN_TOKEN`) | not limited by the admin brute-force limiter |
 | All other endpoints | 100 requests/minute per IP |
+
+The admin limiter throttles only unauthenticated or wrong-token requests — its
+job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN` is
+exempt, so a server-mediated admin console (whose calls all originate from one
+IP) is not throttled for legitimate use.
 
 When rate limited, you'll receive:
 

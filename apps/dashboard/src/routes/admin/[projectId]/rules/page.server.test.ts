@@ -19,11 +19,10 @@ vi.mock('$lib/server/adminApi', () => ({
 }));
 
 import {
-  listProjects, listRules, createRule, patchRule, deleteRule, reorderRules, adminConfigured,
+  listRules, createRule, patchRule, deleteRule, reorderRules, adminConfigured,
 } from '$lib/server/adminApi';
 import { load, actions } from './+page.server';
 
-const mockedList = vi.mocked(listProjects);
 const mockedListRules = vi.mocked(listRules);
 const mockedCreate = vi.mocked(createRule);
 const mockedPatch = vi.mocked(patchRule);
@@ -40,8 +39,12 @@ function formEvent(fields: Record<string, string>, id = 'p1') {
   return { request: { formData: async () => fd }, params: { projectId: id } } as any;
 }
 
+// A parent() stub returning the root layout's public project list. `load` reads
+// projects from here (not an admin call) — see +page.server.ts.
+const parentWith = (projects: unknown[], apiError: string | null = null) =>
+  (async () => ({ projects, apiError })) as any;
+
 beforeEach(() => {
-  mockedList.mockReset();
   mockedListRules.mockReset();
   mockedCreate.mockReset();
   mockedPatch.mockReset();
@@ -51,36 +54,41 @@ beforeEach(() => {
 });
 
 describe('rules load', () => {
-  it('returns the project and its rules', async () => {
-    mockedList.mockResolvedValue({ projects: [project] });
+  it('returns the project (from the parent public list) and its rules', async () => {
     mockedListRules.mockResolvedValue({ rules: [ruleRow('r1', 0)] });
-    const result = await load({ params: { projectId: 'p1' } } as any);
+    const result = await load({ params: { projectId: 'p1' }, parent: parentWith([project]) } as any);
     expect(result).toEqual({ project, rules: [ruleRow('r1', 0)] });
   });
 
-  it('403s when ADMIN_TOKEN is not configured', async () => {
+  it('403s when ADMIN_TOKEN is not configured, before touching parent()', async () => {
     mockedAdminConfigured.mockReturnValueOnce(false);
-    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 403 });
-    expect(mockedList).not.toHaveBeenCalled();
+    const parent = vi.fn();
+    await expect(load({ params: { projectId: 'p1' }, parent } as any)).rejects.toMatchObject({ status: 403 });
+    expect(parent).not.toHaveBeenCalled();
   });
 
-  it('404s when the project is not in the list (and never fetches rules)', async () => {
-    mockedList.mockResolvedValue({ projects: [project] });
-    await expect(load({ params: { projectId: 'nope' } } as any)).rejects.toMatchObject({ status: 404 });
+  it('404s when the project is not in the parent list (and never fetches rules)', async () => {
+    await expect(
+      load({ params: { projectId: 'nope' }, parent: parentWith([project]) } as any)
+    ).rejects.toMatchObject({ status: 404 });
     expect(mockedListRules).not.toHaveBeenCalled();
   });
 
   it('forwards an AdminApiError status from the rules fetch', async () => {
     const { AdminApiError } = await import('$lib/server/adminApi');
-    mockedList.mockResolvedValue({ projects: [project] });
     mockedListRules.mockRejectedValue(new AdminApiError(503, 'API down'));
-    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 503 });
+    await expect(
+      load({ params: { projectId: 'p1' }, parent: parentWith([project]) } as any)
+    ).rejects.toMatchObject({ status: 503 });
   });
 
-  it('forwards an AdminApiError status from the project list fetch', async () => {
-    const { AdminApiError } = await import('$lib/server/adminApi');
-    mockedList.mockRejectedValue(new AdminApiError(503, 'API down'));
-    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 503 });
+  it('surfaces the parent apiError as a 502 rather than a misleading 404', async () => {
+    // An unreachable public API leaves parent().projects empty; without the
+    // apiError guard the missing project would 404 (claiming it does not exist)
+    // instead of reporting the outage.
+    await expect(
+      load({ params: { projectId: 'p1' }, parent: parentWith([], 'Cannot reach the Flackyness API.') } as any)
+    ).rejects.toMatchObject({ status: 502 });
     expect(mockedListRules).not.toHaveBeenCalled();
   });
 });

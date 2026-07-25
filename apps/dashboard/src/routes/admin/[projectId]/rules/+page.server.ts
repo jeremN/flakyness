@@ -1,7 +1,6 @@
 import type { PageServerLoad, Actions } from './$types';
 import { error, fail } from '@sveltejs/kit';
 import {
-  listProjects,
   listRules,
   createRule,
   patchRule,
@@ -13,16 +12,18 @@ import {
 } from '$lib/server/adminApi';
 import { validateRuleForm, buildRulePayload } from '$lib/rules-validation';
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, parent }) => {
   if (!adminConfigured()) throw error(403, 'ADMIN_TOKEN not set.');
 
-  let projects;
-  try {
-    ({ projects } = await listProjects());
-  } catch (e) {
-    const status = e instanceof AdminApiError ? e.statusCode : 502;
-    throw error(status, e instanceof Error ? e.message : 'Failed to load project');
-  }
+  // Reuse the project list the root layout already fetched via the PUBLIC api
+  // (+layout.server.ts) instead of spending an admin API call on a second list:
+  // the admin console runs entirely from one server IP, so a gratuitous admin
+  // call is exactly the per-IP pressure the rate-limit work addressed. Both
+  // endpoints enumerate every project, so the id set is identical.
+  const { projects, apiError } = await parent();
+  // Distinguish "API unreachable" (empty list because the public fetch failed)
+  // from a genuinely-missing project, so a down API doesn't masquerade as a 404.
+  if (apiError) throw error(502, apiError);
   const project = projects.find((p) => p.id === params.projectId);
   if (!project) throw error(404, 'Project not found');
 

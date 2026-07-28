@@ -27,7 +27,7 @@ Every task's requirements implicitly include this section.
 ## File Structure
 
 **Create:**
-- `apps/api/src/services/auth/membership.ts` — `generateTempPassword`, `canRemoveGlobalAdmin`, `TEAM_ROLES`.
+- `apps/api/src/services/auth/membership.ts` — `generateTempPassword`, `canRemoveGlobalAdmin`, `normaliseEmail`, `TEAM_ROLES`.
 - `apps/api/src/services/auth/membership.test.ts` — node unit tests.
 - `apps/api/src/routes/admin-teams.ts` — team CRUD + membership sub-routes.
 - `apps/api/src/routes/admin-teams.test.ts` — route tests.
@@ -73,6 +73,18 @@ describe('teams schema (plan 057)', () => {
     const name = getTableConfig(teams).columns.find((c) => c.name === 'name')!;
     expect(name.isUnique).toBe(true);
     expect(name.notNull).toBe(true);
+  });
+
+  // Regression guard. Plan 056's Task 1 shipped these columns tz-NAIVE by
+  // accident — the plan's own code sample had omitted `withTimezone` — and
+  // only a review caught it, after the migration had already been generated.
+  // `getSQLType()` reflects `withTimezone`, so this assertion bites on the
+  // exact mistake rather than on a proxy for it.
+  it('teams.created_at and team_members.created_at are timestamptz, not tz-naive', () => {
+    const teamCreated = getTableConfig(teams).columns.find((c) => c.name === 'created_at')!;
+    const memberCreated = getTableConfig(teamMembers).columns.find((c) => c.name === 'created_at')!;
+    expect(teamCreated.getSQLType()).toBe('timestamp with time zone');
+    expect(memberCreated.getSQLType()).toBe('timestamp with time zone');
   });
 
   it('team_members cascades from BOTH parents — a deleted user or team leaves no orphan rows', () => {
@@ -125,7 +137,13 @@ In `apps/api/src/db/schema.ts`, add **above** the `projects` table (Drizzle need
 export const teams = pgTable('teams', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 255 }).unique().notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // `withTimezone` like users/sessions, NOT plain `timestamp` like the older
+  // tables. The spec specifies timestamptz for every table in this feature
+  // (design doc :111), and plan 056's Task 1 review settled the rule: new
+  // tables follow the spec while they are still empty, because switching
+  // later means an ALTER against live rows. The pre-existing tables stay
+  // timezone-naive; a sweep is a recorded follow-up in plans/README.md.
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 ```
 
@@ -154,7 +172,8 @@ export const teamMembers = pgTable('team_members', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
   role: varchar('role', { length: 16 }).notNull(), // team_admin | member
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // timestamptz, for the same reason as `teams.created_at` above.
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   userTeamUnique: uniqueIndex('team_members_user_team_unique').on(table.userId, table.teamId),
   teamIdIdx: index('team_members_team_id_idx').on(table.teamId),

@@ -104,7 +104,7 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/playwright.ts',    floor: 86 }, // baseline: 91.11% (reliable low of 91.11/91.37)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/rules.ts',        floor: 84 }, // baseline: 89.23% (reliable, reproduced 2x)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/password.ts', floor: 83 }, // baseline: 88.14% (reliable, reproduced 2x; plan 056)
-  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',   floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',  floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

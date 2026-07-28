@@ -10,14 +10,36 @@ describeDb('migration 0012 backfill', () => {
     expect(found).toHaveLength(1);
   });
 
-  it('left no project unassigned — an orphan on a fresh upgrade would go invisible in plan 058', async () => {
-    const orphans = await db.select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(isNull(projects.teamId));
+  it('left no PRE-EXISTING project unassigned — an orphan on upgrade would go invisible in plan 058', async () => {
+    // Scoped to rows that predate the Default team, deliberately. The backfill
+    // and the Default-team INSERT happen in the same migration, so every
+    // project that existed at that instant must now carry a team — that is
+    // exactly what this migration promises, and all this test should assert.
+    //
+    // An unscoped "no project anywhere is orphaned" sweep would be a different
+    // claim entirely, and a false one until Task 6 teaches POST /admin/projects
+    // to set team_id: other suites in this run create projects concurrently, so
+    // the assertion would fail on their rows and stay red for four more tasks,
+    // masking real regressions the whole time.
+    //
+    // Compared in JS rather than SQL on purpose: teams.created_at is
+    // timestamptz while projects.created_at is tz-naive (the documented split
+    // from plan 056), so letting Postgres coerce one to the other would put a
+    // UTC-offset skew right in the middle of the comparison.
+    const [defaultTeam] = await db.select().from(teams).where(eq(teams.name, 'Default'));
+    const migratedAt = defaultTeam.createdAt;
+
+    const orphans = (
+      await db
+        .select({ id: projects.id, name: projects.name, createdAt: projects.createdAt })
+        .from(projects)
+        .where(isNull(projects.teamId))
+    ).filter((p) => p.createdAt < migratedAt);
+
     expect(
       orphans,
-      `these projects have no team and will be invisible to non-admins after plan 058: ` +
-        orphans.map((p) => p.name).join(', ')
+      `these projects predate the 0012 backfill yet have no team, so they will be ` +
+        `invisible to non-admins after plan 058: ${orphans.map((p) => p.name).join(', ')}`
     ).toEqual([]);
   });
 });

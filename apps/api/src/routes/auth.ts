@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { setCookie, deleteCookie } from 'hono/cookie';
-import { db, users } from '../db';
+import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
 import {
@@ -214,12 +214,19 @@ authRouter.get('/me', async (c) => {
     return c.json({ error: 'Not authenticated' }, 401);
   }
 
+  const memberships = await db
+    .select({ id: teams.id, name: teams.name, role: teamMembers.role })
+    .from(teamMembers)
+    .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+    .where(eq(teamMembers.userId, sessionUser.id))
+    .orderBy(teams.name);
+
   return c.json({
     user: {
       ...publicUser(sessionUser),
       mustChangePassword: sessionUser.mustChangePassword,
     },
-    teams: [] as { id: string; name: string; role: 'team_admin' | 'member' }[],
+    teams: memberships,
   });
 });
 

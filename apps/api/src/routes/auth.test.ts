@@ -17,8 +17,10 @@ vi.mock('../services/auth/password', async (importOriginal) => {
   return { ...actual, verifyPassword: vi.fn(actual.verifyPassword) };
 });
 
+// These tests require the database and ADMIN_TOKEN to be configured
 const hasDatabase = !!process.env.DATABASE_URL;
-const describeAuth = hasDatabase ? describe : describe.skip;
+const hasAdminToken = !!process.env.ADMIN_TOKEN;
+const describeAuth = hasDatabase && hasAdminToken ? describe : describe.skip;
 
 let app: typeof import('../index').default;
 
@@ -267,7 +269,40 @@ describeAuth('GET /api/v1/auth/me', () => {
     // green suite.
     expect(body.user.mustChangePassword).toBe(false);
     // Teams are always present in the contract; plan 057 fills them in.
-    expect(body.teams).toEqual([]);
+    expect(body.teams).toBeDefined();
+  });
+
+  it('returns the user\'s teams and per-team roles', async () => {
+    const user = await createUser();
+    const teamRes = await app.request('/api/v1/admin/teams', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+      body: JSON.stringify({ name: `me-${crypto.randomUUID().slice(0, 8)}` }),
+    });
+    const team = (await teamRes.json()).team;
+
+    await app.request(`/api/v1/admin/teams/${team.id}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+      body: JSON.stringify({ userId: user.id, role: 'team_admin' }),
+    });
+
+    const cookie = sessionCookieFrom(await login(user.email))!;
+    const res = await app.request('/api/v1/auth/me', {
+      headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+
+    expect((await res.json()).teams).toEqual([{ id: team.id, name: team.name, role: 'team_admin' }]);
+  });
+
+  it('returns an empty team list for a user in no team (not an error)', async () => {
+    const user = await createUser();
+    const cookie = sessionCookieFrom(await login(user.email))!;
+    const res = await app.request('/api/v1/auth/me', {
+      headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).teams).toEqual([]);
   });
 
   it('reflects mustChangePassword: true for a forced-reset account', async () => {

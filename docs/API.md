@@ -164,11 +164,18 @@ scoping its UI.
     "isGlobalAdmin": false,
     "mustChangePassword": false
   },
-  "teams": []
+  "teams": [
+    {
+      "id": "uuid",
+      "name": "my-team",
+      "role": "team_admin"
+    }
+  ]
 }
 ```
-`teams` is always present in the response shape and is `[]` until plan 057
-introduces teams — so the contract does not change shape between phases.
+`teams` is always present in the response shape. Each team includes the user's
+per-team role (`team_admin` or `member`). The array is empty if the user is not
+a member of any team.
 
 **Error responses:**
 

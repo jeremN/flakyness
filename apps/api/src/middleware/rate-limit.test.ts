@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Context } from 'hono';
 import { getClientIp } from './rate-limit';
 
@@ -83,6 +83,20 @@ describe('rate limiter enforcement', () => {
     expect(API_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 100 });
   });
 
+  // Pins the exact constant: relative-ordering assertions alone (below) don't
+  // catch a mutant like 10 -> 50, since 50 is still between 5 and 100.
+  it('AUTH_RATE_LIMIT is exactly 10 requests per 60s', async () => {
+    const { AUTH_RATE_LIMIT } = await import('./rate-limit');
+    expect(AUTH_RATE_LIMIT).toEqual({ windowMs: 60 * 1000, limit: 10 });
+  });
+
+  it('exposes an auth limiter that is stricter than the API limiter but looser than admin', async () => {
+    const { AUTH_RATE_LIMIT, API_RATE_LIMIT, ADMIN_RATE_LIMIT } = await import('./rate-limit');
+    expect(AUTH_RATE_LIMIT.limit).toBeLessThan(API_RATE_LIMIT.limit);
+    expect(AUTH_RATE_LIMIT.limit).toBeGreaterThan(ADMIN_RATE_LIMIT.limit);
+    expect(AUTH_RATE_LIMIT.windowMs).toBe(60 * 1000);
+  });
+
   it('a factory-built limiter 429s once its limit is exceeded', async () => {
     const { Hono } = await import('hono');
     const { createRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
@@ -126,6 +140,33 @@ describe('rate limiter enforcement', () => {
 
       expect(last!.status).toBe(429);
       expect(await last!.json()).toEqual({ error: 'slow down please', retryAfter: 60 });
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+
+  it('authRateLimit allows the first 10 requests and 429s the 11th', async () => {
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 2; i++) {
+        codes.push((await app.request('/x')).status);
+      }
+      const allowed = codes.filter((s) => s === 200).length;
+      const blocked = codes.filter((s) => s === 429).length;
+      expect(allowed).toBe(AUTH_RATE_LIMIT.limit);
+      expect(blocked).toBe(2);
+      // Pin the boundary literally: the 11th request (index 10) is the first
+      // to be throttled, and the 10th (index 9) still passes.
+      expect(codes[9]).toBe(200);
+      expect(codes[10]).toBe(429);
     } finally {
       __setRateLimitEnabled(false);
     }
@@ -244,6 +285,200 @@ describe('mute route rate-limits before auth (regression guard)', () => {
       __setRateLimitEnabled(false);
       if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});
+
+describe('auth router: authRateLimit is scoped to /login + /change-password only (Important-1 regression guard)', () => {
+  // Prior revision mounted `authRateLimit` on authRouter.use('*', ...), which
+  // also capped GET /me at 10/min per IP. Since plan 059's dashboard
+  // hooks.server.ts calls /me on every server-rendered page view, all users
+  // behind the dashboard container's single IP shared that bucket: the 11th
+  // page view in any minute 429d, and the dashboard's fetchMe reads a
+  // non-2xx response as "not signed in" — a random logout under completely
+  // ordinary load. These two tests mount the REAL authRouter (not a
+  // synthetic app.get('/x')) so they actually exercise the production
+  // mount, not just the limiter object in isolation.
+  it('a flood of malformed-body attempts on POST /api/v1/auth/login gets 429d', async () => {
+    // Fresh module instance: authRateLimit's 'unknown'-keyed bucket is
+    // shared by every test in this file that exercises it directly.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // A syntactically-invalid email 400s at zValidator without ever
+      // reaching the DB — this file has no DATABASE_URL dependency anywhere
+      // else, and keeping this test DB-free lets it always run, not just
+      // when Postgres happens to be up. The point under test is the
+      // limiter's mount on the real route, not the login business logic
+      // (already covered by auth.test.ts's real-credential suite).
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'not-an-email', password: 'x' }),
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early ones actually reached the route (400 from
+      // zValidator), proving the limiter let them through rather than
+      // something else rejecting every request outright.
+      expect(codes[0]).toBe(400);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
+  it('an unmatched path under /api/v1/auth is still rate-limited, not an open DB path', async () => {
+    // Regression guard for a gap the final whole-branch review found. Scoping
+    // authRateLimit to /login + /change-password removed the wildcard that had
+    // been the ONLY cover for paths matching no handler — while sessionAuth()
+    // stayed on '*'. So /api/v1/auth/nope with a cookie ran a SHA-256 plus an
+    // indexed sessions↔users SELECT and 404'd, unthrottled, forever.
+    // Deleting `authRouter.use('*', apiRateLimit)` must red this test.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { API_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // No cookie, so sessionAuth() short-circuits before touching the DB and
+      // this stays DB-free — the limiter is what we are proving, not the query.
+      const codes: number[] = [];
+      for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
+        codes.push((await app.request('/api/v1/auth/definitely-not-a-route')).status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early ones really did fall through to a 404, proving the
+      // limiter passed them on rather than something else refusing everything.
+      expect(codes[0]).toBe(404);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
+  it('a flood of malformed-body attempts on POST /api/v1/auth/change-password gets 429d', async () => {
+    // The sibling of the /login test above. Without this, removing
+    // `authRouter.use('/change-password', authRateLimit)` — or typo-ing its
+    // path — leaves the entire suite green, because the /login test only
+    // proves /login's own mount. change-password takes a password on the
+    // wire just as login does, so it needs the same brute-force ceiling and
+    // the same regression guard.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // DB-free for the same reason as the /login test: a malformed body
+      // 400s at zValidator, and sessionAuth() short-circuits before any
+      // query when the request carries no cookie.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword: '' }),
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: early requests reached the route rather than being refused
+      // by something upstream of the limiter.
+      expect(codes[0]).toBe(400);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
+  it('GET /api/v1/auth/me is NOT throttled at the 10/min auth limit', async () => {
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // No session cookie -> every request 401s regardless of throttling.
+      // The assertion under test is that NONE of them are 429: if
+      // `authRateLimit` were (re)mounted on '*' — the bug Important 1
+      // fixes — the 11th of these would 429, exactly like the flood test
+      // above does for /login.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 5; i++) {
+        codes.push((await app.request('/api/v1/auth/me')).status);
+      }
+      expect(codes).not.toContain(429);
+      expect(codes.every((s) => s === 401)).toBe(true);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+});
+
+describe('authRateLimit has NO bearer exemption (unlike adminRateLimit)', () => {
+  it('still rate-limits a flood of login attempts carrying a valid ADMIN_TOKEN bearer', async () => {
+    // authRateLimit is a module-level singleton keyed by getClientIp, which
+    // resolves to the constant 'unknown' bucket under app.request (no
+    // socket). A fresh module instance (fresh in-memory store) is required
+    // so this test's counts aren't polluted by the 'authRateLimit allows the
+    // first 10...' test above sharing the same bucket.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'valid-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // authRateLimit is a plain per-IP limiter (unlike adminRateLimit, which
+      // exempts a valid ADMIN_TOKEN bearer via hasValidAdminBearer) — a login
+      // request never carries a credential that should exempt it, since
+      // proving the password IS the point of the request. A copy-paste of
+      // adminRateLimit's skip onto this limiter would let an attacker holding
+      // an admin token brute-force passwords unthrottled; this reds that.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request('/x', {
+          headers: { Authorization: 'Bearer valid-admin-token' },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      expect(codes[9]).toBe(200);
+      expect(codes[10]).toBe(429);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+      vi.resetModules();
     }
   });
 });

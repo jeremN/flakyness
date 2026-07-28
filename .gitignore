@@ -11,6 +11,12 @@ build/
 .env
 .env.local
 .env.*.local
+# Hand-made backups (.env.bak, .env.orig, .env.2026-07-28…) carry the same
+# secrets as .env but were NOT matched by the patterns above — a `git add -A`
+# would have committed DATABASE_URL and ADMIN_TOKEN in plaintext.
+.env.*
+# …but the checked-in templates must stay tracked.
+!.env.example
 
 # IDE
 .vscode/

@@ -56,6 +56,44 @@ import { pathToFileURL } from 'node:url';
 // `stryker run --mutate src/services/rules.ts` (pure module, no DB): 89.23%,
 // identical across 2 scoped runs (deterministic, same pattern as
 // flakiness.ts/junit.ts). Floor 84.
+// Plan 056 (identity core, task 8) baselined services/auth/password.ts and
+// services/auth/session.ts 2026-07-28 via
+// `stryker run --mutate src/services/auth/password.ts,src/services/auth/session.ts`
+// (pure modules, no DB touched by the mutated code itself, though the dry
+// run still needs Postgres up for the rest of the suite): both files scored
+// identically across 2 scoped runs (deterministic, same pattern as
+// flakiness.ts/junit.ts/rules.ts).
+//  - session.ts: 100.00% both runs. Floor 95.
+//  - password.ts: 88.14% both runs (raised from an initial 62.71% baseline
+//    by adding tests — see password.test.ts's "out-of-range encoded cost
+//    parameters" describe block and the standalone tests after it — for
+//    branches that were previously reachable-but-unasserted). Floor 83.
+//    7 mutants survive both runs, all verified equivalent (not chased):
+//    scryptAsync's `if (err) reject(err)` (password.ts:16) — Node's public
+//    scrypt() API validates every documented invalid-parameter case
+//    SYNCHRONOUSLY (confirmed by direct testing: bad N/r/p, non-integers,
+//    NaN, Infinity, and out-of-memory N all throw before the callback would
+//    ever run), so the callback's `err` is null on every reachable path;
+//    reproducing a non-null `err` would require mocking node:crypto, which
+//    this suite deliberately does not do (real scrypt only, matching every
+//    other test in the file). hashPassword's `{ N, r: R, p: P }` -> `{}`
+//    (password.ts:51) — N=16384/r=8/p=1 (this module's chosen cost) are
+//    byte-for-byte IDENTICAL to Node's own scrypt() defaults when no options
+//    are passed (verified: scryptSync with `{}` and with the explicit
+//    triple produce the same digest), so this mutant cannot ever produce a
+//    different derived key. All 4 survivors on the `!Number.isInteger(n) ||
+//    !Number.isInteger(r) || !Number.isInteger(p)` guard (password.ts:69,
+//    whole line and its LogicalOperator/ConditionalExpression sub-mutants)
+//    — every value that fails Number.isInteger (NaN, ±Infinity, non-integer
+//    floats) also makes scrypt() throw synchronously when used as N/r/p, so
+//    bypassing this guard always lands in the same catch block returning
+//    the same `false`; verified directly for all three parameter positions.
+//    `n <= 1` -> `n < 1` (password.ts:70) — differs only at n=1, and N=1 is
+//    independently rejected by scrypt() itself ("N must be a power of two"),
+//    so no test can observe a difference (unlike r<=0/p<=0, where scrypt
+//    silently substitutes its own default for 0 instead of throwing — that
+//    asymmetry is exactly why the r/p siblings of this same line ARE tested
+//    and killed, via crafted digests real at the substituted default).
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -65,6 +103,8 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/junit.ts',         floor: 83 }, // baseline: 88.38% (deterministic — identical across 2 runs)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/parsers/playwright.ts',    floor: 86 }, // baseline: 91.11% (reliable low of 91.11/91.37)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/rules.ts',        floor: 84 }, // baseline: 89.23% (reliable, reproduced 2x)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/password.ts', floor: 83 }, // baseline: 88.14% (reliable, reproduced 2x; plan 056)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',  floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

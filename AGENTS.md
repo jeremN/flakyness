@@ -170,7 +170,11 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `$lib/{format,status,error-page,href}.ts`. Floors are baseline-calibrated
   and only bumped deliberately. Run it locally with
   `pnpm --filter <pkg> test:mutation` (API needs a disposable Postgres via
-  `docker run`; the dashboard's `$lib` run does not). `pool: 'threads'`
+  `docker run` **and `ADMIN_TOKEN` exported** — `routes/projects.test.ts`
+  gates on `hasDatabase && hasAdminToken`, so without the token that suite
+  self-skips, its ~245 mutants report `NoCoverage`, and `projects.ts` scores
+  ~4% against its floor of 61: a fake regression that is really an unrun
+  suite. The dashboard's `$lib` run needs neither.) `pool: 'threads'`
   lives ONLY in `vitest.stryker.config.ts` — never touch the default
   `forks` config used elsewhere. Browser-mode `.svelte` components are NOT
   mutation-tested (Stryker has no browser-mode support) — the A3b render

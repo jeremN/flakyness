@@ -22,6 +22,13 @@ export const API_RATE_LIMIT = { windowMs: 60 * 1000, limit: 100 };
 export const ADMIN_RATE_LIMIT = { windowMs: 60 * 1000, limit: 5 };
 
 /**
+ * Login/change-password throttle. Stricter than the API limiter (100/min)
+ * because each request is a password guess; looser than the admin limiter
+ * (5/min) because a human retyping a password must not lock themselves out.
+ */
+export const AUTH_RATE_LIMIT = { windowMs: 60 * 1000, limit: 10 };
+
+/**
  * Extract the client IP using a reliable strategy:
  * 1. If TRUSTED_PROXY_IPS is set, trust x-forwarded-for only when the
  *    connecting socket IP is itself trusted.
@@ -91,6 +98,18 @@ export const apiRateLimit = createRateLimit(
   API_RATE_LIMIT,
   getClientIp,
   'Rate limit exceeded. Please slow down.'
+);
+
+/**
+ * Rate limiter for the login/auth endpoints. Limit: 10/min per IP. Plain
+ * per-IP throttling with no bearer exemption — unlike adminRateLimit, a login
+ * request never carries a valid credential to exempt (that's the whole point
+ * of the request), so every attempt counts against the bucket.
+ */
+export const authRateLimit = createRateLimit(
+  AUTH_RATE_LIMIT,
+  getClientIp,
+  'Too many login attempts. Please wait before retrying.'
 );
 
 /**

@@ -174,6 +174,44 @@ export const quarantineRules = pgTable('quarantine_rules', {
     .on(table.projectId, table.position),
 }));
 
+// Local user accounts (plan 056 / roadmap #5+#6). Identity is API-owned: the
+// dashboard is a client that logs in here, never the enforcement point.
+// Deliberately OIDC-ready — nothing below assumes the password is the only
+// possible credential, so an external IdP can be added beside it later.
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Login identity. Stored lower-cased (normalised at the route edge) so
+  // "Ada@x.io" and "ada@x.io" cannot become two accounts.
+  email: varchar('email', { length: 255 }).unique().notNull(),
+  // scrypt, encoded `scrypt$N$r$p$salt$hash` — see services/auth/password.ts.
+  passwordHash: varchar('password_hash', { length: 256 }).notNull(),
+  displayName: varchar('display_name', { length: 255 }),
+  // The operator. Bypasses all team scoping (plan 058). Never defaults true.
+  isGlobalAdmin: boolean('is_global_admin').notNull().default(false),
+  // Set when an admin provisions the account with a show-once temp password
+  // (plan 057); forces a reset on first login.
+  mustChangePassword: boolean('must_change_password').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lastLoginAt: timestamp('last_login_at'),
+});
+
+// Server-side sessions. The raw token lives only in the client's cookie; we
+// store a SHA-256 of it, exactly as projects.token_hash does — so a database
+// dump does not hand out live sessions.
+export const sessions = pgTable('sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  // Sliding TTL anchor: refreshed on use, so an active session does not expire
+  // mid-workday. See services/auth/session.ts.
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+}, (table) => ({
+  tokenHashIdx: index('sessions_token_hash_idx').on(table.tokenHash),
+  userIdIdx: index('sessions_user_id_idx').on(table.userId),
+}));
+
 // Type exports for use in application
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -187,3 +225,7 @@ export type QuarantineEvent = typeof quarantineEvents.$inferSelect;
 export type NewQuarantineEvent = typeof quarantineEvents.$inferInsert;
 export type QuarantineRule = typeof quarantineRules.$inferSelect;
 export type NewQuarantineRule = typeof quarantineRules.$inferInsert;
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;

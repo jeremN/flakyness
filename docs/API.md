@@ -43,9 +43,10 @@ Bearer tokens above — it is not accepted in place of a project token,
 `READ_TOKEN`, or `ADMIN_TOKEN`, and (per the Phase A note) none of those
 routes read it yet either.
 
-There is no account-creation endpoint yet (`POST /admin/users` ships in plan
-057). To exercise these endpoints before then, insert a `users` row directly
-with a hash from `hashPassword()` (`apps/api/src/services/auth/password.ts`).
+Accounts are provisioned by a global admin via
+[User Provisioning](#user-provisioning) (`/api/v1/admin/users`, `ADMIN_TOKEN`
+gated) — see that section for the create/list/update/reset-password/delete
+endpoints.
 
 **`COOKIE_SECURE`** controls the `Secure` attribute on the `fk_session`
 cookie. `true` forces it on, `false` forces it off; left unset, it defaults
@@ -1613,6 +1614,180 @@ GET /api/v1/admin/health
   "version": "0.0.1"
 }
 ```
+
+### User Provisioning
+
+```http
+GET /api/v1/admin/users
+POST /api/v1/admin/users
+PATCH /api/v1/admin/users/:userId
+POST /api/v1/admin/users/:userId/reset-password
+DELETE /api/v1/admin/users/:userId
+```
+
+Mounted at `/api/v1/admin/users` — a sibling of, and matched **before**,
+`/api/v1/admin/*` — same `ADMIN_TOKEN` gate and 5/minute admin rate limit as
+every other admin endpoint. There is no self-service sign-up: a global admin
+provisions every account (plan 057).
+
+#### List Users
+
+```http
+GET /api/v1/admin/users
+```
+
+**Response:**
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "email": "jane@example.com",
+      "displayName": "Jane Doe",
+      "isGlobalAdmin": false,
+      "mustChangePassword": false,
+      "createdAt": "2024-12-01T00:00:00.000Z",
+      "lastLoginAt": "2024-12-11T09:00:00.000Z",
+      "teams": [
+        { "id": "uuid", "name": "Payments", "role": "team_admin" }
+      ]
+    }
+  ]
+}
+```
+
+#### Create User
+
+```http
+POST /api/v1/admin/users
+```
+
+Provisions an account with a **show-once** temporary password: the
+plaintext appears in this response and nowhere else — it is never logged,
+never re-fetchable, and only its scrypt hash is stored. The account is
+forced to change it on first sign-in (`mustChangePassword: true`).
+
+**Body:**
+```json
+{
+  "email": "jane@example.com",
+  "displayName": "Jane Doe",   // optional
+  "isGlobalAdmin": false        // optional, defaults to false
+}
+```
+`email` is trimmed and lower-cased before the uniqueness check, so
+`Jane@Example.com` and `jane@example.com` collide.
+
+**Response (201):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane Doe",
+    "isGlobalAdmin": false,
+    "mustChangePassword": true,
+    "createdAt": "2024-12-11T00:00:00.000Z",
+    "lastLoginAt": null
+  },
+  "temporaryPassword": "ve5EGagIOaIms0d1BDb96Agr",
+  "warning": "Save this password securely. It will not be shown again. The user must change it on first sign-in."
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed body (missing/invalid `email`, or fields exceeding their length limits). |
+| `409` | `{ "error": "A user with this email already exists" }` — checked case-insensitively. |
+
+#### Update User
+
+```http
+PATCH /api/v1/admin/users/:userId
+```
+
+Update a user's `displayName` and/or `isGlobalAdmin` flag. Fields omitted
+from the body are left unchanged.
+
+**Body:**
+```json
+{
+  "displayName": "Jane R. Doe",  // optional, null clears it
+  "isGlobalAdmin": true           // optional
+}
+```
+
+**Response (200):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane R. Doe",
+    "isGlobalAdmin": true,
+    "mustChangePassword": false,
+    "createdAt": "2024-12-01T00:00:00.000Z",
+    "lastLoginAt": "2024-12-11T09:00:00.000Z"
+  }
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId` or body. |
+| `404` | No user with that id. |
+| `409` | `{ "error": "Cannot demote the last global admin" }` — refused when this would set `isGlobalAdmin: false` on the only remaining global admin, since an install with zero global admins cannot recover through the API. |
+
+#### Reset Password
+
+```http
+POST /api/v1/admin/users/:userId/reset-password
+```
+
+Issues a fresh **show-once** temporary password, forces a reset
+(`mustChangePassword: true`), and revokes **every** live session the user
+holds — an admin-initiated reset is often a response to a compromise, and a
+reset that leaves an existing session alive would be cosmetic.
+
+**Response (200):**
+```json
+{
+  "temporaryPassword": "xQ2mZpv0Ftr6La8CobKzHuY1",
+  "warning": "Save this password securely. It will not be shown again. All of this user's sessions have been revoked."
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId`. |
+| `404` | No user with that id. |
+
+#### Delete User
+
+```http
+DELETE /api/v1/admin/users/:userId
+```
+
+Deletes the user; their sessions and team memberships cascade.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId`. |
+| `404` | No user with that id. |
+| `409` | `{ "error": "Cannot delete the last global admin" }` — same last-global-admin guard as [Update User](#update-user). |
 
 ---
 

@@ -1007,6 +1007,59 @@ describeAuth('GET /api/v1/auth/me', () => {
     expect(res.status).toBe(401);
     expect(await db.select().from(sessions).where(eq(sessions.userId, user.id))).toHaveLength(0);
   });
+
+  // The two tests below are the ONLY end-to-end coverage of the sliding-TTL
+  // branch. Every other test in this file logs in moments before it calls the
+  // API, so `shouldSlideSession` is false throughout and the slide code never
+  // runs. Without these, deleting `expiresAt: sessionExpiry(now)` from the
+  // middleware's UPDATE — or targeting the wrong row — leaves the suite green.
+  it('slides an idle session forward: both last_seen_at AND expires_at move', async () => {
+    const user = await createUser();
+    const cookie = sessionCookieFrom(await login(user.email))!;
+
+    // Backdate past the slide threshold (1h) but nowhere near the 7d expiry,
+    // so the row is stale-but-live and takes the slide branch.
+    const staleSeenAt = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await db
+      .update(sessions)
+      .set({ lastSeenAt: staleSeenAt })
+      .where(eq(sessions.userId, user.id));
+
+    const [before] = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+
+    const res = await app.request('/api/v1/auth/me', {
+      headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(res.status).toBe(200);
+
+    const [after] = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+
+    // Same row — catches a slide that targets the wrong session.
+    expect(after.id).toBe(before.id);
+    // Activity recorded.
+    expect(after.lastSeenAt.getTime()).toBeGreaterThan(staleSeenAt.getTime());
+    // The point of a SLIDING window: expiry is pushed out, not just touched.
+    // This is the assertion that reds if `expiresAt` is dropped from the UPDATE.
+    expect(after.expiresAt.getTime()).toBeGreaterThan(before.expiresAt.getTime());
+  });
+
+  it('does NOT slide a session that was just used', async () => {
+    const user = await createUser();
+    const cookie = sessionCookieFrom(await login(user.email))!;
+    const [before] = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+
+    const res = await app.request('/api/v1/auth/me', {
+      headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(res.status).toBe(200);
+
+    // Fresh session is inside the 1h threshold, so the UPDATE must be skipped.
+    // Without this, `shouldSlideSession` could be hardcoded `true` and the
+    // slide test above would still pass — a write on every single request.
+    const [after] = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+    expect(after.expiresAt.getTime()).toBe(before.expiresAt.getTime());
+    expect(after.lastSeenAt.getTime()).toBe(before.lastSeenAt.getTime());
+  });
 });
 
 describeAuth('POST /api/v1/auth/logout', () => {
@@ -1509,6 +1562,17 @@ Insert a new `## Authentication (user accounts)` section immediately after the e
 
 Document the `COOKIE_SECURE` environment variable (default `false`; set to `true` when serving the API over TLS) beside the other environment variables in the same file.
 
+Also include this note verbatim, in the same section. The sliding TTL has no absolute cap, and that is a deliberate ruling — an undocumented uncapped session reads as an oversight to the next person who audits it:
+
+```markdown
+> **Session lifetime is 7 days of _inactivity_, not 7 days total.** Each
+> authenticated request more than an hour after the last one pushes the
+> expiry out by another 7 days, so a user who visits daily never has to sign
+> in again. There is deliberately no absolute lifetime cap. To end a session
+> early, call `POST /auth/logout`; changing a password revokes every session
+> the user holds.
+```
+
 - [ ] **Step 2: Add the plan row to `plans/README.md`**
 
 Add to the batch-9 table, after the plan-055 row:
@@ -1517,13 +1581,30 @@ Add to the batch-9 table, after the plan-055 row:
 | 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | TODO |
 ```
 
+Then add this note immediately below that table. It records a real exposure that plan 056 deliberately did **not** fix, and it will be lost if it lives only in a review thread:
+
+```markdown
+**Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
+timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
+spec asked for it, and `sessions.expires_at` is a security control, so it was worth a
+deliberate inconsistency with the rest of the schema while the tables were still empty.
+Every pre-existing table remains on plain `timestamp`, **including a live TTL column**:
+`flaky_tests.quarantine_expires_at` (`schema.ts:112`, plan 051 auto-quarantine), which
+carries the identical latent TZ-skew exposure — an auto-quarantine can release early or
+late if the API process and Postgres disagree on the session time zone. A sweep migration
+was ruled out of scope for 056 (it would touch six shipped tables with live data, for a
+phase whose whole claim is zero behavior change). Worth its own small plan.
+```
+
 - [ ] **Step 3: Full verification**
 
 ```bash
-pnpm lint
+pnpm run lint
 pnpm --filter api exec tsc --noEmit
 pnpm --filter api test
 ```
+
+Note the `pnpm run lint` form: bare `pnpm lint` is rewritten by a local hook into an `eslint` invocation and fails with "Command not found". The repo's actual script is oxlint. `pnpm exec oxlint --deny-warnings apps/` works too.
 Expected: lint clean, typecheck clean, all API suites green (route suites need `DATABASE_URL`; without it they self-skip, which is **not** verification — run them with a database).
 
 - [ ] **Step 4: Commit**

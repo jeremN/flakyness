@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
 
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -26,6 +26,77 @@ async function createUserViaApi(body: Record<string, unknown> = {}) {
   });
   return { res, body: await res.json() };
 }
+
+/**
+ * Runs `run(targetId)` in a scenario where `targetId` is the ONLY global
+ * admin in the database — deterministically, regardless of how many other
+ * global admins already exist. A real deployment always has at least a
+ * bootstrap admin, and other files in this suite (session.test.ts,
+ * auth.test.ts) legitimately create their own `isGlobalAdmin: true` fixtures
+ * — under vitest's default forks-pool file parallelism (apps/api has no
+ * vitest.config.ts), those files' tests run concurrently with this one.
+ *
+ * Self-contained: creates its own throwaway admin as the target instead of
+ * repurposing an existing user, and computes the "only admin" state from
+ * whatever the ambient admin set happens to be at call time — it never
+ * assumes a particular starting count.
+ *
+ * Restorative: ALWAYS restores every ambient admin's `isGlobalAdmin` flag
+ * and deletes the throwaway target in a `finally`, so the suite leaves the
+ * database exactly as it found it even if `run`'s assertions throw.
+ *
+ * Residual risk (documented, not eliminated): the demote → `run` → restore
+ * window is not held under a database lock, so a *different* concurrently
+ * running test file that creates a global admin during that (single
+ * bulk-UPDATE-wide) window could still race this one. Closing that fully
+ * would need either a cross-connection table lock or serializing the whole
+ * suite (an apps/api-wide vitest config change) — both bigger than this
+ * fix. This is the same class of race as the route's own read-then-write
+ * TOCTOU, deferred alongside it.
+ */
+async function withSoleGlobalAdmin(run: (targetId: string) => Promise<void>): Promise<void> {
+  const ambientAdmins = await db.select({ id: users.id }).from(users).where(eq(users.isGlobalAdmin, true));
+  const ambientIds = ambientAdmins.map((a) => a.id);
+  const { body: target } = await createUserViaApi({ isGlobalAdmin: true });
+
+  if (ambientIds.length > 0) {
+    await db.update(users).set({ isGlobalAdmin: false }).where(inArray(users.id, ambientIds));
+  }
+
+  try {
+    await run(target.user.id);
+  } finally {
+    if (ambientIds.length > 0) {
+      await db.update(users).set({ isGlobalAdmin: true }).where(inArray(users.id, ambientIds));
+    }
+    await db.delete(users).where(eq(users.id, target.user.id));
+  }
+}
+
+describeAdmin('GET /api/v1/admin/users', () => {
+  it('lists users with the documented shape, the teams array, and never leaks the password hash', async () => {
+    const { body: created } = await createUserViaApi();
+
+    const res = await app.request('/api/v1/admin/users', { headers: authHeaders() });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(JSON.stringify(body)).not.toContain('scrypt$');
+
+    const listed = body.users.find((u: { id: string }) => u.id === created.user.id);
+    expect(listed).toMatchObject({
+      id: created.user.id,
+      email: created.user.email,
+      displayName: created.user.displayName,
+      isGlobalAdmin: false,
+      mustChangePassword: true,
+      teams: [],
+    });
+    expect(listed).toHaveProperty('createdAt');
+    expect(listed).toHaveProperty('lastLoginAt');
+    expect(listed).not.toHaveProperty('passwordHash');
+  });
+});
 
 describeAdmin('POST /api/v1/admin/users', () => {
   it('requires an admin token', async () => {
@@ -123,18 +194,27 @@ describeAdmin('POST /api/v1/admin/users/:userId/reset-password', () => {
     expect(res.status).toBe(200);
     const reset = await res.json();
     expect(reset.temporaryPassword).not.toBe(body.temporaryPassword);
+    expect(JSON.stringify(reset)).not.toContain('scrypt$');
 
     const [row] = await db.select().from(users).where(eq(users.id, userId));
     expect(row.mustChangePassword).toBe(true);
     expect(await db.select().from(sessions).where(eq(sessions.userId, userId))).toHaveLength(0);
 
-    // The old password no longer works; the new one does.
+    // The old password no longer works.
     const old = await app.request('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: body.user.email, password: body.temporaryPassword }),
     });
     expect(old.status).toBe(401);
+
+    // The new password does.
+    const fresh = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: body.user.email, password: reset.temporaryPassword }),
+    });
+    expect(fresh.status).toBe(200);
   });
 
   it('404s for an unknown user', async () => {
@@ -158,25 +238,61 @@ describeAdmin('PATCH /api/v1/admin/users/:userId', () => {
     expect((await res.json()).user.displayName).toBe('Renamed');
   });
 
-  it('refuses to demote the last global admin', async () => {
-    // Ensure exactly one global admin exists for this assertion.
-    const admins = await db.select().from(users).where(eq(users.isGlobalAdmin, true));
-    for (const extra of admins.slice(1)) {
-      await db.update(users).set({ isGlobalAdmin: false }).where(eq(users.id, extra.id));
-    }
-    const [onlyAdmin] = admins.length
-      ? admins
-      : [(await createUserViaApi({ isGlobalAdmin: true })).body.user];
-
-    const res = await app.request(`/api/v1/admin/users/${onlyAdmin.id}`, {
+  it('never returns the password hash', async () => {
+    const { body } = await createUserViaApi();
+    const res = await app.request(`/api/v1/admin/users/${body.user.id}`, {
       method: 'PATCH',
       headers: authHeaders(),
-      body: JSON.stringify({ isGlobalAdmin: false }),
+      body: JSON.stringify({ displayName: 'Renamed Again' }),
     });
-    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).not.toContain('scrypt$');
+  });
 
-    const [after] = await db.select().from(users).where(eq(users.id, onlyAdmin.id));
-    expect(after.isGlobalAdmin).toBe(true);
+  it('returns the unchanged user for a no-op PATCH (empty body, unknown keys only, or no body)', async () => {
+    const { body: created } = await createUserViaApi();
+
+    const empty = await app.request(`/api/v1/admin/users/${created.user.id}`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({}),
+    });
+    expect(empty.status).toBe(200);
+    expect((await empty.json()).user).toEqual(created.user);
+
+    const unknownKeysOnly = await app.request(`/api/v1/admin/users/${created.user.id}`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({ notARealField: 'whatever' }),
+    });
+    expect(unknownKeysOnly.status).toBe(200);
+    expect((await unknownKeysOnly.json()).user).toEqual(created.user);
+
+    // No Content-Type and no body at all — deliberately NOT authHeaders(),
+    // which always sets Content-Type: application/json. With that header
+    // present, Hono's built-in json validator rejects an empty body itself
+    // (400, before ever reaching this route's handler) — a different, already-
+    // correct path. Without it, Hono parses the absent body as `{}` and this
+    // request DOES reach the same no-op code path as the two cases above.
+    const noBody = await app.request(`/api/v1/admin/users/${created.user.id}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+    });
+    expect(noBody.status).toBe(200);
+    expect((await noBody.json()).user).toEqual(created.user);
+  });
+
+  it('refuses to demote the last global admin', async () => {
+    await withSoleGlobalAdmin(async (targetId) => {
+      const res = await app.request(`/api/v1/admin/users/${targetId}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ isGlobalAdmin: false }),
+      });
+      expect(res.status).toBe(409);
+
+      const [after] = await db.select().from(users).where(eq(users.id, targetId));
+      expect(after.isGlobalAdmin).toBe(true);
+    });
   });
 });
 
@@ -199,19 +315,13 @@ describeAdmin('DELETE /api/v1/admin/users/:userId', () => {
   });
 
   it('refuses to delete the last global admin', async () => {
-    const admins = await db.select().from(users).where(eq(users.isGlobalAdmin, true));
-    for (const extra of admins.slice(1)) {
-      await db.update(users).set({ isGlobalAdmin: false }).where(eq(users.id, extra.id));
-    }
-    const [onlyAdmin] = admins.length
-      ? admins
-      : [(await createUserViaApi({ isGlobalAdmin: true })).body.user];
-
-    const res = await app.request(`/api/v1/admin/users/${onlyAdmin.id}`, {
-      method: 'DELETE',
-      headers: authHeaders(),
+    await withSoleGlobalAdmin(async (targetId) => {
+      const res = await app.request(`/api/v1/admin/users/${targetId}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(409);
+      expect(await db.select().from(users).where(eq(users.id, targetId))).toHaveLength(1);
     });
-    expect(res.status).toBe(409);
-    expect(await db.select().from(users).where(eq(users.id, onlyAdmin.id))).toHaveLength(1);
   });
 });

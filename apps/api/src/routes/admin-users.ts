@@ -2,10 +2,11 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, count } from 'drizzle-orm';
-import { db, users, teams, teamMembers, sessions } from '../db';
+import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { adminAuth } from '../middleware/auth';
+import { revokeAllUserSessions } from '../middleware/session';
 import { hashPassword } from '../services/auth/password';
 import { generateTempPassword, canRemoveGlobalAdmin, normaliseEmail } from '../services/auth/membership';
 
@@ -149,7 +150,16 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
     columns.isGlobalAdmin = body.isGlobalAdmin;
   }
 
-  const [updated] = await db.update(users).set(columns).where(eq(users.id, user.id)).returning();
+  // A body of `{}`, unknown-keys-only (zod strips them), or no body at all
+  // all land here with zero columns to set. drizzle's `.set()` throws "No
+  // values to set" on an empty object — a no-op PATCH is not an error per
+  // docs/API.md ("fields omitted are left unchanged"), so skip the write
+  // and echo the user back unchanged instead of letting that throw surface
+  // as a 500.
+  const updated =
+    Object.keys(columns).length > 0
+      ? (await db.update(users).set(columns).where(eq(users.id, user.id)).returning())[0]
+      : user;
   logger.info('User updated', { userId: user.id, requestId: c.get('requestId') });
   return c.json({ user: publicUser(updated) });
 });
@@ -173,7 +183,7 @@ adminUsersRouter.post('/:userId/reset-password', async (c) => {
     .update(users)
     .set({ passwordHash: await hashPassword(temporaryPassword), mustChangePassword: true })
     .where(eq(users.id, user.id));
-  await db.delete(sessions).where(eq(sessions.userId, user.id));
+  await revokeAllUserSessions(user.id);
 
   logger.info('User password reset by admin', { userId: user.id, requestId: c.get('requestId') });
 

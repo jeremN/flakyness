@@ -136,6 +136,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   reorder for rules is live on the API (`/api/v1/admin/projects/:id/rules`,
   `routes/admin.ts`); a dashboard console UI to manage them is a deferred
   fast-follow (see `plans/README.md`).
+- **A Drizzle column interpolated into a raw `sql` correlated subquery binds
+  to the wrong table.** On a single-table select with no joins, Drizzle
+  treats an interpolated column's table qualifier as redundant and drops it
+  — `${projects.id}` inside a `sql` template renders as bare `"id"`. Fine at
+  the top level (only one table in scope), but inside a nested `select ...
+  from other_table where ...` subquery that bare `"id"` binds to
+  `other_table.id`, not the outer row — e.g. `test_runs.project_id =
+  ${projects.id}` silently became `test_runs.project_id = test_runs.id`
+  (`GET /api/v1/admin/projects`'s stats, essentially never true, pinned at 0
+  since these fields shipped — caught because `typeof x === 'number'` can't
+  fail on `0`; fixed by asserting seeded values). Write the outer column as
+  raw SQL text instead (`where test_runs.project_id = projects.id`, no
+  `${}`) — Postgres case-folds the unquoted identifier to lowercase, which
+  matches Drizzle's quoted lowercase table name. Always verify with
+  `.toSQL().sql` on both sides; don't assume.
 
 ## Conventions
 

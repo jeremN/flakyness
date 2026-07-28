@@ -117,11 +117,11 @@ describeAdmin('Admin API Integration Tests', () => {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       expect(res.status).toBe(200);
-      
+
       const body = await res.json();
       expect(body.projects).toBeDefined();
       expect(Array.isArray(body.projects)).toBe(true);
-      
+
       // Check structure of first project if any exist
       if (body.projects.length > 0) {
         const project = body.projects[0];
@@ -129,7 +129,97 @@ describeAdmin('Admin API Integration Tests', () => {
         expect(project.name).toBeDefined();
         expect(typeof project.hasToken).toBe('boolean');
         expect(project.stats).toBeDefined();
-        expect(typeof project.stats.totalRuns).toBe('number');
+      }
+    });
+
+    /**
+     * Regression test for a correlated-subquery bug: totalRuns, totalTests
+     * and activeFlakyTests were built from raw `sql` subqueries that
+     * interpolated `${projects.id}` as the correlation column. On this
+     * single-table select, Drizzle drops the table qualifier from an
+     * interpolated column as "redundant", so it rendered as bare `"id"`
+     * inside the subquery -- binding to the SUBQUERY's own table
+     * (test_runs.id / flaky_tests.id) instead of the outer projects row, so
+     * the predicate was essentially never true. Every project's stats were
+     * silently pinned at 0 forever. A `typeof x === 'number'` assertion can
+     * never catch this (0 is a number) -- this test seeds real data and
+     * asserts on the actual values, scoped to a project it owns (this
+     * suite's files run in parallel against one shared database, so
+     * table-wide assertions are unsafe).
+     */
+    it('computes totalRuns, totalTests and activeFlakyTests from real seeded data', async () => {
+      const projectName = `stats-test-${Date.now()}`;
+      let projectId: string | undefined;
+      try {
+        const createRes = await app.request('/api/v1/admin/projects', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${adminToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name: projectName }),
+        });
+        expect(createRes.status).toBe(201);
+        const created = await createRes.json();
+        projectId = created.project.id as string;
+        const token = created.token as string;
+
+        // Ingest the same fixture report twice: two test_runs rows, each
+        // parsed to 6 results (3 execution entries per spec x 2 specs in
+        // buildFlakinessReport()) -> totalTests = 12. A single ingest
+        // already gives each test 3 execution entries, meeting the default
+        // minRuns=3: "control test" always crosses the default flake
+        // threshold (see buildFlakinessReport()'s doc comment), and
+        // "mildly flaky test"'s 1/3 flaky executions (~33%) also clears the
+        // 5% default -- so both land in flaky_tests as 'active'.
+        for (let i = 0; i < 2; i++) {
+          const ingestRes = await app.request(
+            `/api/v1/reports?branch=main&commit=${'c'.repeat(40)}`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(buildFlakinessReport()),
+            }
+          );
+          expect(ingestRes.status).toBe(201);
+        }
+
+        // The background updateFlakyTests() (fired un-awaited by
+        // routes/reports.ts, by design) must settle before
+        // activeFlakyTests is meaningful -- poll for it, never sleep.
+        const currentProjectId = projectId;
+        const settled = await waitFor(async () => {
+          const rows = await db.query.flakyTests.findMany({
+            where: eq(flakyTests.projectId, currentProjectId),
+          });
+          return rows.filter((r) => r.status === 'active').length >= 2;
+        });
+        if (!settled) {
+          throw new Error(
+            'background updateFlakyTests never completed for the stats-test project'
+          );
+        }
+
+        const res = await app.request('/api/v1/admin/projects', {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        const project = body.projects.find((p: { id: string }) => p.id === projectId);
+        expect(project).toBeDefined();
+        expect(project.stats.totalRuns).toBe(2);
+        expect(project.stats.totalTests).toBe(12);
+        expect(project.stats.activeFlakyTests).toBe(2);
+      } finally {
+        if (projectId) {
+          await app.request(`/api/v1/admin/projects/${projectId}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${adminToken}` },
+          });
+        }
       }
     });
   });

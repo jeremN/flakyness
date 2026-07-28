@@ -201,14 +201,19 @@ adminRouter.get('/projects', async (c) => {
       quarantineThreshold: projects.quarantineThreshold,
       quarantineMinRuns: projects.quarantineMinRuns,
       quarantineTtlDays: projects.quarantineTtlDays,
+      // NOTE: the outer column below is written as raw SQL text (`projects.id`),
+      // not interpolated (`${projects.id}`) — see AGENTS.md "Sharp edges" for
+      // why: on this single-table select, Drizzle drops the table qualifier
+      // from an interpolated column as "redundant", so it renders as bare
+      // "id" and binds to the subquery's own table instead of the outer row.
       totalRuns: sql<number>`coalesce((
-        select count(*)::int from test_runs where test_runs.project_id = ${projects.id}
+        select count(*)::int from test_runs where test_runs.project_id = projects.id
       ), 0)`,
       totalTests: sql<number>`coalesce((
-        select sum(test_runs.total_tests)::int from test_runs where test_runs.project_id = ${projects.id}
+        select sum(test_runs.total_tests)::int from test_runs where test_runs.project_id = projects.id
       ), 0)`,
       activeFlakyTests: sql<number>`coalesce((
-        select count(*)::int from flaky_tests where flaky_tests.project_id = ${projects.id} and flaky_tests.status = 'active'
+        select count(*)::int from flaky_tests where flaky_tests.project_id = projects.id and flaky_tests.status = 'active'
       ), 0)`,
     })
     .from(projects)

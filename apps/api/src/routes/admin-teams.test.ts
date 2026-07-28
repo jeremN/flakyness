@@ -74,10 +74,30 @@ describeAdmin('team CRUD', () => {
       body: JSON.stringify({ userId: user.id, role: 'member' }),
     });
 
-    const res = await app.request('/api/v1/admin/teams', { headers: authHeaders() });
-    const listed = (await res.json()).teams.find((t: { id: string }) => t.id === created.team.id);
-    expect(listed.memberCount).toBe(1);
-    expect(listed.projectCount).toBe(0);
+    // `projectCount` must be pinned against a NONZERO count. A team with no
+    // projects returns 0 whether the subquery's correlation is correct or
+    // broken (e.g. `projects.team_id = projects.id` instead of `= teams.id`)
+    // — 0 == 0 either way — so an assertion of `toBe(0)` cannot catch a
+    // broken correlation. Seeded directly for the same reason as the
+    // DELETE test's fixture above: `POST /api/v1/admin/projects` does not
+    // accept `teamId` yet (Task 6).
+    const [project] = await db
+      .insert(projects)
+      .values({
+        name: uniqueName('proj'),
+        teamId: created.team.id,
+        tokenHash: hashToken(generateToken()),
+      })
+      .returning();
+
+    try {
+      const res = await app.request('/api/v1/admin/teams', { headers: authHeaders() });
+      const listed = (await res.json()).teams.find((t: { id: string }) => t.id === created.team.id);
+      expect(listed.memberCount).toBe(1);
+      expect(listed.projectCount).toBe(1);
+    } finally {
+      await db.delete(projects).where(eq(projects.id, project.id));
+    }
   });
 
   it('renames a team', async () => {
@@ -273,6 +293,22 @@ describeAdmin('membership sub-routes', () => {
     });
     expect(res.status).toBe(200);
     expect((await res.json()).member.role).toBe('team_admin');
+  });
+
+  it('rejects an unknown role on PATCH', async () => {
+    const { body: team } = await createTeam();
+    const user = await createUser();
+    await app.request(`/api/v1/admin/teams/${team.team.id}/members`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ userId: user.id, role: 'member' }),
+    });
+    const res = await app.request(`/api/v1/admin/teams/${team.team.id}/members/${user.id}`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+      body: JSON.stringify({ role: 'superuser' }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it('404s changing the role of a non-member', async () => {

@@ -160,7 +160,17 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
     Object.keys(columns).length > 0
       ? (await db.update(users).set(columns).where(eq(users.id, user.id)).returning())[0]
       : user;
-  logger.info('User updated', { userId: user.id, requestId: c.get('requestId') });
+
+  // Privilege changes must be distinguishable in the log from a display-name
+  // edit — granting or revoking global admin is a security-relevant event.
+  // Only logged when the request actually changed the field (i.e. it made it
+  // into the SET clause above), never merely because it was present in the
+  // request body. Never log anything sensitive (password hash, temp password).
+  logger.info('User updated', {
+    userId: user.id,
+    ...('isGlobalAdmin' in columns ? { isGlobalAdmin: columns.isGlobalAdmin } : {}),
+    requestId: c.get('requestId'),
+  });
   return c.json({ user: publicUser(updated) });
 });
 

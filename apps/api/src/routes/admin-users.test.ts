@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
 
@@ -293,6 +293,58 @@ describeAdmin('PATCH /api/v1/admin/users/:userId', () => {
       const [after] = await db.select().from(users).where(eq(users.id, targetId));
       expect(after.isGlobalAdmin).toBe(true);
     });
+  });
+
+  // Privilege changes must be auditable: granting/revoking global admin has
+  // to be distinguishable in the logs from an ordinary display-name edit.
+  // logger.ts has no injectable seam (it writes straight to console.*), so —
+  // same pattern as middleware/logger.test.ts — this spies on console.log
+  // and greps the emitted line rather than mocking the logger module.
+  it('logs isGlobalAdmin on the audit trail when the request changes it', async () => {
+    const { body: created } = await createUserViaApi();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((m) => { lines.push(String(m)); });
+
+    let res: Response;
+    try {
+      res = await app.request(`/api/v1/admin/users/${created.user.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ isGlobalAdmin: true }),
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(res!.status).toBe(200);
+    const logLine = lines.find((l) => l.includes('User updated') && l.includes(created.user.id));
+    expect(logLine).toBeDefined();
+    expect(logLine).toContain('isGlobalAdmin');
+    // Never logs anything sensitive.
+    expect(logLine).not.toContain('scrypt$');
+    expect(logLine).not.toContain(created.temporaryPassword);
+  });
+
+  it('does NOT log isGlobalAdmin when the request does not touch it', async () => {
+    const { body: created } = await createUserViaApi();
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((m) => { lines.push(String(m)); });
+
+    let res: Response;
+    try {
+      res = await app.request(`/api/v1/admin/users/${created.user.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ displayName: 'Just A Rename' }),
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(res!.status).toBe(200);
+    const logLine = lines.find((l) => l.includes('User updated') && l.includes(created.user.id));
+    expect(logLine).toBeDefined();
+    expect(logLine).not.toContain('isGlobalAdmin');
   });
 });
 

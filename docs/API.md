@@ -86,8 +86,11 @@ POST /api/v1/auth/login
   "password": "correct horse battery staple"
 }
 ```
-`email` is trimmed and lower-cased before lookup, so a differently-cased
-address signs into the same account.
+`email` is lower-cased (not trimmed) before lookup, so a differently-cased
+address signs into the same account. It is **not** trimmed: `email`
+validation (`z.string().email()`) rejects leading/trailing whitespace before
+lower-casing ever runs, so a padded address (`"  jane@example.com  "`) `400`s
+rather than being silently cleaned up.
 
 **Response (200):**
 ```json
@@ -1092,6 +1095,13 @@ Returns `400` with `{ "error": "Team not found" }` if `teamId` doesn't
 reference an existing team (checked before the insert, so an unknown
 `teamId` never surfaces as a raw FK-violation `500`).
 
+**Omitting `teamId` leaves the project unassigned** (`team_id IS NULL`) —
+there is no default team to fall back to. This is not merely cosmetic: once
+per-team access control lands (plan 058), an unassigned project is visible
+to global admins only, so a project created without `teamId` is invisible to
+the person who created it and to their team. If you are provisioning
+projects programmatically (e.g. from CI), pass `teamId` explicitly.
+
 ### Rotate Token
 
 ```http
@@ -1652,9 +1662,18 @@ DELETE /api/v1/admin/users/:userId
 ```
 
 Mounted at `/api/v1/admin/users` — a sibling of, and matched **before**,
-`/api/v1/admin/*` — same `ADMIN_TOKEN` gate and 5/minute admin rate limit as
-every other admin endpoint. There is no self-service sign-up: a global admin
-provisions every account (plan 057).
+`/api/v1/admin/*` — same `ADMIN_TOKEN` gate as every other admin endpoint,
+and the same rate limiting: see [Rate Limiting](#rate-limiting) — 5
+requests/minute per IP applies only to requests with a missing or invalid
+`ADMIN_TOKEN`; a request bearing a valid one is exempt. There is no
+self-service sign-up: it is **`ADMIN_TOKEN`, not `isGlobalAdmin`**, that
+provisions every account (plan 057) — `isGlobalAdmin` is stored on the user
+record and returned by this API, but as of this plan no route reads it to
+make an authorization decision. Every `/admin/*` endpoint, including this
+one, is gated solely by `ADMIN_TOKEN`; `ADMIN_TOKEN` therefore remains a
+superuser credential independent of any user's `isGlobalAdmin` flag. Plan
+058 is what decides whether `ADMIN_TOKEN` keeps that superuser status once
+`isGlobalAdmin` starts driving real enforcement.
 
 #### List Users
 
@@ -1704,8 +1723,10 @@ dashboard accounts work (plan 059).
   "isGlobalAdmin": false        // optional, defaults to false
 }
 ```
-`email` is trimmed and lower-cased before the uniqueness check, so
-`Jane@Example.com` and `jane@example.com` collide.
+`email` is lower-cased (not trimmed) before the uniqueness check, so
+`Jane@Example.com` and `jane@example.com` collide. It is **not** trimmed:
+padded input (`"  jane@example.com  "`) fails `z.string().email()` and
+`400`s before lower-casing runs.
 
 **Response (201):**
 ```json

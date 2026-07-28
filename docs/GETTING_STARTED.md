@@ -111,7 +111,12 @@ accounts work (plan 059); until then this account is usable only against the
 API directly.
 
 `ADMIN_TOKEN` remains valid as a break-glass machine credential; user
-accounts do not replace it. Full endpoint reference: [User
+accounts do not replace it. As of this plan, `isGlobalAdmin` is not yet an
+authorization input anywhere in the API — every admin route is gated solely
+by `ADMIN_TOKEN`, regardless of any user's `isGlobalAdmin` flag. Whether
+`ADMIN_TOKEN` keeps its superuser status once `isGlobalAdmin` starts
+enforcing access is a decision for plan 058, not this one. Full endpoint
+reference: [User
 Provisioning](API.md#user-provisioning), [Team &
 Membership](API.md#team--membership), and [Authentication (user
 accounts)](API.md#authentication-user-accounts) in the API docs.

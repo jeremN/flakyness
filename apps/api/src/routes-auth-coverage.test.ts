@@ -33,6 +33,19 @@ import app from './index';
 // like any other route.
 const READ_TOKEN_ONLY = ['/api/v1/projects', '/api/v1/tests/flaky/:id'];
 
+// Routes that gate themselves and must NOT mount readAuth (plan 056).
+//
+// GET /api/v1/auth/me returns the caller's own identity and 401s when there is
+// no session. Mounting readAuth on it would demand a READ_TOKEN from a
+// legitimately signed-in user on a closed deployment — i.e. it would break the
+// only way the dashboard can discover who it is talking to.
+//
+// This is an explicit path allowlist, NOT a `/api/v1/auth` prefix filter, on
+// purpose: a prefix would silently exempt every future auth route. A new entry
+// here is a deliberate, reviewable edit — the same property EXPECTED_READ_ROUTE_COUNT
+// exists to provide.
+const SELF_GATED = ['/api/v1/auth/me'];
+
 // The number of GET routes under /api/v1, excluding /admin/* (already gated
 // by adminAuth) and the static /api/v1 index. Bumping this is the point: a
 // new read route forces a deliberate edit here, which forces a reviewer to
@@ -48,6 +61,7 @@ const readRoutes = app.routes.filter(
     r.method === 'GET' &&
     r.path.startsWith('/api/v1/') &&
     !r.path.startsWith('/api/v1/admin') &&
+    !SELF_GATED.includes(r.path) &&
     !isReadAuthHandler(r.handler)
 );
 
@@ -93,5 +107,15 @@ describe('read-route auth coverage', () => {
 
   it('detects a known-covered route (guard is not vacuous)', () => {
     expect(readAuthPaths.has('/api/v1/projects/:id/stats')).toBe(true);
+  });
+
+  it.each(SELF_GATED)('self-gated route still exists and gates itself: GET %s', (path) => {
+    const mounted = app.routes.some((r) => r.method === 'GET' && r.path === path);
+    expect(
+      mounted,
+      `${path} is on the SELF_GATED allowlist but is not mounted. Either the route was ` +
+        'renamed (update the allowlist) or removed (delete the entry) — a stale entry ' +
+        'exempts nothing and hides the next route that lands on that path.'
+    ).toBe(true);
   });
 });

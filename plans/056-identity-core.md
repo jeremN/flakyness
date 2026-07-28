@@ -1508,6 +1508,14 @@ DATABASE_URL=postgres://postgres:stryker@localhost:55432/postgres \
   pnpm exec stryker run --mutate 'src/services/auth/password.ts,src/services/auth/session.ts'
 ```
 
+**If you run the BROAD config (no `--mutate`) to verify the whole gate, you must also export
+`ADMIN_TOKEN`.** `routes/projects.test.ts:8` gates on `hasDatabase && hasAdminToken`, so
+without it the entire projects suite self-skips, its ~245 mutants come back `NoCoverage`,
+and `projects.ts` scores ~4% against its floor of 61 — a number that looks like a
+catastrophic regression but is really just measuring an unrun suite. This is the
+"a self-skipped suite is not verification" rule biting in its quietest form. The scoped
+two-file command above does not need it: both modules are pure and touch no database.
+
 Record the per-file `%` from the output. Run it a **second** time and take the **lower** of the two scores as the reliable low — this is the calibration procedure the existing floors document at `scripts/mutation-gate.mjs:13`.
 
 - [ ] **Step 3: Add the floors**

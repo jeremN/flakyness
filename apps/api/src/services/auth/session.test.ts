@@ -65,6 +65,10 @@ describe('session expiry', () => {
 describe('sliding TTL', () => {
   const now = new Date('2026-08-01T12:00:00.000Z');
 
+  it('is 1 hour', () => {
+    expect(SESSION_SLIDE_AFTER_MS).toBe(60 * 60 * 1000);
+  });
+
   it('does not write on every request (that would be a write per page view)', () => {
     const lastSeenAt = new Date(now.getTime() - 1000);
     expect(shouldSlideSession({ lastSeenAt }, now)).toBe(false);

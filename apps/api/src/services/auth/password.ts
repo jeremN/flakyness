@@ -1,27 +1,21 @@
 import { randomBytes, scrypt, timingSafeEqual, ScryptOptions } from 'crypto';
 
 /**
- * Promisified wrapper around Node's scrypt that handles both the options and
- * no-options overloads correctly.
+ * Promisified wrapper around Node's scrypt. Both call sites below always pass
+ * cost parameters, so `options` is required — there is no no-options overload
+ * to support.
  */
 const scryptAsync = (
   password: string | Buffer,
   salt: string | Buffer,
   keylen: number,
-  options?: ScryptOptions,
+  options: ScryptOptions,
 ): Promise<Buffer> =>
   new Promise((resolve, reject) => {
-    if (options) {
-      scrypt(password, salt, keylen, options, (err, derived) => {
-        if (err) reject(err);
-        else resolve(derived);
-      });
-    } else {
-      scrypt(password, salt, keylen, (err, derived) => {
-        if (err) reject(err);
-        else resolve(derived);
-      });
-    }
+    scrypt(password, salt, keylen, options, (err, derived) => {
+      if (err) reject(err);
+      else resolve(derived);
+    });
   });
 
 /**
@@ -54,7 +48,7 @@ export const MIN_PASSWORD_LENGTH = 12;
  */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_BYTES);
-  const derived = (await scryptAsync(password, salt, KEYLEN, { N, r: R, p: P })) as Buffer;
+  const derived = await scryptAsync(password, salt, KEYLEN, { N, r: R, p: P });
   return `scrypt$${N}$${R}$${P}$${salt.toString('base64')}$${derived.toString('base64')}`;
 }
 
@@ -81,7 +75,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
   let derived: Buffer;
   try {
-    derived = (await scryptAsync(password, salt, expected.length, { N: n, r, p })) as Buffer;
+    derived = await scryptAsync(password, salt, expected.length, { N: n, r, p });
   } catch {
     // Out-of-range cost parameters make scrypt throw; treat as a bad hash.
     return false;

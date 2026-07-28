@@ -3,7 +3,11 @@ import { createHash, randomBytes } from 'crypto';
 /** Cookie name. Referenced by the dashboard (plan 059) and docs/API.md. */
 export const SESSION_COOKIE = 'fk_session';
 
-/** Absolute lifetime of a session row, refreshed by the slide below. */
+/**
+ * Inactivity window, not an absolute lifetime — the slide below pushes it out
+ * on use, so an active session never expires and there is deliberately NO
+ * hard cap on total age. Do not go looking for one.
+ */
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**

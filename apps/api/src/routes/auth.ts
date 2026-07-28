@@ -29,10 +29,22 @@ const authRouter = new Hono<{ Variables: { requestId: string } }>();
 // that ARE a password guess; /me and /logout carry no credential to guess
 // and get the normal, much looser `apiRateLimit` instead — never
 // exempted outright, never widened past that limiter's own bound.
+//
+// The `'*'` baseline below is load-bearing and must not be removed: it is the
+// only thing covering paths that match NO handler. `sessionAuth()` is mounted
+// on `'*'` too, so an unmatched URL like /api/v1/auth/nope still costs a
+// SHA-256 plus an indexed sessions↔users SELECT before it 404s. Without a
+// wildcard limiter that is an unauthenticated, unthrottled DB path — which is
+// exactly what every sibling router avoids by mounting its limiter on `'*'`
+// (projects.ts:31, tests.ts:13, admin.ts:19, reports.ts:63).
+//
+// Do NOT also mount `apiRateLimit` on `/me` or `/logout`. It is a module
+// singleton over ONE store, so a second mount on the same path makes a single
+// request consume TWO slots and silently halves that route's budget to 50/min
+// — a weaker rerun of the very bug this split exists to prevent.
+authRouter.use('*', apiRateLimit);
 authRouter.use('/login', authRateLimit);
 authRouter.use('/change-password', authRateLimit);
-authRouter.use('/me', apiRateLimit);
-authRouter.use('/logout', apiRateLimit);
 authRouter.use('*', sessionAuth());
 
 const loginSchema = z.object({

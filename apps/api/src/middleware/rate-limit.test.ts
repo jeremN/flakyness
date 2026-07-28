@@ -338,6 +338,39 @@ describe('auth router: authRateLimit is scoped to /login + /change-password only
     }
   });
 
+  it('an unmatched path under /api/v1/auth is still rate-limited, not an open DB path', async () => {
+    // Regression guard for a gap the final whole-branch review found. Scoping
+    // authRateLimit to /login + /change-password removed the wildcard that had
+    // been the ONLY cover for paths matching no handler — while sessionAuth()
+    // stayed on '*'. So /api/v1/auth/nope with a cookie ran a SHA-256 plus an
+    // indexed sessions↔users SELECT and 404'd, unthrottled, forever.
+    // Deleting `authRouter.use('*', apiRateLimit)` must red this test.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { API_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // No cookie, so sessionAuth() short-circuits before touching the DB and
+      // this stays DB-free — the limiter is what we are proving, not the query.
+      const codes: number[] = [];
+      for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
+        codes.push((await app.request('/api/v1/auth/definitely-not-a-route')).status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early ones really did fall through to a 404, proving the
+      // limiter passed them on rather than something else refusing everything.
+      expect(codes[0]).toBe(404);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
   it('a flood of malformed-body attempts on POST /api/v1/auth/change-password gets 429d', async () => {
     // The sibling of the /login test above. Without this, removing
     // `authRouter.use('/change-password', authRateLimit)` — or typo-ing its

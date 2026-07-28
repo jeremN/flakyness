@@ -591,11 +591,15 @@ export async function assertProjectReadable(
 ```ts
 import { sessionAuth } from './middleware/session';
 // …
-// Resolve the session cookie for every request. Never throws and never
-// rejects — it only answers "who is this?" — so mounting it globally cannot
-// change the behavior of any unauthenticated route.
+// Resolve the session cookie for every request. It never rejects on
+// CREDENTIAL STATE — absent, unknown and expired cookies are all simply
+// anonymous — so mounting it globally cannot 401 an unauthenticated route.
+// It is NOT unconditionally throw-free: the session-lookup SELECT is
+// deliberately left to propagate (plan 056 Task 4, human ruling).
 app.use('*', sessionAuth());
 ```
+
+**Decide deliberately where this mount sits relative to `/health` and `/metrics`.** As written above it goes in ahead of both (`index.ts:56` and `:66`), which turns the health check into a DB liveness probe *for any request carrying an `fk_session` cookie*: if Postgres is down, `/health` 500s and an orchestrator restart-loops the container during the outage. Cookie-less probes short-circuit before any query, so most real probes are unaffected — but if your deployment's health check might carry a cookie, mount `sessionAuth()` **after** the health and metrics routes.
 
 Then remove the now-redundant `authRouter.use('*', sessionAuth())` from `routes/auth.ts` (the global mount covers it).
 

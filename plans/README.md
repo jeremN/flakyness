@@ -312,6 +312,29 @@ late if the API process and Postgres disagree on the session time zone. A sweep 
 was ruled out of scope for 056 (it would touch six shipped tables with live data, for a
 phase whose whole claim is zero behavior change). Worth its own small plan.
 
+**Follow-up noticed during 056's final review (no plan yet): `sessions` rows are never
+garbage-collected.** A row is removed only by an explicit logout, by presenting an
+*already-expired* cookie (the opportunistic reap in `sessionAuth()`), or by a password
+change. Nothing sweeps. So every login not followed by a logout leaks a row until someone
+re-presents that exact token after its 7-day window — which a browser that has already
+replaced the cookie never does. Two successive logins leave two live rows, and the
+superseded cookie still authenticates. Benign at small scale and no security hole (expired
+rows never authenticate — `isSessionExpired` is checked on read), but it grows without
+bound. Wants a periodic `DELETE FROM sessions WHERE expires_at < now()`.
+
+**Follow-up noticed during 056's final review (no plan yet): concurrent `POST
+/auth/change-password` double-submit.** Two simultaneous requests on the same cookie both
+read the user row before either writes, so both pass `verifyPassword` and both return
+`200` with a `Set-Cookie` — but only one session row survives, and the other caller's
+brand-new cookie is already dead. Trigger is an ordinary double-click on the form (the
+window is ~100 ms wide because `verifyPassword` sits between the read and the write). The
+user sees success and is 401'd on their next request. Recoverable by signing in with the
+new password, hence deferred. Fixing it means a `db.transaction()` with the hash hoisted
+out; a strictly-cheaper partial improvement is to **swap the order** so sessions are
+revoked before the password `UPDATE` commits — a failure then logs everyone out with the
+password intact, which is recoverable, rather than leaving the password changed while the
+caller is told it failed.
+
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
 Provenance: the direction audit run mid–batch-5 surfaced three deferred findings beyond the

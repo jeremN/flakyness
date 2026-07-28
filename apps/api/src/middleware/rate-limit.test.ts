@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Context } from 'hono';
 import { getClientIp } from './rate-limit';
 
@@ -285,6 +285,50 @@ describe('mute route rate-limits before auth (regression guard)', () => {
       __setRateLimitEnabled(false);
       if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});
+
+describe('authRateLimit has NO bearer exemption (unlike adminRateLimit)', () => {
+  it('still rate-limits a flood of login attempts carrying a valid ADMIN_TOKEN bearer', async () => {
+    // authRateLimit is a module-level singleton keyed by getClientIp, which
+    // resolves to the constant 'unknown' bucket under app.request (no
+    // socket). A fresh module instance (fresh in-memory store) is required
+    // so this test's counts aren't polluted by the 'authRateLimit allows the
+    // first 10...' test above sharing the same bucket.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'valid-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // authRateLimit is a plain per-IP limiter (unlike adminRateLimit, which
+      // exempts a valid ADMIN_TOKEN bearer via hasValidAdminBearer) — a login
+      // request never carries a credential that should exempt it, since
+      // proving the password IS the point of the request. A copy-paste of
+      // adminRateLimit's skip onto this limiter would let an attacker holding
+      // an admin token brute-force passwords unthrottled; this reds that.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request('/x', {
+          headers: { Authorization: 'Bearer valid-admin-token' },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      expect(codes[9]).toBe(200);
+      expect(codes[10]).toBe(429);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+      vi.resetModules();
     }
   });
 });

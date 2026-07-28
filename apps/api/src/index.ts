@@ -17,6 +17,7 @@ import reports from './routes/reports';
 import projectsRouter from './routes/projects';
 import testsRouter from './routes/tests';
 import adminRouter from './routes/admin';
+import authRouter from './routes/auth';
 
 const app = new Hono<{ Variables: { requestId: string } }>();
 
@@ -107,6 +108,7 @@ app.route('/api/v1/reports', reports);
 app.route('/api/v1/projects', projectsRouter);
 app.route('/api/v1/tests', testsRouter);
 app.route('/api/v1/admin', adminRouter);
+app.route('/api/v1/auth', authRouter);
 
 // Only start the HTTP server outside of tests (tests use app.request() directly)
 if (!process.env.VITEST) {

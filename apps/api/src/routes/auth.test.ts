@@ -268,8 +268,11 @@ describeAuth('GET /api/v1/auth/me', () => {
     // absence from the response would break that feature with a fully
     // green suite.
     expect(body.user.mustChangePassword).toBe(false);
-    // Teams are always present in the contract; plan 057 fills them in.
-    expect(body.teams).toBeDefined();
+    // This user was just created and joins no team, so the exact value is
+    // known — assert it, don't merely assert presence. `toBeDefined()` here
+    // would pass for any value the endpoint ever returned, including a
+    // populated list belonging to someone else.
+    expect(body.teams).toEqual([]);
   });
 
   it('returns the user\'s teams and per-team roles', async () => {

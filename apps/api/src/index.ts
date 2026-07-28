@@ -17,7 +17,7 @@ import reports from './routes/reports';
 import projectsRouter from './routes/projects';
 import testsRouter from './routes/tests';
 import adminRouter from './routes/admin';
-import authRouter from './routes/auth';
+import authRouter, { isCookieSecure } from './routes/auth';
 
 const app = new Hono<{ Variables: { requestId: string } }>();
 
@@ -100,6 +100,23 @@ if (!process.env.READ_TOKEN) {
       'tests and quarantine list. Set READ_TOKEN to require a Bearer token on ' +
       'read endpoints, or confirm this deployment is genuinely network-isolated. ' +
       'See docs/API.md.'
+  );
+}
+
+// Same fires-once-at-boot shape as the READ_TOKEN warning above. The design
+// spec mandates `Secure` on the session cookie; isCookieSecure() defaults it
+// on in production and off elsewhere (COOKIE_SECURE overrides either way —
+// see routes/auth.ts). Plain-HTTP self-hosting is a legitimate deployment
+// mode, which is why this warns rather than refusing to boot.
+if (!isCookieSecure()) {
+  logger.warn(
+    'Session cookies are being issued WITHOUT the Secure attribute ' +
+      '(NODE_ENV is not "production" and COOKIE_SECURE is not "true"). The ' +
+      'fk_session cookie will still be sent by the browser over a plain, ' +
+      'unencrypted HTTP connection. This is expected for local development ' +
+      'and the default plain-HTTP docker-compose deployment, but any ' +
+      'internet-facing deployment behind TLS should set NODE_ENV=production ' +
+      'or COOKIE_SECURE=true.'
   );
 }
 

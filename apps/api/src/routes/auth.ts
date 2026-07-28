@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { setCookie, deleteCookie } from 'hono/cookie';
 import { db, users } from '../db';
 import { logger } from '../middleware/logger';
-import { authRateLimit } from '../middleware/rate-limit';
+import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
 import {
   sessionAuth,
   getSessionUser,
@@ -18,10 +18,21 @@ import { SESSION_COOKIE, SESSION_TTL_MS } from '../services/auth/session';
 
 const authRouter = new Hono<{ Variables: { requestId: string } }>();
 
-// Brute-force throttle FIRST, then session resolution. Order matters for the
-// same reason it did in plan 043: a limiter mounted after the thing it
-// protects is decorative.
-authRouter.use('*', authRateLimit);
+// Brute-force throttle on the two password-bearing endpoints ONLY. An
+// earlier revision mounted `authRateLimit` on '*', which also capped
+// GET /me at 10/min per IP — and plan 059's dashboard `hooks.server.ts`
+// calls /me on every server-rendered page view, so every user behind the
+// dashboard container's one IP shares that bucket: the 11th page view in
+// any minute would 429, `fetchMe` reads a non-2xx response as "not signed
+// in", and the user is silently bounced to /login under completely
+// ordinary load. /login and /change-password are the only two requests
+// that ARE a password guess; /me and /logout carry no credential to guess
+// and get the normal, much looser `apiRateLimit` instead — never
+// exempted outright, never widened past that limiter's own bound.
+authRouter.use('/login', authRateLimit);
+authRouter.use('/change-password', authRateLimit);
+authRouter.use('/me', apiRateLimit);
+authRouter.use('/logout', apiRateLimit);
 authRouter.use('*', sessionAuth());
 
 const loginSchema = z.object({
@@ -42,11 +53,40 @@ const changePasswordSchema = z.object({
  *
  * Computed lazily and cached: hashing at module load would slow every import,
  * including the ones in unit tests that never touch this route.
+ *
+ * The cache is reset on rejection: `??=` alone would happily cache a
+ * REJECTED promise forever, so one transient scrypt failure would make
+ * every later unknown-email login re-await that same rejection — a
+ * permanent, stopwatch-free "unknown account" vs "wrong password" oracle
+ * (500 vs 401), which is strictly worse than the timing gap this function
+ * exists to close. The caller (below) also treats a dummy-hash failure as
+ * a normal failed login rather than letting it surface as a 500.
  */
 let dummyHashPromise: Promise<string> | null = null;
 function dummyHash(): Promise<string> {
-  dummyHashPromise ??= hashPassword('flackyness-dummy-password-for-timing-equalisation');
+  if (!dummyHashPromise) {
+    dummyHashPromise = hashPassword('flackyness-dummy-password-for-timing-equalisation');
+    dummyHashPromise.catch(() => {
+      dummyHashPromise = null;
+    });
+  }
   return dummyHashPromise;
+}
+
+/**
+ * Resolves whether the session cookie's `Secure` attribute is set.
+ * `COOKIE_SECURE` is an explicit escape hatch that can force it either way
+ * (e.g. a TLS-terminating reverse proxy in front of a plain-HTTP container,
+ * or a deliberately plain-HTTP self-hosted eval deployment); absent it,
+ * defaults to `NODE_ENV === 'production'` — secure by default in production,
+ * off elsewhere so the docker-compose default and the E2E build (both plain
+ * HTTP) keep working without extra configuration.
+ */
+export function isCookieSecure(): boolean {
+  const override = process.env.COOKIE_SECURE;
+  if (override === 'true') return true;
+  if (override === 'false') return false;
+  return process.env.NODE_ENV === 'production';
 }
 
 /** Never leaks passwordHash — the shape every auth response uses. */
@@ -69,9 +109,9 @@ function setSessionCookie(c: Context, token: string) {
     httpOnly: true,
     // `secure` is off over plain HTTP or the browser silently drops the
     // cookie — which is how the docker-compose default and the E2E build run
-    // (same class of trap as plan 053's ORIGIN discovery). Operators serving
-    // over TLS should set COOKIE_SECURE=true.
-    secure: process.env.COOKIE_SECURE === 'true',
+    // (same class of trap as plan 053's ORIGIN discovery). See
+    // isCookieSecure() above for the resolution order.
+    secure: isCookieSecure(),
     sameSite: 'Lax',
     path: '/',
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
@@ -97,7 +137,20 @@ authRouter.post('/login', zValidator('json', loginSchema), async (c) => {
   if (user) {
     ok = await verifyPassword(password, user.passwordHash);
   } else {
-    await verifyPassword(password, await dummyHash());
+    try {
+      await verifyPassword(password, await dummyHash());
+    } catch (err) {
+      // A scrypt/dummy-hash failure here must not surface as a 500 — that
+      // would be a binary, stopwatch-free "this account exists (or the
+      // server broke)" oracle, strictly worse than the timing gap
+      // dummyHash() exists to close. Fall through exactly like a wrong
+      // password; the cache reset in dummyHash() gives the NEXT call a
+      // fresh attempt.
+      logger.error('Dummy-hash timing equalisation failed during login', {
+        requestId: c.get('requestId'),
+        error: err instanceof Error ? { name: err.name, message: err.message } : undefined,
+      });
+    }
     ok = false;
   }
 

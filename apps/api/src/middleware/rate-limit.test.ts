@@ -289,6 +289,84 @@ describe('mute route rate-limits before auth (regression guard)', () => {
   });
 });
 
+describe('auth router: authRateLimit is scoped to /login + /change-password only (Important-1 regression guard)', () => {
+  // Prior revision mounted `authRateLimit` on authRouter.use('*', ...), which
+  // also capped GET /me at 10/min per IP. Since plan 059's dashboard
+  // hooks.server.ts calls /me on every server-rendered page view, all users
+  // behind the dashboard container's single IP shared that bucket: the 11th
+  // page view in any minute 429d, and the dashboard's fetchMe reads a
+  // non-2xx response as "not signed in" — a random logout under completely
+  // ordinary load. These two tests mount the REAL authRouter (not a
+  // synthetic app.get('/x')) so they actually exercise the production
+  // mount, not just the limiter object in isolation.
+  it('a flood of malformed-body attempts on POST /api/v1/auth/login gets 429d', async () => {
+    // Fresh module instance: authRateLimit's 'unknown'-keyed bucket is
+    // shared by every test in this file that exercises it directly.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // A syntactically-invalid email 400s at zValidator without ever
+      // reaching the DB — this file has no DATABASE_URL dependency anywhere
+      // else, and keeping this test DB-free lets it always run, not just
+      // when Postgres happens to be up. The point under test is the
+      // limiter's mount on the real route, not the login business logic
+      // (already covered by auth.test.ts's real-credential suite).
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'not-an-email', password: 'x' }),
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early ones actually reached the route (400 from
+      // zValidator), proving the limiter let them through rather than
+      // something else rejecting every request outright.
+      expect(codes[0]).toBe(400);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
+  it('GET /api/v1/auth/me is NOT throttled at the 10/min auth limit', async () => {
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // No session cookie -> every request 401s regardless of throttling.
+      // The assertion under test is that NONE of them are 429: if
+      // `authRateLimit` were (re)mounted on '*' — the bug Important 1
+      // fixes — the 11th of these would 429, exactly like the flood test
+      // above does for /login.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 5; i++) {
+        codes.push((await app.request('/api/v1/auth/me')).status);
+      }
+      expect(codes).not.toContain(429);
+      expect(codes.every((s) => s === 401)).toBe(true);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+});
+
 describe('authRateLimit has NO bearer exemption (unlike adminRateLimit)', () => {
   it('still rate-limits a flood of login attempts carrying a valid ADMIN_TOKEN bearer', async () => {
     // authRateLimit is a module-level singleton keyed by getClientIp, which

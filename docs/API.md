@@ -1691,7 +1691,10 @@ POST /api/v1/admin/users
 Provisions an account with a **show-once** temporary password: the
 plaintext appears in this response and nowhere else — it is never logged,
 never re-fetchable, and only its scrypt hash is stored. The account is
-forced to change it on first sign-in (`mustChangePassword: true`).
+flagged `mustChangePassword: true`; `POST /api/v1/auth/change-password`
+clears the flag. Note the flag is currently advisory — no route rejects a
+session that has not yet changed its password. Enforcement lands with the
+dashboard accounts work (plan 059).
 
 **Body:**
 ```json

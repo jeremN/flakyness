@@ -95,9 +95,20 @@ curl -X POST http://localhost:8080/api/v1/admin/users \
   -d '{"email":"you@example.com","displayName":"Your Name","isGlobalAdmin":true}'
 ```
 
-The response contains a **temporary password shown exactly once**. Save it,
-then sign in at the dashboard — you will be required to change it
-immediately.
+The response contains a **temporary password shown exactly once** — it is
+never logged, never stored in plaintext, and cannot be retrieved again. Save
+it. If you lose it, `POST /api/v1/admin/users/:userId/reset-password` issues
+a new one.
+
+Sign in with it against the API (`POST /api/v1/auth/login`), which returns a
+session cookie. The account is flagged `mustChangePassword: true`, and
+`POST /api/v1/auth/change-password` clears the flag.
+
+Note what does **not** exist yet, so you are not left looking for it: nothing
+currently *forces* the change — an un-reset session can call the API freely —
+and there is no dashboard sign-in screen. Both arrive with the dashboard
+accounts work (plan 059); until then this account is usable only against the
+API directly.
 
 `ADMIN_TOKEN` remains valid as a break-glass machine credential; user
 accounts do not replace it. Full endpoint reference: [User

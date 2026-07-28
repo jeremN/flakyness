@@ -1,5 +1,5 @@
 {
-  "id": "9e0bb392-f1de-48a8-8c0e-e3f1f2c080b7",
+  "id": "cf1f3510-0c94-4a25-93d4-fb2ed5c66780",
   "prevId": "039fdf50-2d4f-471f-a75a-6dda2c3ea32c",
   "version": "7",
   "dialect": "postgresql",
@@ -605,20 +605,20 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "expires_at": {
           "name": "expires_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
         },
         "last_seen_at": {
           "name": "last_seen_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
@@ -1008,14 +1008,14 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
         "last_login_at": {
           "name": "last_login_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         }

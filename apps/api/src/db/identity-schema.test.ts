@@ -50,4 +50,21 @@ describe('identity schema (plan 056)', () => {
   it('sessions.expires_at is not null — a session with no expiry can never be reaped', () => {
     expect(col(sessionCols, 'expires_at').notNull).toBe(true);
   });
+
+  // expires_at drives JS expiry math (`expiresAt.getTime() <= Date.now()`).
+  // A tz-naive `timestamp` column is written/read in the DB server's local
+  // time, so it silently skews if the API container's TZ ever diverges from
+  // the DB's — `timestamptz` is immune to that. Assert it on every new
+  // timestamp column in these two tables (not just expires_at), so the
+  // decision can't silently regress on the next edit to either table.
+  it('users.created_at and users.last_login_at are timestamptz, not tz-naive', () => {
+    expect(col(userCols, 'created_at').getSQLType()).toBe('timestamp with time zone');
+    expect(col(userCols, 'last_login_at').getSQLType()).toBe('timestamp with time zone');
+  });
+
+  it('sessions.created_at, expires_at and last_seen_at are timestamptz, not tz-naive', () => {
+    expect(col(sessionCols, 'created_at').getSQLType()).toBe('timestamp with time zone');
+    expect(col(sessionCols, 'expires_at').getSQLType()).toBe('timestamp with time zone');
+    expect(col(sessionCols, 'last_seen_at').getSQLType()).toBe('timestamp with time zone');
+  });
 });

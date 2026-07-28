@@ -178,6 +178,13 @@ export const quarantineRules = pgTable('quarantine_rules', {
 // dashboard is a client that logs in here, never the enforcement point.
 // Deliberately OIDC-ready — nothing below assumes the password is the only
 // possible credential, so an external IdP can be added beside it later.
+//
+// These two tables use `timestamptz` (not plain `timestamp`, as the rest of
+// this file does) per the design spec — `sessions.expires_at` is a security
+// control compared against `Date.now()` in JS, so it must not silently skew
+// if the API container's TZ ever diverges from the DB server's. The rest of
+// the schema predates that decision; migrating it is a separate, deliberate
+// sweep, not something to "fix" here for consistency.
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   // Login identity. Stored lower-cased (normalised at the route edge) so
@@ -191,8 +198,8 @@ export const users = pgTable('users', {
   // Set when an admin provisions the account with a show-once temp password
   // (plan 057); forces a reset on first login.
   mustChangePassword: boolean('must_change_password').notNull().default(false),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  lastLoginAt: timestamp('last_login_at'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 });
 
 // Server-side sessions. The raw token lives only in the client's cookie; we
@@ -202,11 +209,11 @@ export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   // Sliding TTL anchor: refreshed on use, so an active session does not expire
   // mid-workday. See services/auth/session.ts.
-  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   tokenHashIdx: index('sessions_token_hash_idx').on(table.tokenHash),
   userIdIdx: index('sessions_user_id_idx').on(table.userId),

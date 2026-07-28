@@ -2,9 +2,9 @@ CREATE TABLE "sessions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"token_hash" varchar(64) NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	"expires_at" timestamp NOT NULL,
-	"last_seen_at" timestamp DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"last_seen_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "users" (
@@ -14,8 +14,8 @@ CREATE TABLE "users" (
 	"display_name" varchar(255),
 	"is_global_admin" boolean DEFAULT false NOT NULL,
 	"must_change_password" boolean DEFAULT false NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	"last_login_at" timestamp,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_login_at" timestamp with time zone,
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint

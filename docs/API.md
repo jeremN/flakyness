@@ -43,9 +43,12 @@ Bearer tokens above — it is not accepted in place of a project token,
 `READ_TOKEN`, or `ADMIN_TOKEN`, and (per the Phase A note) none of those
 routes read it yet either.
 
-There is no account-creation endpoint yet (`POST /admin/users` ships in plan
-057). To exercise these endpoints before then, insert a `users` row directly
-with a hash from `hashPassword()` (`apps/api/src/services/auth/password.ts`).
+Accounts are provisioned by a global admin via
+[User Provisioning](#user-provisioning) (`/api/v1/admin/users`, `ADMIN_TOKEN`
+gated) — see that section for the create/list/update/reset-password/delete
+endpoints. Teams and per-team membership are managed via
+[Team & Membership](#team--membership) (`/api/v1/admin/teams`, also
+`ADMIN_TOKEN` gated).
 
 **`COOKIE_SECURE`** controls the `Secure` attribute on the `fk_session`
 cookie. `true` forces it on, `false` forces it off; left unset, it defaults
@@ -83,8 +86,11 @@ POST /api/v1/auth/login
   "password": "correct horse battery staple"
 }
 ```
-`email` is trimmed and lower-cased before lookup, so a differently-cased
-address signs into the same account.
+`email` is lower-cased (not trimmed) before lookup, so a differently-cased
+address signs into the same account. It is **not** trimmed: `email`
+validation (`z.string().email()`) rejects leading/trailing whitespace before
+lower-casing ever runs, so a padded address (`"  jane@example.com  "`) `400`s
+rather than being silently cleaned up.
 
 **Response (200):**
 ```json
@@ -161,11 +167,18 @@ scoping its UI.
     "isGlobalAdmin": false,
     "mustChangePassword": false
   },
-  "teams": []
+  "teams": [
+    {
+      "id": "uuid",
+      "name": "my-team",
+      "role": "team_admin"
+    }
+  ]
 }
 ```
-`teams` is always present in the response shape and is `[]` until plan 057
-introduces teams — so the contract does not change shape between phases.
+`teams` is always present in the response shape. Each team includes the user's
+per-team role (`team_admin` or `member`). The array is empty if the user is not
+a member of any team.
 
 **Error responses:**
 
@@ -995,6 +1008,7 @@ GET /api/v1/admin/projects
       "id": "uuid",
       "name": "my-project",
       "gitlabProjectId": "123",
+      "teamId": null,
       "hasToken": true,
       "createdAt": "2024-12-01T00:00:00.000Z",
       "flakeThreshold": null,
@@ -1016,6 +1030,10 @@ GET /api/v1/admin/projects
   ]
 }
 ```
+
+`teamId` is the project's owning [team](#team--membership), or `null` if
+unassigned (the default). `projects.team_id` is `ON DELETE SET NULL`, so a
+deleted team leaves its former projects unassigned rather than deleting them.
 
 `flakeThreshold`, `windowDays`, and `minRuns` are per-project flakiness detection
 overrides — see [Update Project Flakiness Config](#update-project-flakiness-config).
@@ -1053,7 +1071,8 @@ POST /api/v1/admin/projects
 ```json
 {
   "name": "new-project",
-  "gitlabProjectId": "123"  // optional
+  "gitlabProjectId": "123",  // optional
+  "teamId": "uuid"  // optional — assigns the project to an existing team
 }
 ```
 
@@ -1063,12 +1082,25 @@ POST /api/v1/admin/projects
   "project": {
     "id": "uuid",
     "name": "new-project",
+    "gitlabProjectId": "123",
+    "teamId": "uuid",
     "createdAt": "2024-12-11T00:00:00.000Z"
   },
   "token": "flackyness_abc123...",
   "warning": "Save this token securely. It will not be shown again."
 }
 ```
+
+Returns `400` with `{ "error": "Team not found" }` if `teamId` doesn't
+reference an existing team (checked before the insert, so an unknown
+`teamId` never surfaces as a raw FK-violation `500`).
+
+**Omitting `teamId` leaves the project unassigned** (`team_id IS NULL`) —
+there is no default team to fall back to. This is not merely cosmetic: once
+per-team access control lands (plan 058), an unassigned project is visible
+to global admins only, so a project created without `teamId` is invisible to
+the person who created it and to their team. If you are provisioning
+projects programmatically (e.g. from CI), pass `teamId` explicitly.
 
 ### Rotate Token
 
@@ -1095,11 +1127,12 @@ PATCH /api/v1/admin/projects/:id
 ```
 
 Update a project's per-project flakiness detection overrides, its
-transition-notification webhook, its data retention, and/or its
-auto-quarantine config. Fields omitted from the body are left unchanged;
-sending a field as `null` explicitly clears it back to the built-in default
-(or, for `webhookUrl`, disables the webhook; for `retentionDays`, reverts to
-"keep forever"). At least one field is required.
+transition-notification webhook, its data retention, its team assignment,
+and/or its auto-quarantine config. Fields omitted from the body are left
+unchanged; sending a field as `null` explicitly clears it back to the
+built-in default (or, for `webhookUrl`, disables the webhook; for
+`retentionDays`, reverts to "keep forever"; for `teamId`, unassigns the
+project). At least one field is required.
 
 **Body (all fields optional, but at least one required):**
 ```json
@@ -1113,7 +1146,8 @@ sending a field as `null` explicitly clears it back to the built-in default
   "autoQuarantineEnabled": true,
   "quarantineThreshold": 0.25,
   "quarantineMinRuns": 5,
-  "quarantineTtlDays": 10
+  "quarantineTtlDays": 10,
+  "teamId": "uuid"
 }
 ```
 
@@ -1129,6 +1163,7 @@ sending a field as `null` explicitly clears it back to the built-in default
 | `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
 | `quarantineMinRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is (re-)quarantined. `null` resets to the resolved `minRuns`. |
 | `quarantineTtlDays` | integer \| null | `[1, 365]` | Mandatory TTL of an auto-quarantine, in days. `null` resets to the default (`7`). |
+| `teamId` | string (uuid) \| null | — | Reassigns the project to another [team](#team--membership), or `null` to unassign it. Must reference an existing team (checked before the update — see error responses below). |
 
 **Response (200):**
 ```json
@@ -1137,6 +1172,7 @@ sending a field as `null` explicitly clears it back to the built-in default
     "id": "uuid",
     "name": "my-project",
     "gitlabProjectId": "123",
+    "teamId": "uuid",
     "createdAt": "2024-12-01T00:00:00.000Z",
     "flakeThreshold": 0.1,
     "windowDays": 30,
@@ -1153,8 +1189,9 @@ sending a field as `null` explicitly clears it back to the built-in default
 ```
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
-`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, or
-an empty body) and `404` if the project doesn't exist.
+`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, a
+`teamId` that doesn't reference an existing team, or an empty body) and `404`
+if the project doesn't exist.
 
 > **The retention/window guard:** `retentionDays` may never be lower than the
 > project's *resolved* flakiness `windowDays` (the stored override if set,
@@ -1613,6 +1650,413 @@ GET /api/v1/admin/health
   "version": "0.0.1"
 }
 ```
+
+### User Provisioning
+
+```http
+GET /api/v1/admin/users
+POST /api/v1/admin/users
+PATCH /api/v1/admin/users/:userId
+POST /api/v1/admin/users/:userId/reset-password
+DELETE /api/v1/admin/users/:userId
+```
+
+Mounted at `/api/v1/admin/users` — a sibling of, and matched **before**,
+`/api/v1/admin/*` — same `ADMIN_TOKEN` gate as every other admin endpoint,
+and the same rate limiting: see [Rate Limiting](#rate-limiting) — 5
+requests/minute per IP applies only to requests with a missing or invalid
+`ADMIN_TOKEN`; a request bearing a valid one is exempt. There is no
+self-service sign-up: it is **`ADMIN_TOKEN`, not `isGlobalAdmin`**, that
+provisions every account (plan 057) — `isGlobalAdmin` is stored on the user
+record and returned by this API, but as of this plan no route reads it to
+make an authorization decision. Every `/admin/*` endpoint, including this
+one, is gated solely by `ADMIN_TOKEN`; `ADMIN_TOKEN` therefore remains a
+superuser credential independent of any user's `isGlobalAdmin` flag. Plan
+058 is what decides whether `ADMIN_TOKEN` keeps that superuser status once
+`isGlobalAdmin` starts driving real enforcement.
+
+#### List Users
+
+```http
+GET /api/v1/admin/users
+```
+
+**Response:**
+```json
+{
+  "users": [
+    {
+      "id": "uuid",
+      "email": "jane@example.com",
+      "displayName": "Jane Doe",
+      "isGlobalAdmin": false,
+      "mustChangePassword": false,
+      "createdAt": "2024-12-01T00:00:00.000Z",
+      "lastLoginAt": "2024-12-11T09:00:00.000Z",
+      "teams": [
+        { "id": "uuid", "name": "Payments", "role": "team_admin" }
+      ]
+    }
+  ]
+}
+```
+
+#### Create User
+
+```http
+POST /api/v1/admin/users
+```
+
+Provisions an account with a **show-once** temporary password: the
+plaintext appears in this response and nowhere else — it is never logged,
+never re-fetchable, and only its scrypt hash is stored. The account is
+flagged `mustChangePassword: true`; `POST /api/v1/auth/change-password`
+clears the flag. Note the flag is currently advisory — no route rejects a
+session that has not yet changed its password. Enforcement lands with the
+dashboard accounts work (plan 059).
+
+**Body:**
+```json
+{
+  "email": "jane@example.com",
+  "displayName": "Jane Doe",   // optional
+  "isGlobalAdmin": false        // optional, defaults to false
+}
+```
+`email` is lower-cased (not trimmed) before the uniqueness check, so
+`Jane@Example.com` and `jane@example.com` collide. It is **not** trimmed:
+padded input (`"  jane@example.com  "`) fails `z.string().email()` and
+`400`s before lower-casing runs.
+
+**Response (201):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane Doe",
+    "isGlobalAdmin": false,
+    "mustChangePassword": true,
+    "createdAt": "2024-12-11T00:00:00.000Z",
+    "lastLoginAt": null
+  },
+  "temporaryPassword": "ve5EGagIOaIms0d1BDb96Agr",
+  "warning": "Save this password securely. It will not be shown again. The user must change it on first sign-in."
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed body (missing/invalid `email`, or fields exceeding their length limits). |
+| `409` | `{ "error": "A user with this email already exists" }` — checked case-insensitively. |
+
+#### Update User
+
+```http
+PATCH /api/v1/admin/users/:userId
+```
+
+Update a user's `displayName` and/or `isGlobalAdmin` flag. Fields omitted
+from the body are left unchanged.
+
+**Body:**
+```json
+{
+  "displayName": "Jane R. Doe",  // optional, null clears it
+  "isGlobalAdmin": true           // optional
+}
+```
+
+**Response (200):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane R. Doe",
+    "isGlobalAdmin": true,
+    "mustChangePassword": false,
+    "createdAt": "2024-12-01T00:00:00.000Z",
+    "lastLoginAt": "2024-12-11T09:00:00.000Z"
+  }
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId` or body. |
+| `404` | No user with that id. |
+| `409` | `{ "error": "Cannot demote the last global admin" }` — refused when this would set `isGlobalAdmin: false` on the only remaining global admin, since an install with zero global admins cannot recover through the API. |
+
+#### Reset Password
+
+```http
+POST /api/v1/admin/users/:userId/reset-password
+```
+
+Issues a fresh **show-once** temporary password, forces a reset
+(`mustChangePassword: true`), and revokes **every** live session the user
+holds — an admin-initiated reset is often a response to a compromise, and a
+reset that leaves an existing session alive would be cosmetic.
+
+**Response (200):**
+```json
+{
+  "temporaryPassword": "xQ2mZpv0Ftr6La8CobKzHuY1",
+  "warning": "Save this password securely. It will not be shown again. All of this user's sessions have been revoked."
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId`. |
+| `404` | No user with that id. |
+
+#### Delete User
+
+```http
+DELETE /api/v1/admin/users/:userId
+```
+
+Deletes the user; their sessions and team memberships cascade.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `userId`. |
+| `404` | No user with that id. |
+| `409` | `{ "error": "Cannot delete the last global admin" }` — same last-global-admin guard as [Update User](#update-user). |
+
+### Team & Membership
+
+```http
+GET    /api/v1/admin/teams
+POST   /api/v1/admin/teams
+PATCH  /api/v1/admin/teams/:teamId
+DELETE /api/v1/admin/teams/:teamId
+GET    /api/v1/admin/teams/:teamId/members
+POST   /api/v1/admin/teams/:teamId/members
+PATCH  /api/v1/admin/teams/:teamId/members/:userId
+DELETE /api/v1/admin/teams/:teamId/members/:userId
+```
+
+Mounted at `/api/v1/admin/teams` — a sibling of, and matched **before**,
+`/api/v1/admin/*` — same `ADMIN_TOKEN` gate and admin rate limit as every
+other admin endpoint (plan 057). A team is an organizational grouping of
+projects and users, not a hard tenancy boundary; per-team read scoping and
+role enforcement arrive with plan 058.
+
+`role` on a membership is one of `team_admin` (manages the team's projects)
+or `member` (read-only within the team). Global admin (`users.isGlobalAdmin`)
+is separate and not scoped to a team.
+
+**Assigning projects to teams** is done via `teamId` on
+[Create Project](#create-project) and
+[Update Project Flakiness Config](#update-project-flakiness-config) (plan 057
+Task 6) — it is independent of creating/renaming teams and managing
+membership, documented below.
+
+#### List Teams
+
+```http
+GET /api/v1/admin/teams
+```
+
+**Response:**
+```json
+{
+  "teams": [
+    {
+      "id": "uuid",
+      "name": "Payments",
+      "createdAt": "2024-12-01T00:00:00.000Z",
+      "memberCount": 3,
+      "projectCount": 2
+    }
+  ]
+}
+```
+
+#### Create Team
+
+```http
+POST /api/v1/admin/teams
+```
+
+**Body:**
+```json
+{ "name": "Payments" }
+```
+
+**Response (201):**
+```json
+{
+  "team": {
+    "id": "uuid",
+    "name": "Payments",
+    "createdAt": "2024-12-11T00:00:00.000Z"
+  }
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Empty or overlong (`> 255` chars) `name`. |
+| `409` | `{ "error": "A team with this name already exists" }` |
+
+#### Rename Team
+
+```http
+PATCH /api/v1/admin/teams/:teamId
+```
+
+**Body:**
+```json
+{ "name": "Payments EU" }
+```
+
+**Response (200):**
+```json
+{ "team": { "id": "uuid", "name": "Payments EU", "createdAt": "2024-12-01T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`, or an empty/overlong `name`. |
+| `404` | No team with that id. |
+| `409` | `{ "error": "A team with this name already exists" }` — another team already has that name. |
+
+#### Delete Team
+
+```http
+DELETE /api/v1/admin/teams/:teamId
+```
+
+Deletes the team. Its memberships cascade (`team_members`), but its
+**projects are NOT deleted** — `projects.team_id` is `ON DELETE SET NULL`
+(a team is an organizational parent, not an ownership parent), so they
+become unassigned (`teamId: null`) instead. `orphanedProjects` reports how
+many, counted before the delete. Once per-team access control is enabled
+(plan 058), an unassigned project is visible to global admins only, until
+someone reassigns it to a team.
+
+**Response (200):**
+```json
+{ "success": true, "orphanedProjects": 2 }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`. |
+| `404` | No team with that id. |
+
+#### List Members
+
+```http
+GET /api/v1/admin/teams/:teamId/members
+```
+
+**Response:**
+```json
+{
+  "members": [
+    { "userId": "uuid", "email": "jane@example.com", "displayName": "Jane Doe", "role": "team_admin" }
+  ]
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`. |
+| `404` | No team with that id. |
+
+#### Add Member
+
+```http
+POST /api/v1/admin/teams/:teamId/members
+```
+
+**Body:**
+```json
+{ "userId": "uuid", "role": "member" }
+```
+`role` must be `team_admin` or `member`.
+
+**Response (201):**
+```json
+{ "member": { "id": "uuid", "teamId": "uuid", "userId": "uuid", "role": "member", "createdAt": "2024-12-11T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`, or an invalid `userId`/`role`. |
+| `404` | No team with that id, or no user with that id. |
+| `409` | `{ "error": "User is already a member of this team" }` |
+
+#### Change Member Role
+
+```http
+PATCH /api/v1/admin/teams/:teamId/members/:userId
+```
+
+**Body:**
+```json
+{ "role": "team_admin" }
+```
+
+**Response (200):**
+```json
+{ "member": { "id": "uuid", "teamId": "uuid", "userId": "uuid", "role": "team_admin", "createdAt": "2024-12-11T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`/`userId`, or an invalid `role`. |
+| `404` | No team with that id, or the user is not a member of it. |
+
+#### Remove Member
+
+```http
+DELETE /api/v1/admin/teams/:teamId/members/:userId
+```
+
+Removes the membership only — the user account itself is untouched.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`/`userId`. |
+| `404` | No team with that id, or the user is not a member of it. |
 
 ---
 

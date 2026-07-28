@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq } from 'drizzle-orm';
 import { setCookie, deleteCookie } from 'hono/cookie';
-import { db, users } from '../db';
+import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
 import {
@@ -14,6 +14,7 @@ import {
   revokeAllUserSessions,
 } from '../middleware/session';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../services/auth/password';
+import { normaliseEmail } from '../services/auth/membership';
 import { SESSION_COOKIE, SESSION_TTL_MS } from '../services/auth/session';
 
 const authRouter = new Hono<{ Variables: { requestId: string } }>();
@@ -135,7 +136,7 @@ function setSessionCookie(c: Context, token: string) {
  */
 authRouter.post('/login', zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
-  const normalisedEmail = email.trim().toLowerCase();
+  const normalisedEmail = normaliseEmail(email);
 
   const user = await db.query.users.findFirst({
     where: eq(users.email, normalisedEmail),
@@ -213,12 +214,19 @@ authRouter.get('/me', async (c) => {
     return c.json({ error: 'Not authenticated' }, 401);
   }
 
+  const memberships = await db
+    .select({ id: teams.id, name: teams.name, role: teamMembers.role })
+    .from(teamMembers)
+    .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+    .where(eq(teamMembers.userId, sessionUser.id))
+    .orderBy(teams.name);
+
   return c.json({
     user: {
       ...publicUser(sessionUser),
       mustChangePassword: sessionUser.mustChangePassword,
     },
-    teams: [] as { id: string; name: string; role: 'team_admin' | 'member' }[],
+    teams: memberships,
   });
 });
 

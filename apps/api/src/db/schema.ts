@@ -1,11 +1,34 @@
 import { pgTable, uuid, varchar, timestamp, integer, text, decimal, index, uniqueIndex, jsonb, boolean } from 'drizzle-orm/pg-core';
 import type { FailureDetail } from '../parsers/types';
 
+// Organizational grouping of projects (plan 057 / roadmap #5). A project
+// belongs to at most one team; a user belongs to many. This is a single-org
+// grouping-and-access-control boundary, NOT hard multi-tenant isolation —
+// see the spec's "Scope boundaries" section.
+export const teams = pgTable('teams', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: varchar('name', { length: 255 }).unique().notNull(),
+  // `withTimezone` like users/sessions, NOT plain `timestamp` like the older
+  // tables. The spec specifies timestamptz for every table in this feature
+  // (design doc :111), and plan 056's Task 1 review settled the rule: new
+  // tables follow the spec while they are still empty, because switching
+  // later means an ALTER against live rows. The pre-existing tables stay
+  // timezone-naive; a sweep is a recorded follow-up in plans/README.md.
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 // Projects being tracked
 export const projects = pgTable('projects', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 255 }).unique().notNull(),
   gitlabProjectId: varchar('gitlab_project_id', { length: 100 }),
+  // Organizational owner. NULLABLE and ON DELETE SET NULL by design — a team
+  // is not an ownership parent, so deleting a team orphans its projects
+  // rather than destroying them. This deliberately breaks the "projects child
+  // tables cascade" convention in AGENTS.md; the convention is about tables
+  // that hang OFF a project, and this one hangs off a team. An orphaned
+  // project is visible to global admins only (plan 058).
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(), // SHA-256 hash
   createdAt: timestamp('created_at').defaultNow().notNull(),
   // Per-project flakiness overrides; NULL means "use DEFAULT_CONFIG".
@@ -219,6 +242,24 @@ export const sessions = pgTable('sessions', {
   userIdIdx: index('sessions_user_id_idx').on(table.userId),
 }));
 
+// User <-> team membership, with the per-membership role.
+//
+// 'team_admin' manages their team's projects (config, rules, token rotation);
+// 'member' is read-only within the team. Global admin lives on users, not
+// here, because it is not scoped to a team.
+export const teamMembers = pgTable('team_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  role: varchar('role', { length: 16 }).notNull(), // team_admin | member
+  // timestamptz, for the same reason as `teams.created_at` above.
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  userTeamUnique: uniqueIndex('team_members_user_team_unique').on(table.userId, table.teamId),
+  teamIdIdx: index('team_members_team_id_idx').on(table.teamId),
+  userIdIdx: index('team_members_user_id_idx').on(table.userId),
+}));
+
 // Type exports for use in application
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -236,3 +277,7 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
+export type Team = typeof teams.$inferSelect;
+export type NewTeam = typeof teams.$inferInsert;
+export type TeamMember = typeof teamMembers.$inferSelect;
+export type NewTeamMember = typeof teamMembers.$inferInsert;

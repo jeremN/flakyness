@@ -597,7 +597,11 @@ import { sessionAuth } from './middleware/session';
 app.use('*', sessionAuth());
 ```
 
-Then remove the now-redundant `authRouter.use('*', sessionAuth())` from `routes/auth.ts` (the global mount covers it). Keep `authRouter.use('*', authRateLimit)`.
+Then remove the now-redundant `authRouter.use('*', sessionAuth())` from `routes/auth.ts` (the global mount covers it).
+
+**Do NOT restore a wildcard `authRouter.use('*', authRateLimit)`.** An earlier draft of this plan said to keep one; that was corrected during plan 056's Task 6 review. `authRateLimit` is 10/min keyed on the client IP, and plan 059's `hooks.server.ts` calls `GET /auth/me` **server-side on every page view** — so every dashboard user shares one bucket keyed to the dashboard container's IP. The 11th page view in any minute would 429, `fetchMe` would read that as unauthenticated, and the user would be bounced to `/login`. Random logouts under trivial load.
+
+`authRateLimit` is therefore scoped to the password-bearing POSTs only (`/login`, `/change-password`); `/me` and `/logout` carry the normal `apiRateLimit`. Preserve that split.
 
 - [ ] **Step 3: Typecheck and run the existing suites**
 

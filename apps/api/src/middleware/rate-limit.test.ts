@@ -83,6 +83,20 @@ describe('rate limiter enforcement', () => {
     expect(API_RATE_LIMIT).toEqual({ windowMs: 60_000, limit: 100 });
   });
 
+  // Pins the exact constant: relative-ordering assertions alone (below) don't
+  // catch a mutant like 10 -> 50, since 50 is still between 5 and 100.
+  it('AUTH_RATE_LIMIT is exactly 10 requests per 60s', async () => {
+    const { AUTH_RATE_LIMIT } = await import('./rate-limit');
+    expect(AUTH_RATE_LIMIT).toEqual({ windowMs: 60 * 1000, limit: 10 });
+  });
+
+  it('exposes an auth limiter that is stricter than the API limiter but looser than admin', async () => {
+    const { AUTH_RATE_LIMIT, API_RATE_LIMIT, ADMIN_RATE_LIMIT } = await import('./rate-limit');
+    expect(AUTH_RATE_LIMIT.limit).toBeLessThan(API_RATE_LIMIT.limit);
+    expect(AUTH_RATE_LIMIT.limit).toBeGreaterThan(ADMIN_RATE_LIMIT.limit);
+    expect(AUTH_RATE_LIMIT.windowMs).toBe(60 * 1000);
+  });
+
   it('a factory-built limiter 429s once its limit is exceeded', async () => {
     const { Hono } = await import('hono');
     const { createRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
@@ -126,6 +140,33 @@ describe('rate limiter enforcement', () => {
 
       expect(last!.status).toBe(429);
       expect(await last!.json()).toEqual({ error: 'slow down please', retryAfter: 60 });
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+
+  it('authRateLimit allows the first 10 requests and 429s the 11th', async () => {
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 2; i++) {
+        codes.push((await app.request('/x')).status);
+      }
+      const allowed = codes.filter((s) => s === 200).length;
+      const blocked = codes.filter((s) => s === 429).length;
+      expect(allowed).toBe(AUTH_RATE_LIMIT.limit);
+      expect(blocked).toBe(2);
+      // Pin the boundary literally: the 11th request (index 10) is the first
+      // to be throttled, and the 10th (index 9) still passes.
+      expect(codes[9]).toBe(200);
+      expect(codes[10]).toBe(429);
     } finally {
       __setRateLimitEnabled(false);
     }

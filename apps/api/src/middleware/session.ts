@@ -2,6 +2,7 @@ import { Context, MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { eq } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
+import { logger } from './logger';
 import {
   SESSION_COOKIE,
   generateSessionToken,
@@ -24,14 +25,20 @@ export interface SessionUser {
 /**
  * Resolve the `fk_session` cookie into a user, if it names a live session.
  *
- * Deliberately NEVER throws: an absent, unknown, or expired cookie is simply
- * anonymous. Rejecting is the job of whatever guard sits downstream — this
- * middleware only answers "who is this?". Mounting it on `*` therefore cannot
- * break any existing unauthenticated route, which is what makes Phase A a
- * zero-behavior-change increment.
+ * Never rejects on credential state: an absent, unknown, or expired cookie is
+ * simply anonymous. Rejecting on those is the job of whatever guard sits
+ * downstream — this middleware only answers "who is this?". Mounting it on
+ * `*` therefore cannot break any existing unauthenticated route, which is
+ * what makes Phase A a zero-behavior-change increment.
  *
- * An expired session is deleted on sight, so the table self-reaps under normal
- * traffic without a cron job.
+ * The two writes below (the expired-session reap, and the sliding-TTL touch)
+ * are best-effort: their errors are caught and logged rather than thrown, so
+ * a bookkeeping failure can never fail an otherwise-valid — or otherwise-
+ * anonymous — request. The initial SELECT is the deliberate exception and is
+ * NOT guarded: its failure means the database itself is unreachable, and
+ * every route that needs auth needs the database anyway, so silently
+ * downgrading to anonymous here would be a fail-open security regression
+ * rather than a graceful degradation.
  */
 export function sessionAuth(): MiddlewareHandler {
   return async (c: Context, next) => {
@@ -59,15 +66,35 @@ export function sessionAuth(): MiddlewareHandler {
     if (!found) return await next();
 
     if (isSessionExpired(found, now)) {
-      await db.delete(sessions).where(eq(sessions.id, found.sessionId));
+      // Best-effort reap: whether or not the DELETE lands, the session IS
+      // expired, so the request proceeds anonymous either way. Treating a
+      // failed delete as "still valid" would be a security regression.
+      try {
+        await db.delete(sessions).where(eq(sessions.id, found.sessionId));
+      } catch (err) {
+        logger.warn('Failed to reap expired session', {
+          sessionId: found.sessionId,
+          error: err instanceof Error ? { name: err.name, message: err.message } : undefined,
+        });
+      }
       return await next();
     }
 
     if (shouldSlideSession(found, now)) {
-      await db
-        .update(sessions)
-        .set({ lastSeenAt: now, expiresAt: sessionExpiry(now) })
-        .where(eq(sessions.id, found.sessionId));
+      // Best-effort slide: this is bookkeeping on an already-valid session,
+      // not a precondition for it. A failed UPDATE must not fail the request
+      // — the session stays valid, just with a stale lastSeenAt/expiresAt.
+      try {
+        await db
+          .update(sessions)
+          .set({ lastSeenAt: now, expiresAt: sessionExpiry(now) })
+          .where(eq(sessions.id, found.sessionId));
+      } catch (err) {
+        logger.warn('Failed to slide session TTL', {
+          sessionId: found.sessionId,
+          error: err instanceof Error ? { name: err.name, message: err.message } : undefined,
+        });
+      }
     }
 
     c.set('sessionUser', {

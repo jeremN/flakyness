@@ -94,6 +94,12 @@ import { pathToFileURL } from 'node:url';
 //    silently substitutes its own default for 0 instead of throwing — that
 //    asymmetry is exactly why the r/p siblings of this same line ARE tested
 //    and killed, via crafted digests real at the substituted default).
+// Plan 057 (teams & membership, task 8) baselined services/auth/membership.ts
+// 2026-07-28 via `stryker run --mutate src/services/auth/membership.ts`
+// (small, pure module — 4 exports, no DB touched by the mutated code itself,
+// same pattern as password.ts/session.ts): 100.00% both runs, 10/10 mutants
+// killed, 0 survived, 0 no-coverage — deterministic, identical across both
+// runs. Floor 95.
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -105,6 +111,7 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/rules.ts',        floor: 84 }, // baseline: 89.23% (reliable, reproduced 2x)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/password.ts', floor: 83 }, // baseline: 88.14% (reliable, reproduced 2x; plan 056)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',  floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/membership.ts', floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 057)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

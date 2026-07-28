@@ -1927,8 +1927,10 @@ DELETE /api/v1/admin/teams/:teamId
 Deletes the team. Its memberships cascade (`team_members`), but its
 **projects are NOT deleted** — `projects.team_id` is `ON DELETE SET NULL`
 (a team is an organizational parent, not an ownership parent), so they
-become unassigned instead. `orphanedProjects` reports how many, counted
-before the delete.
+become unassigned (`teamId: null`) instead. `orphanedProjects` reports how
+many, counted before the delete. Once per-team access control is enabled
+(plan 058), an unassigned project is visible to global admins only, until
+someone reassigns it to a team.
 
 **Response (200):**
 ```json

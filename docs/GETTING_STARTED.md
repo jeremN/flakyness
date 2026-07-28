@@ -5,10 +5,11 @@ This guide walks you through setting up Flackyness and connecting your first pro
 ## Table of Contents
 
 1. [Quick Setup](#quick-setup)
-2. [Create Your First Project](#create-your-first-project)
-3. [Connect GitLab CI](#connect-gitlab-ci)
-4. [View Results in Dashboard](#view-results-in-dashboard)
-5. [Production Deployment](#production-deployment)
+2. [Create Your First User Account](#create-your-first-user-account)
+3. [Create Your First Project](#create-your-first-project)
+4. [Connect GitLab CI](#connect-gitlab-ci)
+5. [View Results in Dashboard](#view-results-in-dashboard)
+6. [Production Deployment](#production-deployment)
 
 ---
 
@@ -77,6 +78,32 @@ pnpm dev
 You now have:
 - **API** running at http://localhost:8080
 - **Dashboard** running at http://localhost:5173
+
+---
+
+## Create Your First User Account
+
+After running the migrations, create the first global admin with your
+`ADMIN_TOKEN`. There is no seeded account and no self-signup — deliberately:
+a migration that plants a default password is a migration that ships one to
+everybody.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","displayName":"Your Name","isGlobalAdmin":true}'
+```
+
+The response contains a **temporary password shown exactly once**. Save it,
+then sign in at the dashboard — you will be required to change it
+immediately.
+
+`ADMIN_TOKEN` remains valid as a break-glass machine credential; user
+accounts do not replace it. Full endpoint reference: [User
+Provisioning](API.md#user-provisioning), [Team &
+Membership](API.md#team--membership), and [Authentication (user
+accounts)](API.md#authentication-user-accounts) in the API docs.
 
 ---
 

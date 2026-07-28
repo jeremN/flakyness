@@ -338,6 +338,45 @@ describe('auth router: authRateLimit is scoped to /login + /change-password only
     }
   });
 
+  it('a flood of malformed-body attempts on POST /api/v1/auth/change-password gets 429d', async () => {
+    // The sibling of the /login test above. Without this, removing
+    // `authRouter.use('/change-password', authRateLimit)` — or typo-ing its
+    // path — leaves the entire suite green, because the /login test only
+    // proves /login's own mount. change-password takes a password on the
+    // wire just as login does, so it needs the same brute-force ceiling and
+    // the same regression guard.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { default: authRouter } = await import('../routes/auth');
+    const { AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.route('/api/v1/auth', authRouter);
+
+      // DB-free for the same reason as the /login test: a malformed body
+      // 400s at zValidator, and sessionAuth() short-circuits before any
+      // query when the request carries no cookie.
+      const codes: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/api/v1/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword: '' }),
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: early requests reached the route rather than being refused
+      // by something upstream of the limiter.
+      expect(codes[0]).toBe(400);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
   it('GET /api/v1/auth/me is NOT throttled at the 10/min auth limit', async () => {
     vi.resetModules();
     const { Hono } = await import('hono');

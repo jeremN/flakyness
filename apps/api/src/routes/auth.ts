@@ -14,6 +14,7 @@ import {
   revokeAllUserSessions,
 } from '../middleware/session';
 import { hashPassword, verifyPassword, MIN_PASSWORD_LENGTH } from '../services/auth/password';
+import { normaliseEmail } from '../services/auth/membership';
 import { SESSION_COOKIE, SESSION_TTL_MS } from '../services/auth/session';
 
 const authRouter = new Hono<{ Variables: { requestId: string } }>();
@@ -135,7 +136,7 @@ function setSessionCookie(c: Context, token: string) {
  */
 authRouter.post('/login', zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
-  const normalisedEmail = email.trim().toLowerCase();
+  const normalisedEmail = normaliseEmail(email);
 
   const user = await db.query.users.findFirst({
     where: eq(users.email, normalisedEmail),

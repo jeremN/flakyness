@@ -29,6 +29,204 @@ Tokens are generated per-project and should be stored securely (e.g., GitLab CI/
 
 ---
 
+## Authentication (user accounts)
+
+> **Phase A note.** Signing in does not yet change what you can *see*. These
+> endpoints establish identity only; per-team read scoping and role checks
+> arrive with teams (plan 057) and enforcement (plan 058). `READ_TOKEN`,
+> `ADMIN_TOKEN` and per-project ingest tokens are unaffected.
+
+User accounts (`users`/`sessions`, migration `0011`) sign in with a
+scrypt-hashed password and get back an HttpOnly session cookie (`fk_session`),
+mounted at `/api/v1/auth`. This cookie is a separate credential from the
+Bearer tokens above — it is not accepted in place of a project token,
+`READ_TOKEN`, or `ADMIN_TOKEN`, and (per the Phase A note) none of those
+routes read it yet either.
+
+There is no account-creation endpoint yet (`POST /admin/users` ships in plan
+057). To exercise these endpoints before then, insert a `users` row directly
+with a hash from `hashPassword()` (`apps/api/src/services/auth/password.ts`).
+
+**`COOKIE_SECURE`** controls the `Secure` attribute on the `fk_session`
+cookie. `true` forces it on, `false` forces it off; left unset, it defaults
+to `NODE_ENV === 'production'` — secure automatically in production, and off
+elsewhere so the plain-HTTP docker-compose default and the E2E build keep
+working without extra configuration. The API logs a one-time warning at boot
+whenever it will issue cookies without `Secure`.
+
+> **Session lifetime is 7 days of _inactivity_, not 7 days total.** Each
+> authenticated request more than an hour after the last one pushes the
+> expiry out by another 7 days, so a user who visits daily never has to sign
+> in again. There is deliberately no absolute lifetime cap. To end a session
+> early, call `POST /auth/logout`; changing a password revokes every session
+> the user holds.
+
+**Rate limiting.** `POST /login` and `POST /change-password` are the only
+two requests here that are a password guess, so they're throttled at 10
+requests/minute per IP — see [Rate Limiting](#rate-limiting). `GET /me` and
+`POST /logout` carry no credential to guess and use the normal 100/minute
+limit instead: an earlier revision put all four behind the strict limiter,
+which meant every server-rendered dashboard page view (2–5 `/me` calls each)
+shared one bucket across every user behind the dashboard container's single
+IP, and could 429 ordinary browsing.
+
+### Sign In
+
+```http
+POST /api/v1/auth/login
+```
+
+**Body:**
+```json
+{
+  "email": "jane@example.com",
+  "password": "correct horse battery staple"
+}
+```
+`email` is trimmed and lower-cased before lookup, so a differently-cased
+address signs into the same account.
+
+**Response (200):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane Doe",
+    "isGlobalAdmin": false
+  },
+  "mustChangePassword": false
+}
+```
+Also sets `Set-Cookie: fk_session=<token>; HttpOnly; SameSite=Lax; Path=/;
+Max-Age=604800` (plus `Secure` when `COOKIE_SECURE` says so — see above).
+`mustChangePassword` signals a forced first-login reset.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed body (missing/invalid `email` or `password`). |
+| `401` | `{ "error": "Invalid email or password" }` — identical for an unknown email and a wrong password, so a failed attempt cannot be used to enumerate accounts. |
+| `429` | Rate limited — 10 attempts/minute per IP. |
+
+**Example:**
+```bash
+curl -sX POST "http://localhost:8080/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"email": "jane@example.com", "password": "correct horse battery staple"}'
+```
+
+### Sign Out
+
+```http
+POST /api/v1/auth/logout
+```
+
+No body. Idempotent — calling it with no session cookie still succeeds,
+since the caller's goal ("I am not signed in") is already true.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+Also deletes the session row (if any) and clears the `fk_session` cookie
+(`Max-Age=0`).
+
+No error responses beyond the normal rate limit (100 requests/minute per IP
+— see the note above).
+
+**Example:**
+```bash
+curl -sX POST "http://localhost:8080/api/v1/auth/logout" -b cookies.txt
+```
+
+### Get Current User
+
+```http
+GET /api/v1/auth/me
+```
+
+Requires a valid `fk_session` cookie. The dashboard's source of truth for
+scoping its UI.
+
+**Response (200):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "jane@example.com",
+    "displayName": "Jane Doe",
+    "isGlobalAdmin": false,
+    "mustChangePassword": false
+  },
+  "teams": []
+}
+```
+`teams` is always present in the response shape and is `[]` until plan 057
+introduces teams — so the contract does not change shape between phases.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `401` | `{ "error": "Not authenticated" }` — no cookie, an unrecognized cookie, or a revoked/expired session. An expired session is also reaped from the database on this request. |
+
+Rate limited at the normal 100 requests/minute per IP, not the stricter
+auth limit — see the note above.
+
+**Example:**
+```bash
+curl -s "http://localhost:8080/api/v1/auth/me" -b cookies.txt
+```
+
+### Change Password
+
+```http
+POST /api/v1/auth/change-password
+```
+
+Requires a valid `fk_session` cookie. Serves both a voluntary change and the
+forced first-login reset (`mustChangePassword`).
+
+**Body:**
+```json
+{
+  "currentPassword": "correct horse battery staple",
+  "newPassword": "a much longer replacement passphrase"
+}
+```
+`newPassword` must be at least 12 characters — length only, no
+character-class rules (NIST SP 800-63B recommends length over composition).
+
+**Response (200):**
+```json
+{ "success": true }
+```
+Also clears `mustChangePassword`, revokes **every other** session the user
+holds, and re-issues a fresh `fk_session` cookie for the caller — a password
+change that left other devices signed in would not actually have revoked
+anything.
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | `newPassword` shorter than 12 characters, or a malformed body. |
+| `401` | Not authenticated, or `{ "error": "Current password is incorrect" }`. |
+| `429` | Rate limited — 10 attempts/minute per IP. |
+
+**Example:**
+```bash
+curl -sX POST "http://localhost:8080/api/v1/auth/change-password" \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"currentPassword": "old-password-at-least-12-chars", "newPassword": "new-password-at-least-12-chars"}'
+```
+
+---
+
 ## Endpoints
 
 ### Health Check
@@ -1494,7 +1692,8 @@ All errors follow this format:
 | `POST /api/v1/reports` | 60 requests/minute per token |
 | Admin endpoints (missing/invalid `ADMIN_TOKEN`) | 5 requests/minute per IP |
 | Admin endpoints (valid `ADMIN_TOKEN`) | not limited by the admin brute-force limiter |
-| All other endpoints | 100 requests/minute per IP |
+| `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password` | 10 requests/minute per IP |
+| All other endpoints (including `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`) | 100 requests/minute per IP |
 
 The admin limiter throttles only unauthenticated or wrong-token requests — its
 job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN` is

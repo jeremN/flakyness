@@ -299,6 +299,18 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 053 | Roadmap #4a: password-gated `/admin` dashboard console — project list, create with show-once token reveal, per-project settings editor, token rotation, two-phase prune, typed-confirm delete. Reads/writes go through a server-only `$lib/server/adminApi.ts` client and SvelteKit form actions so `ADMIN_TOKEN` never reaches the browser; gated by the existing `DASHBOARD_PASSWORD` Basic Auth. No new API endpoints — 4b (rule engine) is a separate follow-up | P2 | M | 052 (soft; independent surface, same admin API) | OPEN (PR pending) |
 | 054 | Roadmap #4b: quarantine rule engine — ordered per-project `quarantine_rules` (glob selectors on branch/file/tag; `flake_rate` or `consecutive` condition; `quarantine`/`exempt` action, first-match-wins), pure evaluation engine (`services/rules.ts`), `reconcileQuarantine` integration (rule-driven promote upserts `flaky_tests`, `rule_id` audit provenance via `quarantine_events`, manual mutes immune, no-match falls back to the legacy project threshold), admin CRUD + reorder API. Rules console UI is the sanctioned fast-follow | P2 | M | 051 (hard; extends its `reconcileQuarantine` promote phase) | OPEN (PR pending) |
 | 055 | Roadmap #4b fast-follow: rules console UI — `/admin/[projectId]/rules` dashboard screen (list, create, edit, delete, reorder, enable-toggle) over plan 054's admin rules API. Server-only `adminApi.ts` + form actions (no `ADMIN_TOKEN` in the browser); pure `$lib` helpers `rule-summary.ts` + `rules-validation.ts`; reorder re-fetches the authoritative order server-side; delete is a two-step client confirm. **Also hardens the admin rate limiter** to exempt valid-`ADMIN_TOKEN` requests (throttle only missing/invalid tokens), fixing the per-IP `5/60s` limit that made a server-mediated admin console — whose calls all share one IP — unusable | P2 | S | 054 (hard; consumes its admin rules API) | OPEN (this branch; implemented + reviewed, awaiting merge) |
+| 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | TODO |
+
+**Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
+timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
+spec asked for it, and `sessions.expires_at` is a security control, so it was worth a
+deliberate inconsistency with the rest of the schema while the tables were still empty.
+Every pre-existing table remains on plain `timestamp`, **including a live TTL column**:
+`flaky_tests.quarantine_expires_at` (`schema.ts:112`, plan 051 auto-quarantine), which
+carries the identical latent TZ-skew exposure — an auto-quarantine can release early or
+late if the API process and Postgres disagree on the session time zone. A sweep migration
+was ruled out of scope for 056 (it would touch six shipped tables with live data, for a
+phase whose whole claim is zero behavior change). Worth its own small plan.
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 

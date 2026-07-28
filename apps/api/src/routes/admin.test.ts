@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db, testRuns, testResults, flakyTests } from '../db';
+import { db, testRuns, testResults, flakyTests, projects } from '../db';
 
 // These tests require the database and ADMIN_TOKEN to be configured
 const hasDatabase = !!process.env.DATABASE_URL;
@@ -78,7 +78,12 @@ function buildFlakinessReport() {
 
 describeAdmin('Admin API Integration Tests', () => {
   const adminToken = process.env.ADMIN_TOKEN!;
-  
+
+  const authHeaders = () => ({
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${adminToken}`,
+  });
+
   describe('Authentication', () => {
     it('should reject requests without auth header', async () => {
       const res = await app.request('/api/v1/admin/projects');
@@ -1418,6 +1423,110 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error).toBe('Project not found');
+    });
+  });
+
+  describe('Project team assignment', () => {
+    it('creates a project assigned to a team', async () => {
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `assign-${crypto.randomUUID().slice(0, 8)}` }),
+      });
+      const teamId = (await teamRes.json()).team.id;
+
+      const res = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `p-${crypto.randomUUID().slice(0, 8)}`, teamId }),
+      });
+      expect(res.status).toBe(201);
+      expect((await res.json()).project.teamId).toBe(teamId);
+    });
+
+    it('400s on a teamId that does not exist (rather than a 500 from the FK)', async () => {
+      const res = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `p-${crypto.randomUUID().slice(0, 8)}`, teamId: crypto.randomUUID() }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('reassigns a project to another team via PATCH', async () => {
+      const makeTeam = async () => {
+        const res = await app.request('/api/v1/admin/teams', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ name: `re-${crypto.randomUUID().slice(0, 8)}` }),
+        });
+        return (await res.json()).team.id;
+      };
+      const teamA = await makeTeam();
+      const teamB = await makeTeam();
+
+      const created = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `p-${crypto.randomUUID().slice(0, 8)}`, teamId: teamA }),
+      });
+      const projectId = (await created.json()).project.id;
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ teamId: teamB }),
+      });
+      expect(res.status).toBe(200);
+
+      const [row] = await db.select().from(projects).where(eq(projects.id, projectId));
+      expect(row.teamId).toBe(teamB);
+    });
+
+    it('unassigns a project when teamId is explicitly null', async () => {
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `un-${crypto.randomUUID().slice(0, 8)}` }),
+      });
+      const teamId = (await teamRes.json()).team.id;
+
+      const created = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `p-${crypto.randomUUID().slice(0, 8)}`, teamId }),
+      });
+      const projectId = (await created.json()).project.id;
+
+      const res = await app.request(`/api/v1/admin/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ teamId: null }),
+      });
+      expect(res.status).toBe(200);
+
+      const [row] = await db.select().from(projects).where(eq(projects.id, projectId));
+      expect(row.teamId).toBeNull();
+    });
+
+    it('returns teamId in the admin project list', async () => {
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `list-${crypto.randomUUID().slice(0, 8)}` }),
+      });
+      const teamId = (await teamRes.json()).team.id;
+
+      const created = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name: `p-${crypto.randomUUID().slice(0, 8)}`, teamId }),
+      });
+      const projectId = (await created.json()).project.id;
+
+      const list = await app.request('/api/v1/admin/projects', { headers: authHeaders() });
+      const found = (await list.json()).projects.find((p: { id: string }) => p.id === projectId);
+      expect(found.teamId).toBe(teamId);
     });
   });
 });

@@ -998,6 +998,7 @@ GET /api/v1/admin/projects
       "id": "uuid",
       "name": "my-project",
       "gitlabProjectId": "123",
+      "teamId": null,
       "hasToken": true,
       "createdAt": "2024-12-01T00:00:00.000Z",
       "flakeThreshold": null,
@@ -1019,6 +1020,10 @@ GET /api/v1/admin/projects
   ]
 }
 ```
+
+`teamId` is the project's owning [team](#team--membership), or `null` if
+unassigned (the default). `projects.team_id` is `ON DELETE SET NULL`, so a
+deleted team leaves its former projects unassigned rather than deleting them.
 
 `flakeThreshold`, `windowDays`, and `minRuns` are per-project flakiness detection
 overrides — see [Update Project Flakiness Config](#update-project-flakiness-config).
@@ -1056,7 +1061,8 @@ POST /api/v1/admin/projects
 ```json
 {
   "name": "new-project",
-  "gitlabProjectId": "123"  // optional
+  "gitlabProjectId": "123",  // optional
+  "teamId": "uuid"  // optional — assigns the project to an existing team
 }
 ```
 
@@ -1066,12 +1072,18 @@ POST /api/v1/admin/projects
   "project": {
     "id": "uuid",
     "name": "new-project",
+    "gitlabProjectId": "123",
+    "teamId": "uuid",
     "createdAt": "2024-12-11T00:00:00.000Z"
   },
   "token": "flackyness_abc123...",
   "warning": "Save this token securely. It will not be shown again."
 }
 ```
+
+Returns `400` with `{ "error": "Team not found" }` if `teamId` doesn't
+reference an existing team (checked before the insert, so an unknown
+`teamId` never surfaces as a raw FK-violation `500`).
 
 ### Rotate Token
 
@@ -1098,11 +1110,12 @@ PATCH /api/v1/admin/projects/:id
 ```
 
 Update a project's per-project flakiness detection overrides, its
-transition-notification webhook, its data retention, and/or its
-auto-quarantine config. Fields omitted from the body are left unchanged;
-sending a field as `null` explicitly clears it back to the built-in default
-(or, for `webhookUrl`, disables the webhook; for `retentionDays`, reverts to
-"keep forever"). At least one field is required.
+transition-notification webhook, its data retention, its team assignment,
+and/or its auto-quarantine config. Fields omitted from the body are left
+unchanged; sending a field as `null` explicitly clears it back to the
+built-in default (or, for `webhookUrl`, disables the webhook; for
+`retentionDays`, reverts to "keep forever"; for `teamId`, unassigns the
+project). At least one field is required.
 
 **Body (all fields optional, but at least one required):**
 ```json
@@ -1116,7 +1129,8 @@ sending a field as `null` explicitly clears it back to the built-in default
   "autoQuarantineEnabled": true,
   "quarantineThreshold": 0.25,
   "quarantineMinRuns": 5,
-  "quarantineTtlDays": 10
+  "quarantineTtlDays": 10,
+  "teamId": "uuid"
 }
 ```
 
@@ -1132,6 +1146,7 @@ sending a field as `null` explicitly clears it back to the built-in default
 | `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
 | `quarantineMinRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is (re-)quarantined. `null` resets to the resolved `minRuns`. |
 | `quarantineTtlDays` | integer \| null | `[1, 365]` | Mandatory TTL of an auto-quarantine, in days. `null` resets to the default (`7`). |
+| `teamId` | string (uuid) \| null | — | Reassigns the project to another [team](#team--membership), or `null` to unassign it. Must reference an existing team (checked before the update — see error responses below). |
 
 **Response (200):**
 ```json
@@ -1140,6 +1155,7 @@ sending a field as `null` explicitly clears it back to the built-in default
     "id": "uuid",
     "name": "my-project",
     "gitlabProjectId": "123",
+    "teamId": "uuid",
     "createdAt": "2024-12-01T00:00:00.000Z",
     "flakeThreshold": 0.1,
     "windowDays": 30,
@@ -1156,8 +1172,9 @@ sending a field as `null` explicitly clears it back to the built-in default
 ```
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
-`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, or
-an empty body) and `404` if the project doesn't exist.
+`webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, a
+`teamId` that doesn't reference an existing team, or an empty body) and `404`
+if the project doesn't exist.
 
 > **The retention/window guard:** `retentionDays` may never be lower than the
 > project's *resolved* flakiness `windowDays` (the stored override if set,
@@ -1814,10 +1831,11 @@ role enforcement arrive with plan 058.
 or `member` (read-only within the team). Global admin (`users.isGlobalAdmin`)
 is separate and not scoped to a team.
 
-**Assigning projects to teams** (`teamId` on `POST /admin/projects` and
-`PATCH /admin/projects/:id`) is a separate, not-yet-shipped piece of work
-(plan 057 Task 6) — creating and renaming teams, and managing membership,
-does not depend on it.
+**Assigning projects to teams** is done via `teamId` on
+[Create Project](#create-project) and
+[Update Project Flakiness Config](#update-project-flakiness-config) (plan 057
+Task 6) — it is independent of creating/renaming teams and managing
+membership, documented below.
 
 #### List Teams
 

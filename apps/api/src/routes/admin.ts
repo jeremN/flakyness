@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
-import { db, projects, testRuns, testResults, flakyTests, quarantineRules } from '../db';
+import { db, projects, testRuns, testResults, flakyTests, quarantineRules, teams } from '../db';
 import { adminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { logger } from '../middleware/logger';
@@ -23,6 +23,7 @@ adminRouter.use('*', adminAuth());
 const createProjectSchema = z.object({
   name: z.string().min(1).max(255),
   gitlabProjectId: z.string().max(100).optional(),
+  teamId: z.string().uuid().optional(),
 });
 
 const projectConfigPatchSchema = z
@@ -62,6 +63,7 @@ const projectConfigPatchSchema = z
     quarantineThreshold: z.number().min(0).max(1).nullable().optional(),
     quarantineMinRuns: z.number().int().min(1).max(100).nullable().optional(),
     quarantineTtlDays: z.number().int().min(1).max(365).nullable().optional(),
+    teamId: z.string().uuid().nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: 'No fields to update' });
 
@@ -165,6 +167,17 @@ function toRuleColumns(body: Record<string, unknown>): Partial<typeof quarantine
 }
 
 /**
+ * Resolve a supplied teamId, or 400.
+ *
+ * Without this, an unknown teamId reaches Postgres and comes back as an FK
+ * violation — a 500 that tells the operator "internal server error" for what
+ * is plainly their typo.
+ */
+async function assertTeamExists(teamId: string): Promise<boolean> {
+  return !!(await db.query.teams.findFirst({ where: eq(teams.id, teamId) }));
+}
+
+/**
  * GET /api/v1/admin/projects
  *
  * List all projects with stats (single query with subqueries, no N+1)
@@ -175,6 +188,7 @@ adminRouter.get('/projects', async (c) => {
       id: projects.id,
       name: projects.name,
       gitlabProjectId: projects.gitlabProjectId,
+      teamId: projects.teamId,
       hasToken: sql<boolean>`${projects.tokenHash} IS NOT NULL`,
       createdAt: projects.createdAt,
       flakeThreshold: projects.flakeThreshold,
@@ -204,6 +218,7 @@ adminRouter.get('/projects', async (c) => {
     id: p.id,
     name: p.name,
     gitlabProjectId: p.gitlabProjectId,
+    teamId: p.teamId,
     hasToken: p.hasToken,
     createdAt: p.createdAt,
     flakeThreshold: p.flakeThreshold !== null ? Number(p.flakeThreshold) : null,
@@ -235,7 +250,7 @@ adminRouter.post(
   '/projects',
   zValidator('json', createProjectSchema),
   async (c) => {
-    const { name, gitlabProjectId } = c.req.valid('json');
+    const { name, gitlabProjectId, teamId } = c.req.valid('json');
 
     // Check if project name already exists
     const existing = await db.query.projects.findFirst({
@@ -244,6 +259,10 @@ adminRouter.post(
 
     if (existing) {
       return c.json({ error: 'Project with this name already exists' }, 409);
+    }
+
+    if (teamId && !(await assertTeamExists(teamId))) {
+      return c.json({ error: 'Team not found' }, 400);
     }
 
     // Generate a new token
@@ -256,12 +275,14 @@ adminRouter.post(
       .values({
         name,
         gitlabProjectId: gitlabProjectId || null,
+        teamId: teamId ?? null,
         tokenHash,
       })
       .returning({
         id: projects.id,
         name: projects.name,
         gitlabProjectId: projects.gitlabProjectId,
+        teamId: projects.teamId,
         createdAt: projects.createdAt,
       });
 
@@ -382,6 +403,10 @@ adminRouter.patch(
       }
     }
 
+    if (typeof data.teamId === 'string' && !(await assertTeamExists(data.teamId))) {
+      return c.json({ error: 'Team not found' }, 400);
+    }
+
     // Build the .set() object only from keys present in the parsed body, so
     // an omitted field leaves the stored value untouched while an explicit
     // `null` clears it back to the default.
@@ -413,6 +438,7 @@ adminRouter.patch(
         data.quarantineThreshold == null ? null : data.quarantineThreshold.toFixed(4);
     if ('quarantineMinRuns' in data) updates.quarantineMinRuns = data.quarantineMinRuns ?? null;
     if ('quarantineTtlDays' in data) updates.quarantineTtlDays = data.quarantineTtlDays ?? null;
+    if ('teamId' in data) updates.teamId = data.teamId ?? null;
 
     const [project] = await db
       .update(projects)
@@ -422,6 +448,7 @@ adminRouter.patch(
         id: projects.id,
         name: projects.name,
         gitlabProjectId: projects.gitlabProjectId,
+        teamId: projects.teamId,
         createdAt: projects.createdAt,
         flakeThreshold: projects.flakeThreshold,
         windowDays: projects.windowDays,

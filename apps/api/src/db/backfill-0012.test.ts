@@ -24,8 +24,17 @@ describeDb('migration 0012 backfill', () => {
     //
     // Compared in JS rather than SQL on purpose: teams.created_at is
     // timestamptz while projects.created_at is tz-naive (the documented split
-    // from plan 056), so letting Postgres coerce one to the other would put a
+    // from plan 056), and letting Postgres coerce one to the other puts a
     // UTC-offset skew right in the middle of the comparison.
+    //
+    // What makes the JS side safe is NOT that JS Dates are inherently
+    // comparable here — it is that drizzle-orm's PgTimestamp
+    // .mapFromDriverValue appends "+0000" before parsing whenever
+    // `withTimezone` is false. So both values arrive as absolute instants
+    // regardless of the process TZ. Read raw through the `postgres` driver
+    // instead and a naive column really does skew by the local offset
+    // (reproduced: 2h under TZ=Europe/Paris). Keep the reads going through
+    // Drizzle, and do not "simplify" this into a SQL-side comparison.
     const [defaultTeam] = await db.select().from(teams).where(eq(teams.name, 'Default'));
     const migratedAt = defaultTeam.createdAt;
 

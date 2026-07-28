@@ -18,6 +18,7 @@ import projectsRouter from './routes/projects';
 import testsRouter from './routes/tests';
 import adminRouter from './routes/admin';
 import adminUsersRouter from './routes/admin-users';
+import adminTeamsRouter from './routes/admin-teams';
 import authRouter, { isCookieSecure } from './routes/auth';
 
 const app = new Hono<{ Variables: { requestId: string } }>();
@@ -129,6 +130,7 @@ app.route('/api/v1/tests', testsRouter);
 // Hono tries routes in mount order, and the broader adminRouter would
 // otherwise shadow GET /api/v1/admin/users with its own project-list route.
 app.route('/api/v1/admin/users', adminUsersRouter);
+app.route('/api/v1/admin/teams', adminTeamsRouter);
 app.route('/api/v1/admin', adminRouter);
 app.route('/api/v1/auth', authRouter);
 

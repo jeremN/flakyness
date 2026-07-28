@@ -46,7 +46,9 @@ routes read it yet either.
 Accounts are provisioned by a global admin via
 [User Provisioning](#user-provisioning) (`/api/v1/admin/users`, `ADMIN_TOKEN`
 gated) — see that section for the create/list/update/reset-password/delete
-endpoints.
+endpoints. Teams and per-team membership are managed via
+[Team & Membership](#team--membership) (`/api/v1/admin/teams`, also
+`ADMIN_TOKEN` gated).
 
 **`COOKIE_SECURE`** controls the `Secure` attribute on the `fk_session`
 cookie. `true` forces it on, `false` forces it off; left unset, it defaults
@@ -1788,6 +1790,222 @@ Deletes the user; their sessions and team memberships cascade.
 | `400` | Malformed `userId`. |
 | `404` | No user with that id. |
 | `409` | `{ "error": "Cannot delete the last global admin" }` — same last-global-admin guard as [Update User](#update-user). |
+
+### Team & Membership
+
+```http
+GET    /api/v1/admin/teams
+POST   /api/v1/admin/teams
+PATCH  /api/v1/admin/teams/:teamId
+DELETE /api/v1/admin/teams/:teamId
+GET    /api/v1/admin/teams/:teamId/members
+POST   /api/v1/admin/teams/:teamId/members
+PATCH  /api/v1/admin/teams/:teamId/members/:userId
+DELETE /api/v1/admin/teams/:teamId/members/:userId
+```
+
+Mounted at `/api/v1/admin/teams` — a sibling of, and matched **before**,
+`/api/v1/admin/*` — same `ADMIN_TOKEN` gate and admin rate limit as every
+other admin endpoint (plan 057). A team is an organizational grouping of
+projects and users, not a hard tenancy boundary; per-team read scoping and
+role enforcement arrive with plan 058.
+
+`role` on a membership is one of `team_admin` (manages the team's projects)
+or `member` (read-only within the team). Global admin (`users.isGlobalAdmin`)
+is separate and not scoped to a team.
+
+**Assigning projects to teams** (`teamId` on `POST /admin/projects` and
+`PATCH /admin/projects/:id`) is a separate, not-yet-shipped piece of work
+(plan 057 Task 6) — creating and renaming teams, and managing membership,
+does not depend on it.
+
+#### List Teams
+
+```http
+GET /api/v1/admin/teams
+```
+
+**Response:**
+```json
+{
+  "teams": [
+    {
+      "id": "uuid",
+      "name": "Payments",
+      "createdAt": "2024-12-01T00:00:00.000Z",
+      "memberCount": 3,
+      "projectCount": 2
+    }
+  ]
+}
+```
+
+#### Create Team
+
+```http
+POST /api/v1/admin/teams
+```
+
+**Body:**
+```json
+{ "name": "Payments" }
+```
+
+**Response (201):**
+```json
+{
+  "team": {
+    "id": "uuid",
+    "name": "Payments",
+    "createdAt": "2024-12-11T00:00:00.000Z"
+  }
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Empty or overlong (`> 255` chars) `name`. |
+| `409` | `{ "error": "A team with this name already exists" }` |
+
+#### Rename Team
+
+```http
+PATCH /api/v1/admin/teams/:teamId
+```
+
+**Body:**
+```json
+{ "name": "Payments EU" }
+```
+
+**Response (200):**
+```json
+{ "team": { "id": "uuid", "name": "Payments EU", "createdAt": "2024-12-01T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`, or an empty/overlong `name`. |
+| `404` | No team with that id. |
+| `409` | `{ "error": "A team with this name already exists" }` — another team already has that name. |
+
+#### Delete Team
+
+```http
+DELETE /api/v1/admin/teams/:teamId
+```
+
+Deletes the team. Its memberships cascade (`team_members`), but its
+**projects are NOT deleted** — `projects.team_id` is `ON DELETE SET NULL`
+(a team is an organizational parent, not an ownership parent), so they
+become unassigned instead. `orphanedProjects` reports how many, counted
+before the delete.
+
+**Response (200):**
+```json
+{ "success": true, "orphanedProjects": 2 }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`. |
+| `404` | No team with that id. |
+
+#### List Members
+
+```http
+GET /api/v1/admin/teams/:teamId/members
+```
+
+**Response:**
+```json
+{
+  "members": [
+    { "userId": "uuid", "email": "jane@example.com", "displayName": "Jane Doe", "role": "team_admin" }
+  ]
+}
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`. |
+| `404` | No team with that id. |
+
+#### Add Member
+
+```http
+POST /api/v1/admin/teams/:teamId/members
+```
+
+**Body:**
+```json
+{ "userId": "uuid", "role": "member" }
+```
+`role` must be `team_admin` or `member`.
+
+**Response (201):**
+```json
+{ "member": { "id": "uuid", "teamId": "uuid", "userId": "uuid", "role": "member", "createdAt": "2024-12-11T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`, or an invalid `userId`/`role`. |
+| `404` | No team with that id, or no user with that id. |
+| `409` | `{ "error": "User is already a member of this team" }` |
+
+#### Change Member Role
+
+```http
+PATCH /api/v1/admin/teams/:teamId/members/:userId
+```
+
+**Body:**
+```json
+{ "role": "team_admin" }
+```
+
+**Response (200):**
+```json
+{ "member": { "id": "uuid", "teamId": "uuid", "userId": "uuid", "role": "team_admin", "createdAt": "2024-12-11T00:00:00.000Z" } }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`/`userId`, or an invalid `role`. |
+| `404` | No team with that id, or the user is not a member of it. |
+
+#### Remove Member
+
+```http
+DELETE /api/v1/admin/teams/:teamId/members/:userId
+```
+
+Removes the membership only — the user account itself is untouched.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed `teamId`/`userId`. |
+| `404` | No team with that id, or the user is not a member of it. |
 
 ---
 

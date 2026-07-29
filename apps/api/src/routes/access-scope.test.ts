@@ -357,6 +357,18 @@ describeScope('flaky-test mute authorization', () => {
     expect(res.status).toBe(200);
   });
 
+  it('a project (ingest) token gets 401 muting a test in its OWN project — mute is a management action, not a per-project write (docs/API.md)', async () => {
+    const f = await fixture('member');
+    const flakyId = await seedFlaky(f);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${f.projectToken}` },
+      body: JSON.stringify({ status: 'ignored' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
   it('GET /tests/flaky/:id hides another team\'s row', async () => {
     const mine = await fixture('member');
     const theirs = await fixture('member');

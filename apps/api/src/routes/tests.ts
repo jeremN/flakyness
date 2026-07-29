@@ -339,7 +339,7 @@ testsRouter.patch('/flaky/:id', resolveAccess(), async (c) => {
   // Reject up front, before any UUID/body validation or database lookup —
   // matching the old adminAuth() middleware, which ran (and could 401)
   // before the handler saw the request at all. `anonymous` and `read-token`
-  // are the two access kinds canWriteProject() rejects UNCONDITIONALLY,
+  // are two access kinds canWriteProject() rejects UNCONDITIONALLY,
   // regardless of which project is targeted (services/auth/access.ts), so
   // this verdict cannot depend on the target row — it is safe, not just
   // convenient, to decide it without loading that row first.
@@ -354,7 +354,26 @@ testsRouter.patch('/flaky/:id', resolveAccess(), async (c) => {
   // requests to reach 401, not silently 404 on a fabricated id) both send a
   // target id that doesn't exist — with the existence check first, both got
   // 404 instead of 401.
-  if (access.kind === 'anonymous' || access.kind === 'read-token') {
+  //
+  // `project-token` is ALSO in this list, deliberately narrower than
+  // canWriteProject() itself: canWriteProject is the general project-write
+  // predicate (`access.projectId === project.id`), which is correct for
+  // per-project writes like ingest — but muting is a management action, not
+  // a per-project write, and was ADMIN_TOKEN-only before this route ever
+  // deferred to canWriteProject. docs/API.md's mute section is explicit:
+  // "Requires the admin Bearer token …, not a project token — this is a
+  // management action, not a per-project write." A project (ingest) token
+  // lives in CI config on every runner; letting it mute tests would let a
+  // leaked or careless CI credential silently disable tests via
+  // buildGrepInvert()'s skip-list, and would misattribute the resulting
+  // audit row's mute_source as 'manual' (a human action) to a machine. The
+  // narrowing belongs here, at the route — canWriteProject stays the general
+  // predicate Task 5's admin-project-write gate depends on.
+  if (
+    access.kind === 'anonymous' ||
+    access.kind === 'read-token' ||
+    access.kind === 'project-token'
+  ) {
     return c.json({ error: 'Authorization required' }, 401);
   }
 

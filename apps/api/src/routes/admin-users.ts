@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq, count } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
@@ -66,10 +66,39 @@ function publicUser(u: {
   };
 }
 
-async function globalAdminCount(): Promise<number> {
-  const [row] = await db.select({ n: count() }).from(users).where(eq(users.isGlobalAdmin, true));
-  return Number(row?.n ?? 0);
-}
+// Fix round 2, plan 058 Global Constraint ("the last-admin guard's TOCTOU
+// must be closed in the SAME change that strips ADMIN_TOKEN of superuser
+// status"): the demote (PATCH) and delete (DELETE) handlers below used to
+// do a bare, unlocked `SELECT count(*) ... WHERE is_global_admin = true`,
+// then an unconditioned write. Two concurrent requests — demoting/deleting
+// two DIFFERENT admins, or even ONE admin session firing a self-demote and
+// an other-demote at the same time — could both read the same count, both
+// pass canRemoveGlobalAdmin, and both write, reaching zero global admins
+// with no ADMIN_TOKEN break-glass left once a deployment runs session-only
+// (which adminOrGlobalAdminAuth, Task 5, now fully supports).
+//
+// Both handlers below wrap their count-check-then-write in ONE transaction
+// and lock the WHOLE global-admin set with `.for('update')` before counting
+// — not just the target row. Locking only the target row is not enough: two
+// transactions targeting two DIFFERENT admins would each see themselves as
+// "not the row being contended," both read count 2, and both proceed.
+// Locking every row in the admin set is what makes the second transaction
+// block until the first commits.
+//
+// READ COMMITTED (Postgres' default; no isolation level is configured
+// anywhere in this codebase), not SERIALIZABLE + retry: under READ
+// COMMITTED, a `SELECT ... FOR UPDATE` that blocks on a row a concurrent
+// transaction is about to modify re-evaluates that row's WHERE-clause
+// membership against the POST-COMMIT version once unblocked. So the second
+// transaction to run doesn't see the stale pre-commit count — if the first
+// transaction's write took that row out of `isGlobalAdmin = true`, the
+// second transaction's lock acquisition excludes it and returns the
+// correctly reduced count. This holds even for two different target rows,
+// not just contention on the same row. Chosen over SERIALIZABLE + retry
+// because it's simpler and sufficient here: nothing else in either
+// transaction needs a serializable snapshot, and there's no other
+// concurrent write these handlers could conflict with that FOR UPDATE
+// wouldn't already serialise.
 
 /**
  * GET /api/v1/admin/users
@@ -151,11 +180,7 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
   const user = await db.query.users.findFirst({ where: eq(users.id, parsed.data) });
   if (!user) return c.json({ error: 'User not found' }, 404);
 
-  if (body.isGlobalAdmin === false && user.isGlobalAdmin) {
-    if (!canRemoveGlobalAdmin(await globalAdminCount())) {
-      return c.json({ error: 'Cannot demote the last global admin' }, 409);
-    }
-  }
+  const isDemote = body.isGlobalAdmin === false && user.isGlobalAdmin;
 
   const columns: Partial<typeof users.$inferInsert> = {};
   if ('displayName' in body) columns.displayName = body.displayName ?? null;
@@ -163,16 +188,39 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
     columns.isGlobalAdmin = body.isGlobalAdmin;
   }
 
-  // A body of `{}`, unknown-keys-only (zod strips them), or no body at all
-  // all land here with zero columns to set. drizzle's `.set()` throws "No
-  // values to set" on an empty object — a no-op PATCH is not an error per
-  // docs/API.md ("fields omitted are left unchanged"), so skip the write
-  // and echo the user back unchanged instead of letting that throw surface
-  // as a 500.
-  const updated =
-    Object.keys(columns).length > 0
-      ? (await db.update(users).set(columns).where(eq(users.id, user.id)).returning())[0]
-      : user;
+  // Count-check-then-write, in ONE transaction, with the whole global-admin
+  // set row-locked before counting — see the "Fix round 2" comment above
+  // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
+  // Constraint).
+  const result = await db.transaction(async (tx) => {
+    if (isDemote) {
+      const locked = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.isGlobalAdmin, true))
+        .for('update');
+      if (!canRemoveGlobalAdmin(locked.length)) {
+        return { refused: true as const };
+      }
+    }
+
+    // A body of `{}`, unknown-keys-only (zod strips them), or no body at
+    // all all land here with zero columns to set. drizzle's `.set()` throws
+    // "No values to set" on an empty object — a no-op PATCH is not an error
+    // per docs/API.md ("fields omitted are left unchanged"), so skip the
+    // write and echo the user back unchanged instead of letting that throw
+    // surface as a 500.
+    const updated =
+      Object.keys(columns).length > 0
+        ? (await tx.update(users).set(columns).where(eq(users.id, user.id)).returning())[0]
+        : user;
+    return { refused: false as const, updated };
+  });
+
+  if (result.refused) {
+    return c.json({ error: 'Cannot demote the last global admin' }, 409);
+  }
+  const updated = result.updated;
 
   // Privilege changes must be distinguishable in the log from a display-name
   // edit — granting or revoking global admin is a security-relevant event.
@@ -228,11 +276,26 @@ adminUsersRouter.delete('/:userId', async (c) => {
   const user = await db.query.users.findFirst({ where: eq(users.id, parsed.data) });
   if (!user) return c.json({ error: 'User not found' }, 404);
 
-  if (user.isGlobalAdmin && !canRemoveGlobalAdmin(await globalAdminCount())) {
+  // Count-check-then-write, in ONE transaction, with the whole global-admin
+  // set row-locked before counting — see the "Fix round 2" comment above
+  // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
+  // Constraint).
+  const refused = await db.transaction(async (tx) => {
+    if (user.isGlobalAdmin) {
+      const locked = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.isGlobalAdmin, true))
+        .for('update');
+      if (!canRemoveGlobalAdmin(locked.length)) return true;
+    }
+    await tx.delete(users).where(eq(users.id, user.id));
+    return false;
+  });
+  if (refused) {
     return c.json({ error: 'Cannot delete the last global admin' }, 409);
   }
 
-  await db.delete(users).where(eq(users.id, user.id));
   logger.info('User deleted', { userId: user.id, requestId: c.get('requestId') });
   return c.json({ success: true });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
 import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
+import { SESSION_COOKIE } from '../services/auth/session';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -387,4 +388,189 @@ describeAdmin('DELETE /api/v1/admin/users/:userId', () => {
       expect(await db.select().from(users).where(eq(users.id, targetId))).toHaveLength(1);
     });
   });
+});
+
+/**
+ * Fix round 2, plan 058 Global Constraint: "the last-admin guard's TOCTOU
+ * must be closed in the SAME change that strips ADMIN_TOKEN of superuser
+ * status." Task 5 is that change — adminOrGlobalAdminAuth() fully supports a
+ * token-less, session-only deployment — so the unlocked read-then-write in
+ * the demote/delete handlers is a real, reachable "zero global admins, no
+ * break-glass left" bug, not a theoretical one. These tests fire two
+ * concurrent requests against the SAME pair of admins and assert the
+ * invariant holds; they do NOT wait for a failure to appear before
+ * asserting — every one of the ATTEMPTS iterations must hold the invariant,
+ * so a single lucky race does not make the suite flaky-green.
+ *
+ * MANDATORY: this describe block creates and flips global admins, so its
+ * entire body — every iteration of every test, seed through final
+ * assertion through restore — runs under
+ * `withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, ...)`. Narrowing this lock (e.g.
+ * releasing it between iterations) reopens exactly the cross-file race
+ * `withSoleGlobalAdmin`'s own doc comment describes: a concurrently running
+ * file's ambient-admin snapshot/restore could land mid-iteration and desync
+ * the count these tests depend on.
+ */
+describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058 Global Constraint)', () => {
+  const ATTEMPTS = 5;
+
+  interface Throwaway {
+    id: string;
+    email: string;
+    temporaryPassword: string;
+  }
+
+  /**
+   * Seeds EXACTLY two throwaway global admins (demoting every ambient one
+   * for the duration), runs `run(a, b)` with each one's id/email/temp
+   * password (so a test can both target them by id AND log in as either
+   * one), then restores the ambient set and deletes the throwaways — the
+   * same self-contained/restorative shape as `withSoleGlobalAdmin` above,
+   * widened to a pair instead of a singleton because this bug is about
+   * contention BETWEEN admins, not about a single sole admin.
+   */
+  async function withExactlyTwoGlobalAdmins(
+    run: (a: Throwaway, b: Throwaway) => Promise<void>
+  ): Promise<void> {
+    const ambientAdmins = await db.select({ id: users.id }).from(users).where(eq(users.isGlobalAdmin, true));
+    const ambientIds = ambientAdmins.map((a) => a.id);
+    const { body: a } = await createUserViaApi({ isGlobalAdmin: true });
+    const { body: b } = await createUserViaApi({ isGlobalAdmin: true });
+
+    if (ambientIds.length > 0) {
+      await db.update(users).set({ isGlobalAdmin: false }).where(inArray(users.id, ambientIds));
+    }
+
+    try {
+      await run(
+        { id: a.user.id, email: a.user.email, temporaryPassword: a.temporaryPassword },
+        { id: b.user.id, email: b.user.email, temporaryPassword: b.temporaryPassword }
+      );
+    } finally {
+      if (ambientIds.length > 0) {
+        await db.update(users).set({ isGlobalAdmin: true }).where(inArray(users.id, ambientIds));
+      }
+      await db.delete(users).where(inArray(users.id, [a.user.id, b.user.id]));
+    }
+  }
+
+  /** How many of `ids` are STILL flagged isGlobalAdmin (a delete removes the row entirely, so absence also counts as "not remaining"). */
+  async function remainingAdminCount(ids: string[]): Promise<number> {
+    const rows = await db
+      .select({ isGlobalAdmin: users.isGlobalAdmin })
+      .from(users)
+      .where(inArray(users.id, ids));
+    return rows.filter((r) => r.isGlobalAdmin).length;
+  }
+
+  async function loginAs(email: string, password: string): Promise<string> {
+    const res = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const cookie = (res.headers.get('set-cookie') ?? '')
+      .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+    return cookie!;
+  }
+
+  it(
+    `two concurrent demotes of DIFFERENT admins never both succeed (${ATTEMPTS} attempts)`,
+    async () => {
+      await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+        for (let i = 0; i < ATTEMPTS; i++) {
+          await withExactlyTwoGlobalAdmins(async (a, b) => {
+            const [resA, resB] = await Promise.all([
+              app.request(`/api/v1/admin/users/${a.id}`, {
+                method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ isGlobalAdmin: false }),
+              }),
+              app.request(`/api/v1/admin/users/${b.id}`, {
+                method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ isGlobalAdmin: false }),
+              }),
+            ]);
+
+            // At most one of the two may succeed. Unfixed (unlocked
+            // count-then-write) both read count 2 and both pass — the
+            // reviewer measured this reproducing within 2 attempts.
+            expect(
+              [resA.status, resB.status].sort(),
+              `attempt ${i}: both demotes must not succeed together`
+            ).not.toEqual([200, 200]);
+
+            expect(
+              await remainingAdminCount([a.id, b.id]),
+              `attempt ${i}: at least one of the pair must remain a global admin`
+            ).toBeGreaterThanOrEqual(1);
+          });
+        }
+      });
+    }
+  );
+
+  it(
+    `two concurrent deletes of DIFFERENT admins never both succeed (${ATTEMPTS} attempts)`,
+    async () => {
+      await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+        for (let i = 0; i < ATTEMPTS; i++) {
+          await withExactlyTwoGlobalAdmins(async (a, b) => {
+            const [resA, resB] = await Promise.all([
+              app.request(`/api/v1/admin/users/${a.id}`, { method: 'DELETE', headers: authHeaders() }),
+              app.request(`/api/v1/admin/users/${b.id}`, { method: 'DELETE', headers: authHeaders() }),
+            ]);
+
+            expect(
+              [resA.status, resB.status].sort(),
+              `attempt ${i}: both deletes must not succeed together`
+            ).not.toEqual([200, 200]);
+
+            expect(
+              await remainingAdminCount([a.id, b.id]),
+              `attempt ${i}: at least one of the pair must remain a global admin`
+            ).toBeGreaterThanOrEqual(1);
+          });
+        }
+      });
+    }
+  );
+
+  // The reviewer's sharper finding: it takes ONE actor, not two. Both
+  // requests below carry the SAME session cookie — one global admin,
+  // self-demoting AND demoting another admin in the same breath (exactly
+  // what an impatient double-click, or a dashboard that doesn't await
+  // between two form submits, would produce).
+  it(
+    `a single admin session demoting itself and another admin concurrently never reaches zero (${ATTEMPTS} attempts)`,
+    async () => {
+      await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+        for (let i = 0; i < ATTEMPTS; i++) {
+          await withExactlyTwoGlobalAdmins(async (self, other) => {
+            const selfCookie = await loginAs(self.email, self.temporaryPassword);
+
+            const [selfRes, otherRes] = await Promise.all([
+              app.request(`/api/v1/admin/users/${self.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${selfCookie}` },
+                body: JSON.stringify({ isGlobalAdmin: false }),
+              }),
+              app.request(`/api/v1/admin/users/${other.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${selfCookie}` },
+                body: JSON.stringify({ isGlobalAdmin: false }),
+              }),
+            ]);
+
+            expect(
+              [selfRes.status, otherRes.status].sort(),
+              `attempt ${i}: self+other demote by one session must not both succeed`
+            ).not.toEqual([200, 200]);
+
+            expect(
+              await remainingAdminCount([self.id, other.id]),
+              `attempt ${i}: must never reach zero global admins`
+            ).toBeGreaterThanOrEqual(1);
+          });
+        }
+      });
+    }
+  );
 });

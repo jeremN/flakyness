@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
@@ -66,51 +66,78 @@ function publicUser(u: {
   };
 }
 
-// Fix round 2, plan 058 Global Constraint ("the last-admin guard's TOCTOU
-// must be closed in the SAME change that strips ADMIN_TOKEN of superuser
-// status"): the demote (PATCH) and delete (DELETE) handlers below used to
-// do a bare, unlocked `SELECT count(*) ... WHERE is_global_admin = true`,
-// then an unconditioned write. Two concurrent requests — demoting/deleting
-// two DIFFERENT admins, or even ONE admin session firing a self-demote and
-// an other-demote at the same time — could both read the same count, both
-// pass canRemoveGlobalAdmin, and both write, reaching zero global admins
-// with no ADMIN_TOKEN break-glass left once a deployment runs session-only
-// (which adminOrGlobalAdminAuth, Task 5, now fully supports).
+/**
+ * Serialises the two paths that can REMOVE a global admin — the demote
+ * branch of `PATCH /:userId` and `DELETE /:userId` — so that a count-check
+ * and its write are atomic against each other. See the block comment below
+ * for the full rationale.
+ *
+ * Deliberately distinct from `GLOBAL_ADMIN_LOCK_KEY` (958_304_501) in
+ * `src/test-support/advisory-lock.ts`. That one is a TEST-suite,
+ * session-level lock used to park the ambient global-admin set while a
+ * fixture runs; this one is a production, transaction-scoped mutex. They sit
+ * next to each other in the key space so they are easy to find together, but
+ * they must never be the same value — sharing a key would make every user
+ * deletion in production block on a test fixture, and vice versa.
+ *
+ * Exported so the suite can assert this exact key is held while a removal is
+ * in flight (`pg_locks`), rather than re-declaring the magic number.
+ */
+export const GLOBAL_ADMIN_MUTEX = 958_304_502;
+
+// Last-global-admin guard (plan 058 Global Constraint: "the last-admin
+// guard's TOCTOU must be closed in the SAME change that strips ADMIN_TOKEN
+// of superuser status"). Reaching zero global admins is unrecoverable
+// through the API on a token-less install — a supported deployment shape
+// since Task 5 removed adminAuth()'s 500 on an unset ADMIN_TOKEN — so the
+// count-check and the write must be atomic with respect to every OTHER path
+// that can remove a global admin.
 //
-// Both handlers below wrap their count-check-then-write in ONE transaction
-// and lock the WHOLE global-admin set with `.for('update')` before counting
-// — not just the target row. Locking only the target row is not enough: two
-// transactions targeting two DIFFERENT admins would each see themselves as
-// "not the row being contended," both read count 2, and both proceed.
-// Locking every row in the admin set is what makes the second transaction
-// block until the first commits.
+// There are exactly two such paths: the demote branch of `PATCH /:userId`
+// and `DELETE /:userId` (nothing else in the codebase clears
+// `is_global_admin` or deletes a user row). They serialise against each
+// other on ONE transaction-scoped advisory lock, GLOBAL_ADMIN_MUTEX, taken
+// as the first statement inside the transaction. `pg_advisory_xact_lock`
+// releases automatically at COMMIT or ROLLBACK — never hand-unlock it, and
+// never use the session-level `pg_advisory_lock` here, which would leak onto
+// a pooled connection and outlive the request. The PROMOTE paths (`POST /`,
+// and `PATCH` with `isGlobalAdmin: true`) deliberately do NOT take it.
 //
-// READ COMMITTED (Postgres' default; no isolation level is configured
-// anywhere in this codebase), not SERIALIZABLE + retry: under READ
-// COMMITTED, a `SELECT ... FOR UPDATE` that blocks on a row a concurrent
-// transaction is about to modify re-evaluates that row's WHERE-clause
-// membership against the POST-COMMIT version once unblocked. So the second
-// transaction to run doesn't see the stale pre-commit count — if the first
-// transaction's write took that row out of `isGlobalAdmin = true`, the
-// second transaction's lock acquisition excludes it and returns the
-// correctly reduced count. This holds even for two different target rows,
-// not just contention on the same row. Chosen over SERIALIZABLE + retry
-// because it's simpler and sufficient here: nothing else in either
-// transaction needs a serializable snapshot, and there's no other
-// concurrent write these handlers could conflict with that FOR UPDATE
-// wouldn't already serialise.
+// With every remover serialised, each guard's own read is a PLAIN,
+// NON-LOCKING `SELECT`. That is the point of the design, not an oversight:
 //
-// Fix round 3: round 2 still decided WHETHER to take the lock (`isDemote`
-// in PATCH, `user.isGlobalAdmin` in DELETE) from a value read BEFORE the
-// transaction opened. A target promoted to global admin in the window
-// between that read and `BEGIN` would cause the handler to skip the lock
-// and the guard entirely, then write anyway — reachable with three
-// interleaved requests (promote target, demote another admin down to the
-// last one, then the stale-read demote/delete on the now-promoted target)
-// instead of two. Both handlers below now take the set-wide lock
-// unconditionally (PATCH: whenever the request's body intends a demote;
-// DELETE: always) and decide the target's admin membership from the
-// LOCKED read, never the pre-transaction one.
+//   - Its snapshot is taken AFTER the mutex is held (READ COMMITTED — the
+//     Postgres default, and no isolation level is configured anywhere in
+//     this codebase — gives every statement a fresh snapshot), and no other
+//     remover can be mid-transaction at that moment: they are all still
+//     parked on the mutex, before their own first read. So its rows are
+//     committed truth as far as removals are concerned.
+//   - A concurrent promote can commit after that snapshot, since it takes no
+//     lock. It can only ADD to the admin set, so both a stale-low count and
+//     a target that looks like a non-admin are conservative, never
+//     permissive: the true count at write time is >= the count the guard
+//     saw, and removing a target the snapshot did not contain leaves that
+//     count intact. The invariant that matters — an install with >= 1 global
+//     admin never reaches 0 — holds in both cases.
+//
+// Why NOT `SELECT ... FOR UPDATE` over the admin set, which is what fix
+// rounds 2 and 3 used: a locking read fixes its row set from its own
+// statement snapshot and only then blocks. A row promoted after that
+// snapshot is invisible to it — neither counted nor lockable — and a row
+// that WAS in the snapshot but is concurrently demoted is dropped by
+// Postgres' EvalPlanQual recheck when the lock is finally granted. When both
+// happen while one such read is blocked (e.g. behind an unrelated row lock
+// on an admin's own row), it returns an EMPTY set while a committed global
+// admin exists: `locked.some(...)` is then false for every row, the guard
+// never fires, and the handler blind-writes. Reproduced 3/3 against a live
+// database. The mutex removes the blocking read altogether, so there is no
+// pre-block snapshot left to carry into the guard.
+//
+// Kept from fix round 3: WHETHER a removal is happening is decided from the
+// request's own intent (`body.isGlobalAdmin === false` in PATCH; DELETE is
+// always a removal), never from the pre-transaction `findFirst` read — and
+// the target's admin membership is decided from the in-transaction read, so
+// a target promoted between the two is still guarded.
 
 /**
  * GET /api/v1/admin/users
@@ -198,29 +225,25 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
     columns.isGlobalAdmin = body.isGlobalAdmin;
   }
 
-  // Count-check-then-write, in ONE transaction, with the whole global-admin
-  // set row-locked before counting — see the "Fix round 2" comment above
-  // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
+  // Count-check-then-write, in ONE transaction, serialised against the other
+  // removal path on GLOBAL_ADMIN_MUTEX — see the block comment above
+  // GET /api/v1/admin/users for why this is a mutex plus a plain read rather
+  // than a `SELECT ... FOR UPDATE` (TOCTOU close, plan 058 Global
   // Constraint).
   //
-  // Fix round 3: the guard used to be gated on `isDemote`, computed from
-  // `user.isGlobalAdmin` — a value read from the DB BEFORE this transaction
-  // opens. If the target was promoted to global admin by a different
-  // request after that read but before this transaction's lock, this
-  // handler would skip the lock and the guard entirely on stale
-  // information and demote anyway, reaching zero admins via three
-  // interleaved requests instead of two. Gate on the request's INTENT
-  // (`body.isGlobalAdmin === false`) instead, and decide membership from
-  // the LOCKED set (`locked.some(...)`), never from the pre-transaction
-  // read.
+  // Gated on the request's INTENT (`body.isGlobalAdmin === false`), never on
+  // the target's state as of the pre-transaction `findFirst`: a target
+  // promoted to global admin between that read and this transaction would
+  // otherwise skip the guard entirely and be demoted anyway. Membership
+  // likewise comes from the in-transaction read (`admins.some(...)`).
   const result = await db.transaction(async (tx) => {
     if (body.isGlobalAdmin === false) {
-      const locked = await tx
+      await tx.execute(sql`select pg_advisory_xact_lock(${GLOBAL_ADMIN_MUTEX})`);
+      const admins = await tx
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.isGlobalAdmin, true))
-        .for('update');
-      if (locked.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(locked.length)) {
+        .where(eq(users.isGlobalAdmin, true));
+      if (admins.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(admins.length)) {
         return { refused: true as const };
       }
     }
@@ -303,25 +326,26 @@ adminUsersRouter.delete('/:userId', async (c) => {
   const user = await db.query.users.findFirst({ where: eq(users.id, parsed.data) });
   if (!user) return c.json({ error: 'User not found' }, 404);
 
-  // Count-check-then-write, in ONE transaction, with the whole global-admin
-  // set row-locked before counting — see the "Fix round 2" comment above
-  // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
+  // Count-check-then-write, in ONE transaction, serialised against the other
+  // removal path on GLOBAL_ADMIN_MUTEX — see the block comment above
+  // GET /api/v1/admin/users for why this is a mutex plus a plain read rather
+  // than a `SELECT ... FOR UPDATE` (TOCTOU close, plan 058 Global
   // Constraint).
   //
-  // Fix round 3: the lock used to be gated on `user.isGlobalAdmin`, read
-  // BEFORE this transaction opens. If the target was promoted after that
-  // read but before this transaction started, this handler would skip the
-  // lock and guard entirely on stale information and delete anyway. Take
-  // the set-wide lock unconditionally, then decide both "does this target
-  // count as a global admin" and "is it safe to remove" from the LOCKED
-  // set — never from the pre-transaction read.
+  // The mutex is taken UNCONDITIONALLY, not gated on `user.isGlobalAdmin`
+  // from the pre-transaction `findFirst`: a target promoted after that read
+  // would otherwise skip the guard entirely and be deleted anyway. Both
+  // "does this target count as a global admin" and "is it safe to remove"
+  // come from the in-transaction read. Every user deletion therefore
+  // serialises globally, which is fine — this is an admin-only, low-rate
+  // endpoint, and the transaction holds the mutex for two statements.
   const refused = await db.transaction(async (tx) => {
-    const locked = await tx
+    await tx.execute(sql`select pg_advisory_xact_lock(${GLOBAL_ADMIN_MUTEX})`);
+    const admins = await tx
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.isGlobalAdmin, true))
-      .for('update');
-    if (locked.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(locked.length)) {
+      .where(eq(users.isGlobalAdmin, true));
+    if (admins.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(admins.length)) {
       return true;
     }
     await tx.delete(users).where(eq(users.id, user.id));

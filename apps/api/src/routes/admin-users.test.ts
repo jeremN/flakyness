@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
+import postgres from 'postgres';
 import { db, users, sessions } from '../db';
 import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
 import { SESSION_COOKIE } from '../services/auth/session';
+import { GLOBAL_ADMIN_MUTEX } from './admin-users';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -725,6 +727,179 @@ describeAdmin('last-admin guard closes even when the target is promoted mid-requ
  * seam as the block above, deleting the target right after the handler's
  * own stale read resolves.
  */
+/**
+ * Fix round 4: rounds 2-3 serialised the two removal paths with
+ * `SELECT ... WHERE is_global_admin = true FOR UPDATE`. A locking read fixes
+ * its row set from its OWN statement snapshot and only then blocks, so a row
+ * promoted after that snapshot was invisible to it (neither counted nor
+ * lockable) while a row that WAS in the snapshot but got concurrently
+ * demoted was dropped by Postgres' EvalPlanQual recheck once the lock was
+ * granted. With both happening during one blocked read, it came back EMPTY
+ * although a committed global admin existed — `locked.some(...)` false for
+ * every row, guard skipped, blind write, zero admins. Reproduced 3/3 against
+ * a live database.
+ *
+ * `admin-users.ts` replaced that with a transaction-scoped advisory mutex
+ * (`GLOBAL_ADMIN_MUTEX`) plus a PLAIN, non-locking read. The property that
+ * closes the hole, and the one these tests pin, is: **a removal that has to
+ * WAIT evaluates its guard against everything committed while it waited** —
+ * there is no pre-block snapshot left for it to carry, because the read that
+ * decides the guard happens only after the mutex is held.
+ *
+ * Construction: the test parks the production mutex itself on a dedicated
+ * connection, so the removal request is guaranteed to be waiting (asserted,
+ * not assumed) rather than racing. The admin-set change committed during
+ * that wait stands in for the write of whichever remover held the mutex
+ * immediately before — the exact history the round-2/3 code would have read
+ * straight past.
+ *
+ * Both tests redden if the `pg_advisory_xact_lock` line is removed from the
+ * handler: the request no longer parks, `settled` is true, and the guard
+ * runs against the pre-change state and answers 200.
+ */
+describeAdmin('a removal parked on GLOBAL_ADMIN_MUTEX guards against state committed while it waited (fix round 4)', () => {
+  /**
+   * Holds the PRODUCTION mutex open for the duration of `run`, handing it a
+   * `release()` that commits (and so releases — `pg_advisory_xact_lock` is
+   * transaction-scoped) the holding transaction.
+   *
+   * Uses its OWN single-connection client, deliberately NOT
+   * `test-support/advisory-lock`'s pool: these tests run inside
+   * `withSoleGlobalAdmin`, which is already holding that pool's one and only
+   * connection, so reserving from it here would self-deadlock — the same
+   * `max: 1` trap fix round 3 hit by nesting `withAdvisoryLock` inside
+   * `withSoleGlobalAdmin`. Session affinity still matters (a `BEGIN` and its
+   * `COMMIT` must land on the same backend), hence `.reserve()`.
+   */
+  async function withProductionMutexHeld(
+    run: (release: () => Promise<void>) => Promise<void>
+  ): Promise<void> {
+    const client = postgres(process.env.DATABASE_URL!, { max: 1 });
+    const reserved = await client.reserve();
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      await reserved.unsafe('commit');
+    };
+    try {
+      await reserved.unsafe('begin');
+      await reserved.unsafe(`select pg_advisory_xact_lock(${GLOBAL_ADMIN_MUTEX})`);
+      await run(release);
+    } finally {
+      await release();
+      reserved.release();
+      await client.end();
+    }
+  }
+
+  /**
+   * How many backends are currently BLOCKED waiting for GLOBAL_ADMIN_MUTEX.
+   * `pg_advisory_xact_lock(bigint)` records itself in `pg_locks` as
+   * `locktype = 'advisory'`, `classid` = the key's high 32 bits (0 here),
+   * `objid` = its low 32 bits, `objsubid = 1` — verified against the live
+   * database. `objid::bigint` avoids an oid-vs-bigint operator mismatch on
+   * the bound parameter.
+   */
+  async function mutexWaiters(): Promise<number> {
+    const rows = await db.execute<{ n: number }>(sql`
+      select count(*)::int as n from pg_locks
+      where locktype = 'advisory' and objsubid = 1 and classid = 0
+        and objid::bigint = ${GLOBAL_ADMIN_MUTEX} and not granted
+    `);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** Bounded poll — never a fixed sleep (AGENTS.md). Returns false on timeout. */
+  async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await predicate()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  /**
+   * Seeds `soleAdminId` as the only global admin plus an ordinary throwaway
+   * target, parks the mutex, fires `removal(targetId)` without awaiting it,
+   * proves it is BLOCKED (not merely slow, and not already finished), then
+   * commits "the target is now the last global admin" and releases.
+   *
+   * Returns the removal's response AND the target's row as it stood the
+   * moment the removal returned — read here, before the fixture's own
+   * cleanup deletes the target, so callers can assert on the outcome rather
+   * than on a row this helper has already removed.
+   */
+  async function removalParkedThenAdminSetFlipped(
+    removal: (targetId: string) => Promise<Response> | Response
+  ): Promise<{ res: Response; after: { isGlobalAdmin: boolean } | undefined }> {
+    let out!: { res: Response; after: { isGlobalAdmin: boolean } | undefined };
+    await withSoleGlobalAdmin(async (soleAdminId) => {
+      const { body: created } = await createUserViaApi();
+      const targetId = created.user.id;
+      try {
+        await withProductionMutexHeld(async (release) => {
+          let settled = false;
+          const pending = Promise.resolve(removal(targetId)).then((r) => {
+            settled = true;
+            return r;
+          });
+
+          const reached = await waitUntil(async () => settled || (await mutexWaiters()) > 0);
+          expect(reached, 'timed out: the removal neither parked on the mutex nor finished').toBe(true);
+          expect(
+            settled,
+            'the removal must PARK on GLOBAL_ADMIN_MUTEX — finishing while the test holds it means its guard read is not serialised against other removers'
+          ).toBe(false);
+
+          // Committed WHILE the removal is parked: the target becomes the
+          // one and only global admin. A guard that read before/around its
+          // wait cannot see this; one that reads after acquiring the mutex
+          // must.
+          await db.update(users).set({ isGlobalAdmin: true }).where(eq(users.id, targetId));
+          await db.update(users).set({ isGlobalAdmin: false }).where(eq(users.id, soleAdminId));
+
+          await release();
+          const res = await pending;
+          const [after] = await db
+            .select({ isGlobalAdmin: users.isGlobalAdmin })
+            .from(users)
+            .where(eq(users.id, targetId));
+          out = { res, after };
+        });
+      } finally {
+        await db.delete(users).where(eq(users.id, targetId));
+      }
+    });
+    return out;
+  }
+
+  it('a DELETE parked on the mutex refuses, because the target became the last global admin while it waited', async () => {
+    const { res, after } = await removalParkedThenAdminSetFlipped((id) =>
+      app.request(`/api/v1/admin/users/${id}`, { method: 'DELETE', headers: authHeaders() })
+    );
+
+    expect(res.status).toBe(409);
+    expect(after, 'the last global admin must survive the parked DELETE').toBeDefined();
+    expect(after!.isGlobalAdmin).toBe(true);
+  });
+
+  it('a PATCH-demote parked on the mutex refuses, because the target became the last global admin while it waited', async () => {
+    const { res, after } = await removalParkedThenAdminSetFlipped((id) =>
+      app.request(`/api/v1/admin/users/${id}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ isGlobalAdmin: false }),
+      })
+    );
+
+    expect(res.status).toBe(409);
+    expect(after, 'the target row must still exist').toBeDefined();
+    expect(after!.isGlobalAdmin, 'the last global admin must not be demoted by the parked PATCH').toBe(true);
+  });
+});
+
 describeAdmin('PATCH 404s, not 500s, when the target is deleted mid-request (fix round 3, minor)', () => {
   it('a PATCH against a target deleted between the read and the write returns 404', async () => {
     const { body: created } = await createUserViaApi();

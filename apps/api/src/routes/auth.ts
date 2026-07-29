@@ -7,7 +7,6 @@ import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
 import {
-  sessionAuth,
   getSessionUser,
   issueSession,
   revokeSession,
@@ -33,8 +32,9 @@ const authRouter = new Hono<{ Variables: { requestId: string } }>();
 //
 // The `'*'` baseline below is load-bearing and must not be removed: it is the
 // only thing covering paths that match NO handler. `sessionAuth()` is mounted
-// on `'*'` too, so an unmatched URL like /api/v1/auth/nope still costs a
-// SHA-256 plus an indexed sessions↔users SELECT before it 404s. Without a
+// globally on the root app now (index.ts, plan 058), ahead of every router
+// including this one, so an unmatched URL like /api/v1/auth/nope still costs
+// a SHA-256 plus an indexed sessions↔users SELECT before it 404s. Without a
 // wildcard limiter that is an unauthenticated, unthrottled DB path — which is
 // exactly what every sibling router avoids by mounting its limiter on `'*'`
 // (projects.ts:31, tests.ts:13, admin.ts:19, reports.ts:63).
@@ -46,7 +46,6 @@ const authRouter = new Hono<{ Variables: { requestId: string } }>();
 authRouter.use('*', apiRateLimit);
 authRouter.use('/login', authRateLimit);
 authRouter.use('/change-password', authRateLimit);
-authRouter.use('*', sessionAuth());
 
 const loginSchema = z.object({
   email: z.string().email().max(255),

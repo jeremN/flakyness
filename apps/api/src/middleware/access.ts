@@ -1,5 +1,6 @@
 import { Context, MiddlewareHandler } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, projects, teamMembers } from '../db';
 import { getSessionUser } from './session';
@@ -23,6 +24,15 @@ import type { TeamRole } from '../services/auth/membership';
 export interface ResolveAccessMiddleware extends MiddlewareHandler {
   isResolveAccess: true;
 }
+
+// `projects.id` is a Postgres `uuid` column: `loadScopedProject` below builds
+// `eq(projects.id, wanted)` straight from the raw path param, and Postgres
+// throws "invalid input syntax for type uuid" for anything that isn't
+// UUID-shaped — an uncaught rejection that the global error handler turns
+// into a 500. Validating the shape here, before the query, is what makes the
+// "malformed id falls through to the handler" comment on resolveAccess below
+// actually true instead of only true for well-formed-but-unknown ids.
+const uuidSchema = z.string().uuid();
 
 /**
  * Classify the caller. Order matters and mirrors readAuth's reasoning: the
@@ -130,11 +140,13 @@ export function resolveAccess(
 
     if (resolveProjectId) {
       const wanted = resolveProjectId(c);
-      if (wanted) {
+      // A malformed or unknown id falls through to the handler, which owns
+      // the 400-vs-404 distinction it already implements. We only reject the
+      // case that is unambiguously ours: the project exists and is not yours.
+      // `wanted` must be UUID-shaped before it reaches loadScopedProject — see
+      // the comment on uuidSchema above for why.
+      if (wanted && uuidSchema.safeParse(wanted).success) {
         const project = await loadScopedProject(wanted);
-        // A malformed or unknown id falls through to the handler, which owns
-        // the 400-vs-404 distinction it already implements. We only reject the
-        // case that is unambiguously ours: the project exists and is not yours.
         if (project && !canReadProject(access, project)) {
           throw new HTTPException(404, { message: 'Project not found' });
         }

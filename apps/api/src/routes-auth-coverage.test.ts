@@ -56,13 +56,28 @@ function isReadAuthHandler(handler: unknown): boolean {
   return typeof handler === 'function' && (handler as { isReadAuth?: boolean }).isReadAuth === true;
 }
 
+// Plan 058 Task 3 mounts a SECOND per-route middleware (resolveAccess) after
+// readAuth on every project-scoped read route. `app.routes` lists one entry
+// per middleware layer, not one per logical route, so without also excluding
+// this tag every scoped route would be double-counted here (once for
+// resolveAccess, once for the terminal handler) — inflating readRoutes and
+// breaking EXPECTED_READ_ROUTE_COUNT on a mount that added no new route.
+// This file only counts/verifies readAuth coverage; asserting resolveAccess
+// coverage itself is Task 6's job (see plan 058 progress.md).
+function isResolveAccessHandler(handler: unknown): boolean {
+  return (
+    typeof handler === 'function' && (handler as { isResolveAccess?: boolean }).isResolveAccess === true
+  );
+}
+
 const readRoutes = app.routes.filter(
   (r) =>
     r.method === 'GET' &&
     r.path.startsWith('/api/v1/') &&
     !r.path.startsWith('/api/v1/admin') &&
     !SELF_GATED.includes(r.path) &&
-    !isReadAuthHandler(r.handler)
+    !isReadAuthHandler(r.handler) &&
+    !isResolveAccessHandler(r.handler)
 );
 
 const readAuthPaths = new Set(

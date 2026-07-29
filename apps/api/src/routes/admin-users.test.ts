@@ -574,3 +574,175 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
     }
   );
 });
+
+/**
+ * One-shot interception of `db.query.users.findFirst`: lets the FIRST call
+ * whose result matches `matchId` resolve completely normally (delegating to
+ * the real implementation), then — after it has resolved, but before
+ * returning it to the caller — awaits `onMatch()` and immediately restores
+ * the spy. Every other call (a different id, or after the match) passes
+ * through untouched.
+ *
+ * This is the "seam you can await" the fix round 3 brief asked for: it lets
+ * a test simulate "another request committed a write in the gap between
+ * this handler's read and its transaction" deterministically, without
+ * adding any synchronization point to production code.
+ *
+ * `db.query.users.findFirst` returns drizzle's `PgRelationalQuery` (a
+ * thenable, not a literal `Promise`); `mockImplementation` still needs a
+ * function assignable to that exact type, so the cast below is required —
+ * runtime behavior is unaffected, since `await` accepts any thenable.
+ */
+function findFirstOnce(matchId: string, onMatch: () => Promise<void>) {
+  const original = db.query.users.findFirst.bind(db.query.users);
+  const spy = vi.spyOn(db.query.users, 'findFirst');
+  spy.mockImplementation(
+    (async (...args: Parameters<typeof original>) => {
+      const result = await original(...args);
+      if (result?.id === matchId) {
+        spy.mockRestore();
+        await onMatch();
+      }
+      return result;
+    }) as unknown as typeof original
+  );
+  return spy;
+}
+
+/**
+ * Fix round 3: round 2 closed the count-check-then-write TOCTOU by locking
+ * the WHOLE admin set before counting — but it still decided WHETHER to
+ * take that lock from a value (`isDemote` in PATCH, `user.isGlobalAdmin` in
+ * DELETE) read from `db.query.users.findFirst` BEFORE the transaction
+ * opened. A target promoted to global admin in the network round trip +
+ * `BEGIN` between that read and the transaction's `FOR UPDATE` would make
+ * the round-2 handler skip the lock AND the guard entirely on stale
+ * information, and write anyway — reaching zero global admins via three
+ * interleaved requests (promote the target, demote the OTHER admin down to
+ * one, then the stale-read demote/delete on the now-promoted target)
+ * instead of two.
+ *
+ * Reproducing the three-way interleaving deterministically via real
+ * concurrent HTTP requests (the `Promise.all` pattern the block above
+ * uses) is not practical here: `db.transaction` is entered by EVERY PATCH
+ * request, not only demotes, so there is no call-order signal available to
+ * the test that distinguishes "the demote request's transaction" from "the
+ * promote request's transaction" — and adding one would mean adding a
+ * synchronization seam to admin-users.ts itself, which the brief for this
+ * fix explicitly ruled out ("not by adding a delay to production code").
+ *
+ * Instead, these two tests use a one-shot `vi.spyOn` on
+ * `db.query.users.findFirst` — a seam that lives entirely in this test
+ * file and touches no production code. It lets the handler's own read
+ * resolve completely normally and unmodified, and only AFTER it resolves
+ * (i.e. only once the handler has already committed to treating the
+ * target as a non-admin, exactly mirroring "the stale read has already
+ * happened") does it run the promote-target / demote-other-admin sequence,
+ * before handing the correctly-stale `{ isGlobalAdmin: false }` result
+ * back to the handler. This reproduces the exact interleaving the reviewer
+ * measured against a live database — deterministically, on every run,
+ * with no dependency on real I/O timing.
+ */
+describeAdmin('last-admin guard closes even when the target is promoted mid-request (fix round 3)', () => {
+  // NOTE: `withSoleGlobalAdmin` already takes `withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY,
+  // ...)` internally (see its doc comment) — do NOT wrap it in another
+  // `withAdvisoryLock` here. The lock pool is `max: 1`; nesting two
+  // acquisitions of the SAME key from the SAME test self-deadlocks (the
+  // outer call holds the pool's only connection, so the inner call's
+  // `.reserve()` blocks forever waiting for a connection that will never
+  // free up). Measured directly: this exact nesting hung indefinitely
+  // against a live database until removed.
+  it('a PATCH-demote against a target promoted to admin AFTER this request\'s own read still 409s, never 200s', async () => {
+    await withSoleGlobalAdmin(async (soleAdminId) => {
+      const { body: created } = await createUserViaApi();
+      const targetId = created.user.id;
+
+      // Window-widening seam: only fires on THIS read of targetId, once.
+      const spy = findFirstOnce(targetId, async () => {
+        await db.update(users).set({ isGlobalAdmin: true }).where(eq(users.id, targetId));
+        await db.update(users).set({ isGlobalAdmin: false }).where(eq(users.id, soleAdminId));
+      });
+
+      try {
+        const res = await app.request(`/api/v1/admin/users/${targetId}`, {
+          method: 'PATCH',
+          headers: authHeaders(),
+          body: JSON.stringify({ isGlobalAdmin: false }),
+        });
+        expect(res.status).toBe(409);
+
+        const remaining = await db
+          .select({ isGlobalAdmin: users.isGlobalAdmin })
+          .from(users)
+          .where(inArray(users.id, [targetId, soleAdminId]));
+        expect(remaining.filter((r) => r.isGlobalAdmin).length).toBeGreaterThanOrEqual(1);
+      } finally {
+        spy.mockRestore();
+        await db.delete(users).where(eq(users.id, targetId));
+      }
+    });
+  });
+
+  it('a DELETE against a target promoted to admin AFTER this request\'s own read still 409s, never 200s', async () => {
+    await withSoleGlobalAdmin(async (soleAdminId) => {
+      const { body: created } = await createUserViaApi();
+      const targetId = created.user.id;
+
+      // Window-widening seam: only fires on THIS read of targetId, once.
+      const spy = findFirstOnce(targetId, async () => {
+        await db.update(users).set({ isGlobalAdmin: true }).where(eq(users.id, targetId));
+        await db.update(users).set({ isGlobalAdmin: false }).where(eq(users.id, soleAdminId));
+      });
+
+      try {
+        const res = await app.request(`/api/v1/admin/users/${targetId}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        });
+        expect(res.status).toBe(409);
+
+        const remaining = await db
+          .select({ isGlobalAdmin: users.isGlobalAdmin })
+          .from(users)
+          .where(inArray(users.id, [targetId, soleAdminId]));
+        expect(remaining.filter((r) => r.isGlobalAdmin).length).toBeGreaterThanOrEqual(1);
+      } finally {
+        spy.mockRestore();
+        await db.delete(users).where(eq(users.id, targetId));
+      }
+    });
+  });
+});
+
+/**
+ * Fix round 3 (Minor, same block): `(await tx.update(...).returning())[0]`
+ * comes back `undefined` when the target row was deleted by a concurrent
+ * request between this handler's own `findFirst` and its transaction's
+ * write. `noUncheckedIndexedAccess` is off, so TypeScript does not catch
+ * the missing guard — `publicUser(undefined)` throws on `u.id`, and
+ * `app.onError` turns a legitimate concurrent-delete race into a 500
+ * instead of a 404. Uses the same one-shot `db.query.users.findFirst` spy
+ * seam as the block above, deleting the target right after the handler's
+ * own stale read resolves.
+ */
+describeAdmin('PATCH 404s, not 500s, when the target is deleted mid-request (fix round 3, minor)', () => {
+  it('a PATCH against a target deleted between the read and the write returns 404', async () => {
+    const { body: created } = await createUserViaApi();
+    const targetId = created.user.id;
+
+    const spy = findFirstOnce(targetId, async () => {
+      await db.delete(users).where(eq(users.id, targetId));
+    });
+
+    try {
+      const res = await app.request(`/api/v1/admin/users/${targetId}`, {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify({ displayName: 'Should never apply' }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

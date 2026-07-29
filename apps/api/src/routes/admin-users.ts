@@ -99,6 +99,18 @@ function publicUser(u: {
 // transaction needs a serializable snapshot, and there's no other
 // concurrent write these handlers could conflict with that FOR UPDATE
 // wouldn't already serialise.
+//
+// Fix round 3: round 2 still decided WHETHER to take the lock (`isDemote`
+// in PATCH, `user.isGlobalAdmin` in DELETE) from a value read BEFORE the
+// transaction opened. A target promoted to global admin in the window
+// between that read and `BEGIN` would cause the handler to skip the lock
+// and the guard entirely, then write anyway — reachable with three
+// interleaved requests (promote target, demote another admin down to the
+// last one, then the stale-read demote/delete on the now-promoted target)
+// instead of two. Both handlers below now take the set-wide lock
+// unconditionally (PATCH: whenever the request's body intends a demote;
+// DELETE: always) and decide the target's admin membership from the
+// LOCKED read, never the pre-transaction one.
 
 /**
  * GET /api/v1/admin/users
@@ -180,8 +192,6 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
   const user = await db.query.users.findFirst({ where: eq(users.id, parsed.data) });
   if (!user) return c.json({ error: 'User not found' }, 404);
 
-  const isDemote = body.isGlobalAdmin === false && user.isGlobalAdmin;
-
   const columns: Partial<typeof users.$inferInsert> = {};
   if ('displayName' in body) columns.displayName = body.displayName ?? null;
   if ('isGlobalAdmin' in body && body.isGlobalAdmin !== undefined) {
@@ -192,14 +202,25 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
   // set row-locked before counting — see the "Fix round 2" comment above
   // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
   // Constraint).
+  //
+  // Fix round 3: the guard used to be gated on `isDemote`, computed from
+  // `user.isGlobalAdmin` — a value read from the DB BEFORE this transaction
+  // opens. If the target was promoted to global admin by a different
+  // request after that read but before this transaction's lock, this
+  // handler would skip the lock and the guard entirely on stale
+  // information and demote anyway, reaching zero admins via three
+  // interleaved requests instead of two. Gate on the request's INTENT
+  // (`body.isGlobalAdmin === false`) instead, and decide membership from
+  // the LOCKED set (`locked.some(...)`), never from the pre-transaction
+  // read.
   const result = await db.transaction(async (tx) => {
-    if (isDemote) {
+    if (body.isGlobalAdmin === false) {
       const locked = await tx
         .select({ id: users.id })
         .from(users)
         .where(eq(users.isGlobalAdmin, true))
         .for('update');
-      if (!canRemoveGlobalAdmin(locked.length)) {
+      if (locked.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(locked.length)) {
         return { refused: true as const };
       }
     }
@@ -221,6 +242,12 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
     return c.json({ error: 'Cannot demote the last global admin' }, 409);
   }
   const updated = result.updated;
+  // Fix round 3 (Minor): the target may have been deleted by a concurrent
+  // request between the `findFirst` above and this transaction's write,
+  // making `.returning()` come back empty. Without this check,
+  // `publicUser(undefined)` throws on `u.id` and a legitimate concurrent-
+  // delete race surfaces as a 500 instead of a 404.
+  if (!updated) return c.json({ error: 'User not found' }, 404);
 
   // Privilege changes must be distinguishable in the log from a display-name
   // edit — granting or revoking global admin is a security-relevant event.
@@ -280,14 +307,22 @@ adminUsersRouter.delete('/:userId', async (c) => {
   // set row-locked before counting — see the "Fix round 2" comment above
   // GET /api/v1/admin/users for why (TOCTOU close, plan 058 Global
   // Constraint).
+  //
+  // Fix round 3: the lock used to be gated on `user.isGlobalAdmin`, read
+  // BEFORE this transaction opens. If the target was promoted after that
+  // read but before this transaction started, this handler would skip the
+  // lock and guard entirely on stale information and delete anyway. Take
+  // the set-wide lock unconditionally, then decide both "does this target
+  // count as a global admin" and "is it safe to remove" from the LOCKED
+  // set — never from the pre-transaction read.
   const refused = await db.transaction(async (tx) => {
-    if (user.isGlobalAdmin) {
-      const locked = await tx
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.isGlobalAdmin, true))
-        .for('update');
-      if (!canRemoveGlobalAdmin(locked.length)) return true;
+    const locked = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.isGlobalAdmin, true))
+      .for('update');
+    if (locked.some((r) => r.id === user.id) && !canRemoveGlobalAdmin(locked.length)) {
+      return true;
     }
     await tx.delete(users).where(eq(users.id, user.id));
     return false;

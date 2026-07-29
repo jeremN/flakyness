@@ -194,6 +194,179 @@ describeScope('per-team read scoping', () => {
   });
 });
 
+// The two /tests/:testName/* reads take `project` as a QUERY param, not a path
+// segment like projects.ts's routes — they don't fit READ_PATHS's shape, so
+// this is a small dedicated list, but the same own-team-200 / other-team-404
+// pattern as READ_PATHS above. `'a test'` is the spec title `buildReport()`
+// ingests via `fixture()` — `scope.spec.ts` is a file-level suite title (ends
+// in `.ts`) and is skipped from the joined name (parsers/playwright.ts:176-181,
+// :203-204), so the stored testName is exactly `'a test'`, no prefix.
+const TEST_SCOPED_READ_PATHS = (projectId: string) => [
+  `/api/v1/tests/${encodeURIComponent('a test')}/history?project=${projectId}`,
+  `/api/v1/tests/${encodeURIComponent('a test')}/trend?project=${projectId}`,
+];
+
+describeScope('per-team read scoping — /tests/:testName/* routes', () => {
+  it('a member reads their own team\'s project on both /tests/:testName/* routes', async () => {
+    const f = await fixture('member');
+    for (const path of TEST_SCOPED_READ_PATHS(f.project.id)) {
+      const res = await app.request(path, as(f.cookie));
+      expect(res.status, `${path} should be readable by its own team`).toBe(200);
+    }
+  });
+
+  it('a member gets 404 — NOT 403 — for another team\'s project, on both /tests/:testName/* routes', async () => {
+    const mine = await fixture('member');
+    const theirs = await fixture('member');
+    for (const path of TEST_SCOPED_READ_PATHS(theirs.project.id)) {
+      const res = await app.request(path, as(mine.cookie));
+      expect(res.status, `${path} must hide another team's project`).toBe(404);
+    }
+  });
+});
+
+describeScope('flaky-test mute authorization', () => {
+  const FLAKY_TEST_NAME = 'always flaky test';
+
+  /**
+   * Ingest one report so the project has a flaky_tests row to mute, and return
+   * that row's id.
+   *
+   * `?wait=true` awaits the reconcile (plan 032). Without it the ingest returns
+   * 201 BEFORE updateFlakyTests has run and this helper would race it —
+   * the exact bug plan 027 chased in this repo's own suite. Never sleep here.
+   *
+   * Three things here are load-bearing and were each got wrong in the plan's
+   * first draft; do not "simplify" any of them back:
+   *
+   *  1. `branch` and `commit` are QUERY params — `reports.ts:93` is
+   *     `zValidator('query', reportQuerySchema)`. The body is the raw report,
+   *     not `{branch, commitSha, report}`. (`commit`, not `commitSha`.)
+   *  2. `config` is REQUIRED by `PlaywrightReportSchema`
+   *     (`parsers/playwright.ts:124` — the object is optional-fielded but not
+   *     itself optional). Omitting it is a 400.
+   *  3. There are THREE executions, not one. `DEFAULT_CONFIG.minRuns` is 3
+   *     (`services/flakiness.ts:16`) and `computeFlakiness` skips any test with
+   *     `totalRuns < minRuns` — so a single flaky execution ingests fine and
+   *     silently produces NO flaky_tests row, and the caller then reads
+   *     `undefined.id`. Three flaky executions give flakeRate 1.0, far above
+   *     the 5% default threshold.
+   *
+   * `status: 'flaky'` on a test entry is NOT how flakiness is decided — the
+   * parser derives it from the results (`determineStatus`, playwright.ts:211:
+   * failed on some attempts, passed on retry). Which is why each execution
+   * below carries a failed attempt and a passing retry.
+   */
+  async function seedFlaky(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+    const startTime = new Date().toISOString();
+    // Real reporter nesting: suites[].specs[].tests[].results[] (AGENTS.md).
+    const flakyExecution = () => ({
+      results: [
+        { workerIndex: 0, status: 'failed', duration: 10, retry: 0, startTime },
+        { workerIndex: 0, status: 'passed', duration: 10, retry: 1, startTime },
+      ],
+    });
+
+    const report = {
+      config: { version: '1.40.0' },
+      suites: [
+        {
+          title: 'flaky.spec.ts',
+          file: 'flaky.spec.ts',
+          specs: [
+            {
+              title: FLAKY_TEST_NAME,
+              ok: true,
+              tags: [],
+              location: { file: 'flaky.spec.ts', line: 1, column: 1 },
+              tests: [flakyExecution(), flakyExecution(), flakyExecution()],
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = await app.request(
+      `/api/v1/reports?wait=true&branch=main&commit=${'b'.repeat(40)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${f.projectToken}` },
+        body: JSON.stringify(report),
+      }
+    );
+    expect(res.status).toBe(201);
+
+    // Look the row up by NAME rather than taking [0]. The fixture's own ingest
+    // already put a second test in this project, and an index would quietly
+    // mute whichever row happened to sort first — a test that passes while
+    // asserting something other than what it claims.
+    const list = await json(
+      await app.request(`/api/v1/projects/${f.project.id}/flaky-tests`, as(f.cookie))
+    );
+    const row = list.flakyTests.find(
+      (t: { testName: string }) => t.testName === FLAKY_TEST_NAME
+    );
+    expect(row, `seedFlaky: no flaky_tests row for "${FLAKY_TEST_NAME}"`).toBeDefined();
+    return row.id as string;
+  }
+
+  it('a team_admin may mute a test in their own team', async () => {
+    const f = await fixture('team_admin');
+    const flakyId = await seedFlaky(f);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+      body: JSON.stringify({ status: 'ignored' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('a member gets 403 — they can SEE the project, so hiding it would be a lie', async () => {
+    const f = await fixture('member');
+    const flakyId = await seedFlaky(f);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+      body: JSON.stringify({ status: 'ignored' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('a team_admin of ANOTHER team gets 404 — they cannot see it at all', async () => {
+    const mine = await fixture('team_admin');
+    const theirs = await fixture('team_admin');
+    const flakyId = await seedFlaky(theirs);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ status: 'ignored' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('ADMIN_TOKEN still mutes anything (break-glass unchanged)', async () => {
+    const f = await fixture('member');
+    const flakyId = await seedFlaky(f);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+      method: 'PATCH', headers: adminHeaders(), body: JSON.stringify({ status: 'ignored' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('GET /tests/flaky/:id hides another team\'s row', async () => {
+    const mine = await fixture('member');
+    const theirs = await fixture('member');
+    const flakyId = await seedFlaky(theirs);
+
+    const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, as(mine.cookie));
+    expect(res.status).toBe(404);
+  });
+});
+
 describeScope('GET /api/v1/projects list filtering', () => {
   it('lists only the caller\'s teams\' projects', async () => {
     const mine = await fixture('member');

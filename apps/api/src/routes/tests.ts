@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { eq, desc, and, gte } from 'drizzle-orm';
 import { db, testResults, testRuns, flakyTests, quarantineEvents } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
-import { adminAuth, readAuth } from '../middleware/auth';
+import { readAuth } from '../middleware/auth';
+import { resolveAccess, getAccess, loadScopedProject, assertProjectReadable } from '../middleware/access';
+import { canReadProject, canWriteProject } from '../services/auth/access';
 
 const testsRouter = new Hono();
 
@@ -133,83 +135,88 @@ export function buildTrend(
  *
  * Get run history for a specific test (by test name, URL encoded)
  */
-testsRouter.get('/:testName/history', readAuth((c) => c.req.query('project') ?? null), async (c) => {
-  const testName = c.req.param('testName');
-  const projectId = c.req.query('project');
-  const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
+testsRouter.get(
+  '/:testName/history',
+  readAuth((c) => c.req.query('project') ?? null),
+  resolveAccess((c) => c.req.query('project') ?? null),
+  async (c) => {
+    const testName = c.req.param('testName');
+    const projectId = c.req.query('project');
+    const requestedLimit = parseInt(c.req.query('limit') || '50', 10);
 
-  // Clamp limit between 1 and 100
-  const limit = Math.min(Math.max(requestedLimit, 1), 100);
+    // Clamp limit between 1 and 100
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
 
-  if (!projectId) {
-    return c.json({ error: 'project query parameter is required' }, 400);
-  }
+    if (!projectId) {
+      return c.json({ error: 'project query parameter is required' }, 400);
+    }
 
-  const parsedProjectId = uuidSchema.safeParse(projectId);
-  if (!parsedProjectId.success) {
-    return c.json({ error: 'Invalid project ID format' }, 400);
-  }
+    const parsedProjectId = uuidSchema.safeParse(projectId);
+    if (!parsedProjectId.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
 
-  // Get test results with run info
-  const history = await db
-    .select({
-      id: testResults.id,
-      testName: testResults.testName,
-      testFile: testResults.testFile,
-      status: testResults.status,
-      durationMs: testResults.durationMs,
-      retryCount: testResults.retryCount,
-      errorMessage: testResults.errorMessage,
-      tags: testResults.tags,
-      annotations: testResults.annotations,
-      createdAt: testResults.createdAt,
-      runId: testRuns.id,
-      branch: testRuns.branch,
-      commitSha: testRuns.commitSha,
-      pipelineId: testRuns.pipelineId,
-    })
-    .from(testResults)
-    .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
-    .where(
-      and(
-        eq(testResults.testName, testName),
-        eq(testRuns.projectId, parsedProjectId.data)
+    // Get test results with run info
+    const history = await db
+      .select({
+        id: testResults.id,
+        testName: testResults.testName,
+        testFile: testResults.testFile,
+        status: testResults.status,
+        durationMs: testResults.durationMs,
+        retryCount: testResults.retryCount,
+        errorMessage: testResults.errorMessage,
+        tags: testResults.tags,
+        annotations: testResults.annotations,
+        createdAt: testResults.createdAt,
+        runId: testRuns.id,
+        branch: testRuns.branch,
+        commitSha: testRuns.commitSha,
+        pipelineId: testRuns.pipelineId,
+      })
+      .from(testResults)
+      .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+      .where(
+        and(
+          eq(testResults.testName, testName),
+          eq(testRuns.projectId, parsedProjectId.data)
+        )
       )
-    )
-    .orderBy(desc(testResults.createdAt))
-    .limit(limit);
+      .orderBy(desc(testResults.createdAt))
+      .limit(limit);
 
-  // Get flaky test info if exists
-  const [flakyInfo] = await db
-    .select()
-    .from(flakyTests)
-    .where(
-      and(
-        eq(flakyTests.testName, testName),
-        eq(flakyTests.projectId, parsedProjectId.data)
+    // Get flaky test info if exists
+    const [flakyInfo] = await db
+      .select()
+      .from(flakyTests)
+      .where(
+        and(
+          eq(flakyTests.testName, testName),
+          eq(flakyTests.projectId, parsedProjectId.data)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  // Calculate stats
-  const stats = {
-    totalRuns: history.length,
-    passed: history.filter((h) => h.status === 'passed').length,
-    failed: history.filter((h) => h.status === 'failed').length,
-    flaky: history.filter((h) => h.status === 'flaky').length,
-    skipped: history.filter((h) => h.status === 'skipped').length,
-    avgDuration: history.length > 0
-      ? Math.round(history.reduce((sum, h) => sum + (h.durationMs || 0), 0) / history.length)
-      : 0,
-  };
+    // Calculate stats
+    const stats = {
+      totalRuns: history.length,
+      passed: history.filter((h) => h.status === 'passed').length,
+      failed: history.filter((h) => h.status === 'failed').length,
+      flaky: history.filter((h) => h.status === 'flaky').length,
+      skipped: history.filter((h) => h.status === 'skipped').length,
+      avgDuration: history.length > 0
+        ? Math.round(history.reduce((sum, h) => sum + (h.durationMs || 0), 0) / history.length)
+        : 0,
+    };
 
-  return c.json({
-    testName,
-    flakyInfo: flakyInfo || null,
-    stats,
-    history,
-  });
-});
+    return c.json({
+      testName,
+      flakyInfo: flakyInfo || null,
+      stats,
+      history,
+    });
+  }
+);
 
 /**
  * GET /api/v1/tests/:testName/trend
@@ -219,72 +226,77 @@ testsRouter.get('/:testName/history', readAuth((c) => c.req.query('project') ?? 
  * The horizon is bounded by however much `test_results` history the
  * project's retention (plan 021) still has on disk.
  */
-testsRouter.get('/:testName/trend', readAuth((c) => c.req.query('project') ?? null), async (c) => {
-  const testName = c.req.param('testName');
-  const projectId = c.req.query('project');
+testsRouter.get(
+  '/:testName/trend',
+  readAuth((c) => c.req.query('project') ?? null),
+  resolveAccess((c) => c.req.query('project') ?? null),
+  async (c) => {
+    const testName = c.req.param('testName');
+    const projectId = c.req.query('project');
 
-  if (!projectId) {
-    return c.json({ error: 'project query parameter is required' }, 400);
+    if (!projectId) {
+      return c.json({ error: 'project query parameter is required' }, 400);
+    }
+
+    const parsedProjectId = uuidSchema.safeParse(projectId);
+    if (!parsedProjectId.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+
+    // Clamp days between 1 and 90 (DoS guard, same as /projects/:id/trend),
+    // but guard the *parse* first: parseInt('abc') is NaN, and every
+    // Math.min/Math.max comparison against NaN is false, so NaN would sail
+    // straight through the clamp and produce an empty `trend` with
+    // `days: null` — a 200 that says "this test has no history" when the
+    // truth is "you typo'd a query param". `days` is display tuning, not a
+    // semantic input, so an unparseable value falls back to the default
+    // rather than 400ing — it just must never silently render empty.
+    // Not `parseInt(...) || 30`: that would swallow days=0 into 30 instead of
+    // clamping it to 1.
+    const rawDays = parseInt(c.req.query('days') ?? '', 10);
+    const days = Number.isNaN(rawDays) ? 30 : Math.min(Math.max(rawDays, 1), 90);
+
+    const now = new Date();
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - days);
+
+    // A test name is only unique within a project (flaky_tests' unique index
+    // is (project_id, test_name)) — the innerJoin + projectId filter is load
+    // bearing, not optional, or two projects' identically named tests blend
+    // into one bogus trend line.
+    const rows = await db
+      .select({
+        status: testResults.status,
+        createdAt: testResults.createdAt,
+      })
+      .from(testResults)
+      .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
+      .where(
+        and(
+          eq(testResults.testName, testName),
+          eq(testRuns.projectId, parsedProjectId.data),
+          gte(testResults.createdAt, cutoff)
+        )
+      );
+
+    const { trend, direction } = buildTrend(rows, days, now);
+
+    return c.json({
+      testName,
+      projectId: parsedProjectId.data,
+      days,
+      direction,
+      trend,
+    });
   }
-
-  const parsedProjectId = uuidSchema.safeParse(projectId);
-  if (!parsedProjectId.success) {
-    return c.json({ error: 'Invalid project ID format' }, 400);
-  }
-
-  // Clamp days between 1 and 90 (DoS guard, same as /projects/:id/trend),
-  // but guard the *parse* first: parseInt('abc') is NaN, and every
-  // Math.min/Math.max comparison against NaN is false, so NaN would sail
-  // straight through the clamp and produce an empty `trend` with
-  // `days: null` — a 200 that says "this test has no history" when the
-  // truth is "you typo'd a query param". `days` is display tuning, not a
-  // semantic input, so an unparseable value falls back to the default
-  // rather than 400ing — it just must never silently render empty.
-  // Not `parseInt(...) || 30`: that would swallow days=0 into 30 instead of
-  // clamping it to 1.
-  const rawDays = parseInt(c.req.query('days') ?? '', 10);
-  const days = Number.isNaN(rawDays) ? 30 : Math.min(Math.max(rawDays, 1), 90);
-
-  const now = new Date();
-  const cutoff = new Date(now);
-  cutoff.setDate(cutoff.getDate() - days);
-
-  // A test name is only unique within a project (flaky_tests' unique index
-  // is (project_id, test_name)) — the innerJoin + projectId filter is load
-  // bearing, not optional, or two projects' identically named tests blend
-  // into one bogus trend line.
-  const rows = await db
-    .select({
-      status: testResults.status,
-      createdAt: testResults.createdAt,
-    })
-    .from(testResults)
-    .innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
-    .where(
-      and(
-        eq(testResults.testName, testName),
-        eq(testRuns.projectId, parsedProjectId.data),
-        gte(testResults.createdAt, cutoff)
-      )
-    );
-
-  const { trend, direction } = buildTrend(rows, days, now);
-
-  return c.json({
-    testName,
-    projectId: parsedProjectId.data,
-    days,
-    direction,
-    trend,
-  });
-});
+);
 
 /**
  * GET /api/v1/tests/flaky/:id
  *
  * Get details for a specific flaky test by ID
  */
-testsRouter.get('/flaky/:id', readAuth(), async (c) => {
+testsRouter.get('/flaky/:id', readAuth(), resolveAccess(), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid flaky test ID format' }, 400);
@@ -297,6 +309,14 @@ testsRouter.get('/flaky/:id', readAuth(), async (c) => {
     .limit(1);
 
   if (!flakyTest) {
+    return c.json({ error: 'Flaky test not found' }, 404);
+  }
+
+  // This route's project is only knowable after loading the flaky_tests row,
+  // so no resolveAccess() resolver could supply it — the scope check has to
+  // live here instead. Same 404-not-403 existence-hiding as the middleware
+  // path (see resolveAccess's doc comment).
+  if (!(await assertProjectReadable(c, flakyTest.projectId))) {
     return c.json({ error: 'Flaky test not found' }, 404);
   }
 
@@ -313,7 +333,31 @@ const flakyStatusPatchSchema = z.object({
  * Set a flaky test's status to 'ignored' (mute) or 'active' (unmute).
  * 'resolved' is system-managed and not accepted here.
  */
-testsRouter.patch('/flaky/:id', adminAuth(), async (c) => {
+testsRouter.patch('/flaky/:id', resolveAccess(), async (c) => {
+  const access = getAccess(c);
+
+  // Reject up front, before any UUID/body validation or database lookup —
+  // matching the old adminAuth() middleware, which ran (and could 401)
+  // before the handler saw the request at all. `anonymous` and `read-token`
+  // are the two access kinds canWriteProject() rejects UNCONDITIONALLY,
+  // regardless of which project is targeted (services/auth/access.ts), so
+  // this verdict cannot depend on the target row — it is safe, not just
+  // convenient, to decide it without loading that row first.
+  //
+  // This also matters for what the caller learns: if the existence check ran
+  // first, an unauthenticated/read-only caller would get a DIFFERENT status
+  // (404 vs this 401) depending on whether the id they guessed happens to
+  // exist — leaking existence to someone who can never act on it either way.
+  // Two regressions caught this the hard way: read-auth.test.ts's "READ_TOKEN
+  // must not grant an admin write" (expects 401 for a nonexistent id) and
+  // rate-limit.test.ts's bad-token-flood regression guard (expects early
+  // requests to reach 401, not silently 404 on a fabricated id) both send a
+  // target id that doesn't exist — with the existence check first, both got
+  // 404 instead of 401.
+  if (access.kind === 'anonymous' || access.kind === 'read-token') {
+    return c.json({ error: 'Authorization required' }, 401);
+  }
+
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid flaky test ID format' }, 400);
@@ -328,6 +372,27 @@ testsRouter.patch('/flaky/:id', adminAuth(), async (c) => {
   const parsedBody = flakyStatusPatchSchema.safeParse(body);
   if (!parsedBody.success) {
     return c.json({ error: "status must be 'ignored' or 'active'" }, 400);
+  }
+
+  const [flakyTest] = await db
+    .select()
+    .from(flakyTests)
+    .where(eq(flakyTests.id, parsed.data))
+    .limit(1);
+  if (!flakyTest) {
+    return c.json({ error: 'Flaky test not found' }, 404);
+  }
+
+  const project = await loadScopedProject(flakyTest.projectId);
+
+  // 404 when they cannot even see it; 403 when they can see it but lack the
+  // rank. Telling a member of the right team "forbidden" is honest; telling
+  // a stranger the same thing confirms the project exists.
+  if (!project || !canReadProject(access, project)) {
+    return c.json({ error: 'Flaky test not found' }, 404);
+  }
+  if (!canWriteProject(access, project)) {
+    return c.json({ error: 'You do not have permission to change this test' }, 403);
   }
 
   const now = new Date();

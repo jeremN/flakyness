@@ -46,6 +46,12 @@ const READ_TOKEN_ONLY = ['/api/v1/projects', '/api/v1/tests/flaky/:id'];
 // exists to provide.
 const SELF_GATED = ['/api/v1/auth/me'];
 
+// Routes whose scope check CANNOT be verified statically: the target project
+// is a property of a row, not of the request, so resolveAccess() is mounted
+// without a resolver and the check lives in the handler
+// (assertProjectReadable). Covered behaviourally by access-scope.test.ts.
+const HANDLER_SCOPED = ['/api/v1/tests/flaky/:id'];
+
 // The number of GET routes under /api/v1, excluding /admin/* (already gated
 // by adminAuth) and the static /api/v1 index. Bumping this is the point: a
 // new read route forces a deliberate edit here, which forces a reviewer to
@@ -133,4 +139,21 @@ describe('read-route auth coverage', () => {
         'exempts nothing and hides the next route that lands on that path.'
     ).toBe(true);
   });
+
+  it.each(HANDLER_SCOPED)(
+    'handler-scoped route still mounts readAuth: GET %s',
+    (path) => {
+      const mounted = app.routes.some(
+        (r) => r.method === 'GET' && r.path === path && isReadAuthHandler(r.handler)
+      );
+      expect(
+        mounted,
+        `${path} is on the HANDLER_SCOPED allowlist but readAuth is no longer mounted on it ` +
+          '(or the route was renamed/removed). This static guard cannot verify its project-scope ' +
+          'check — that check lives in the handler via assertProjectReadable, not a resolveAccess ' +
+          'resolver — so a stale or unmounted entry here would silently stop asserting anything. ' +
+          'See access-scope.test.ts for the behavioural coverage.'
+      ).toBe(true);
+    }
+  );
 });

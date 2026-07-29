@@ -360,10 +360,11 @@ testsRouter.patch('/flaky/:id', resolveAccess(), async (c) => {
   // predicate (`access.projectId === project.id`), which is correct for
   // per-project writes like ingest — but muting is a management action, not
   // a per-project write, and was ADMIN_TOKEN-only before this route ever
-  // deferred to canWriteProject. docs/API.md's mute section is explicit:
-  // "Requires the admin Bearer token …, not a project token — this is a
-  // management action, not a per-project write." A project (ingest) token
-  // lives in CI config on every runner; letting it mute tests would let a
+  // deferred to canWriteProject. docs/API.md's mute section is explicit that
+  // this stays true even now that a global-admin or team_admin session also
+  // qualifies: "never a project token, even though ingest itself uses one."
+  // A project (ingest) token lives in CI config on every runner; letting it
+  // mute tests would let a
   // leaked or careless CI credential silently disable tests via
   // buildGrepInvert()'s skip-list, and would misattribute the resulting
   // audit row's mute_source as 'manual' (a human action) to a machine. The

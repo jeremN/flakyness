@@ -31,10 +31,12 @@ Tokens are generated per-project and should be stored securely (e.g., GitLab CI/
 
 ## Authentication (user accounts)
 
-> **Phase A note.** Signing in does not yet change what you can *see*. These
-> endpoints establish identity only; per-team read scoping and role checks
-> arrive with teams (plan 057) and enforcement (plan 058). `READ_TOKEN`,
-> `ADMIN_TOKEN` and per-project ingest tokens are unaffected.
+> **Enforced (plan 058).** Signing in now changes what you can see and do:
+> per-team read scoping and role-gated writes are live — see
+> [Authorization model](#authorization-model) below. `READ_TOKEN` and
+> `ADMIN_TOKEN` behave exactly as before; per-project ingest tokens are now
+> also scoped to their own project on reads (previously, on a deployment with
+> `READ_TOKEN` unset, a project token could read every project).
 
 User accounts (`users`/`sessions`, migration `0011`) sign in with a
 scrypt-hashed password and get back an HttpOnly session cookie (`fk_session`),
@@ -238,6 +240,68 @@ curl -sX POST "http://localhost:8080/api/v1/auth/change-password" \
   -d '{"currentPassword": "old-password-at-least-12-chars", "newPassword": "new-password-at-least-12-chars"}'
 ```
 
+### Authorization model
+
+| Caller | Reads | Writes |
+|---|---|---|
+| Global admin (user or `ADMIN_TOKEN`) | every project, including unassigned ones | everything |
+| `team_admin` | their teams' projects | their teams' projects (settings, rules, token rotation, mute) |
+| `member` | their teams' projects | none |
+| Project token | its own project | its own project (ingest) |
+| `READ_TOKEN` | every project | none |
+| Anonymous (only when `READ_TOKEN` is unset) | every project | none |
+
+A read for a project outside your scope returns **`404`**, not `403` — the API
+does not confirm that a project you cannot see exists. A write you lack the
+*role* for, on a project you *can* see, returns **`403`**.
+
+**Setting `READ_TOKEN` is still what closes an instance to anonymous readers.**
+Teams scope users; they do not retroactively close a deployment whose operator
+chose to leave reads open. See [Authentication](#authentication) above.
+
+A handful of further behaviors worth knowing about, each real and each easy
+to be surprised by if you only read the table above:
+
+1. **Existence-hiding is partial.** For a **valid but nonexistent** project
+   id, [Get Project Flaky Tests](#get-project-flaky-tests),
+   [Get Quarantine List](#get-quarantine-list-ci-consumable),
+   [Get Project Test Runs](#get-project-test-runs), and
+   [Get Flake Rate Trend](#get-flake-rate-trend) return `200` with an empty
+   payload, while a project that exists but belongs to another team returns
+   `404`. So on those four routes a `404` *does* reveal that the id names a
+   real project — but only to someone already holding a 122-bit random UUID.
+   [Get Run Detail](#get-run-detail-per-run-results) likewise answers `Run not
+   found` where the scope guard answers `Project not found`.
+2. **Per-project ingest tokens are now scoped on reads too.** On a deployment
+   with `READ_TOKEN` **unset**, a project-A token previously got `200` on
+   project B's read routes (`readAuth` short-circuits when `READ_TOKEN` is
+   unset) and saw every project in [List Projects](#list-projects). It now
+   gets `404` and a one-element list. This is the intended
+   `project token → its own project` rule and a tightening rather than a
+   leak, but it is a live behavior change for open self-hosted installs.
+3. **`teamId` is now returned by `GET /api/v1/projects`.** Additive; safe
+   because the array is already scoped, so a caller only ever sees the team
+   ids of projects they may already read.
+4. **Muting still requires an admin bearer or a `team_admin` session — never
+   a project token.** See
+   [Mute / Unmute a Flaky Test](#mute--unmute-a-flaky-test).
+5. **Two admin endpoints are global-admin only, not merely
+   `ADMIN_TOKEN`-or-session-gated like the rest of the admin API:**
+   reassigning a project's `teamId` (see
+   [Update Project Flakiness Config](#update-project-flakiness-config)) and
+   [System Health](#system-health). Both return `403` for a `team_admin`
+   session — a team_admin could otherwise grant another team read access
+   one-way, or orphan a project permanently; system health is install-wide
+   telemetry with no team-scope story.
+
+**One known asymmetry, recorded rather than fixed here:** on a deployment
+with `READ_TOKEN` set, `GET /api/v1/tests/flaky/:id` mounts `readAuth()` and
+so `401`s a session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts
+none — so a `team_admin` can mute a test they cannot read. Write-without-read
+is incoherent. The root cause — sessions do not satisfy `readAuth` at all —
+is systemic to plan 041 and predates per-team access control; only the
+asymmetry on this specific route pair is new. Tracked as scope for plan 059.
+
 ---
 
 ## Endpoints
@@ -289,11 +353,17 @@ GET /api/v1/projects
     {
       "id": "uuid",
       "name": "my-project",
+      "teamId": "uuid",
       "createdAt": "2024-12-01T00:00:00.000Z"
     }
   ]
 }
 ```
+`teamId` (plan 058) is the project's owning [team](#team--membership), or
+`null` if unassigned. The array itself is already scoped to what the caller
+may read (see [Authorization model](#authorization-model)) — a global admin
+or `READ_TOKEN` sees every project, a signed-in user sees only their teams',
+and a project token sees only its own.
 
 #### Get Project Stats
 
@@ -934,7 +1004,11 @@ Returns a single flaky-test row by its UUID. Responds `404` if no flaky test wit
 PATCH /api/v1/tests/flaky/:id
 ```
 
-Requires the admin Bearer token (see [Admin Endpoints](#admin-endpoints)), not a project token — this is a management action, not a per-project write.
+Requires the admin Bearer token (see [Admin Endpoints](#admin-endpoints)), a
+global-admin session, or a `team_admin` session for the team that owns the
+test's project — **never** a project token, even though ingest itself uses
+one: this is a management action, not a per-project write. See
+[Authorization model](#authorization-model).
 
 **Body:**
 ```json
@@ -972,17 +1046,31 @@ this table in v1; it exists for future auditing/UI.
 }
 ```
 
-Responds `400` for a malformed ID or an invalid `status` value, `404` if no flaky test with that ID exists.
+Responds `400` for a malformed ID or an invalid `status` value; `401` if the
+caller carries no admin/session credential at all (anonymous, `READ_TOKEN`,
+or a project token); `403` if the caller can see the flaky test's project but
+lacks the role to write it (e.g. a `member`, or a `team_admin` of a different
+team); `404` if no flaky test with that ID exists, or if the caller cannot
+read its project.
 
 ---
 
 ## Admin Endpoints
 
-Admin endpoints require the `ADMIN_TOKEN` environment variable for authentication.
+Admin endpoints accept the `ADMIN_TOKEN` environment variable as a bearer
+credential:
 
 ```http
 Authorization: Bearer your-admin-token
 ```
+
+**They also accept a signed-in session (plan 058)** — a global admin, or a
+`team_admin` for at least one team, using the `fk_session` cookie from
+[Authentication (user accounts)](#authentication-user-accounts) in place of
+the header above. A `team_admin` session is then scoped per-project by each
+route (see [Authorization model](#authorization-model)); team CRUD and user
+CRUD stay global-admin-only regardless of credential, since those are never
+delegated per team.
 
 > ⚠️ **Security:** Set a strong `ADMIN_TOKEN` in production. Generate with: `openssl rand -hex 32`
 
@@ -1096,9 +1184,9 @@ reference an existing team (checked before the insert, so an unknown
 `teamId` never surfaces as a raw FK-violation `500`).
 
 **Omitting `teamId` leaves the project unassigned** (`team_id IS NULL`) —
-there is no default team to fall back to. This is not merely cosmetic: once
-per-team access control lands (plan 058), an unassigned project is visible
-to global admins only, so a project created without `teamId` is invisible to
+there is no default team to fall back to. This is not merely cosmetic:
+per-team access control (plan 058) makes an unassigned project visible to
+global admins only, so a project created without `teamId` is invisible to
 the person who created it and to their team. If you are provisioning
 projects programmatically (e.g. from CI), pass `teamId` explicitly.
 
@@ -1163,7 +1251,7 @@ project). At least one field is required.
 | `quarantineThreshold` | number \| null | `[0, 1]` | Flake-rate threshold above which a test is auto-quarantined. `null` resets to the default (`0.20`). Must be **>= the resolved `flakeThreshold`** (this request's, if it sets one, else the stored/default value) — a quarantine bar below the detection bar is rejected with `400`. |
 | `quarantineMinRuns` | integer \| null | `[1, 100]` | Minimum number of runs required before a test is (re-)quarantined. `null` resets to the resolved `minRuns`. |
 | `quarantineTtlDays` | integer \| null | `[1, 365]` | Mandatory TTL of an auto-quarantine, in days. `null` resets to the default (`7`). |
-| `teamId` | string (uuid) \| null | — | Reassigns the project to another [team](#team--membership), or `null` to unassign it. Must reference an existing team (checked before the update — see error responses below). |
+| `teamId` | string (uuid) \| null | — | Reassigns the project to another [team](#team--membership), or `null` to unassign it. Must reference an existing team (checked before the update — see error responses below). **Global admin only** — a `team_admin` session gets `403` even for a project they can otherwise fully manage, because reassigning (or orphaning) a project can grant another team read access, or make it invisible to everyone but a global admin. |
 
 **Response (200):**
 ```json
@@ -1190,8 +1278,9 @@ project). At least one field is required.
 
 Returns `400` if the body fails validation (out-of-range values, a non-`http(s)`
 `webhookUrl`, a `quarantineThreshold` below the resolved `flakeThreshold`, a
-`teamId` that doesn't reference an existing team, or an empty body) and `404`
-if the project doesn't exist.
+`teamId` that doesn't reference an existing team, or an empty body); `403` if
+the body includes `teamId` (even `null`) and the caller is not a global admin
+— see the `teamId` row above; and `404` if the project doesn't exist.
 
 > **The retention/window guard:** `retentionDays` may never be lower than the
 > project's *resolved* flakiness `windowDays` (the stored override if set,
@@ -1636,6 +1725,10 @@ extra/unknown id, or a duplicate) — nothing is written in that case.
 GET /api/v1/admin/health
 ```
 
+**Global admin only** — install-wide operator telemetry with no team-scope
+story, so a `team_admin` session gets `403` here even though it passes the
+general admin gate.
+
 **Response:**
 ```json
 {
@@ -1853,10 +1946,13 @@ DELETE /api/v1/admin/teams/:teamId/members/:userId
 ```
 
 Mounted at `/api/v1/admin/teams` — a sibling of, and matched **before**,
-`/api/v1/admin/*` — same `ADMIN_TOKEN` gate and admin rate limit as every
-other admin endpoint (plan 057). A team is an organizational grouping of
-projects and users, not a hard tenancy boundary; per-team read scoping and
-role enforcement arrive with plan 058.
+`/api/v1/admin/*` — the same admin gate (`ADMIN_TOKEN` or a session, see
+[Admin Endpoints](#admin-endpoints)) and rate limit as every other admin
+endpoint (plan 057). Team CRUD and membership CRUD here are **global-admin
+only** — never delegated to a `team_admin` session, even though a
+`team_admin` can enter the admin API generally (plan 058). Per-team read
+scoping and role-gated project writes are live — see
+[Authorization model](#authorization-model).
 
 `role` on a membership is one of `team_admin` (manages the team's projects)
 or `member` (read-only within the team). Global admin (`users.isGlobalAdmin`)
@@ -1952,9 +2048,9 @@ Deletes the team. Its memberships cascade (`team_members`), but its
 **projects are NOT deleted** — `projects.team_id` is `ON DELETE SET NULL`
 (a team is an organizational parent, not an ownership parent), so they
 become unassigned (`teamId: null`) instead. `orphanedProjects` reports how
-many, counted before the delete. Once per-team access control is enabled
-(plan 058), an unassigned project is visible to global admins only, until
-someone reassigns it to a team.
+many, counted before the delete. Per-team access control (plan 058) makes an
+unassigned project visible to global admins only, until someone reassigns it
+to a team.
 
 **Response (200):**
 ```json

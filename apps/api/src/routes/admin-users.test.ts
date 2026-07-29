@@ -810,8 +810,16 @@ describeAdmin('a removal parked on GLOBAL_ADMIN_MUTEX guards against state commi
     return Number(rows[0]?.n ?? 0);
   }
 
-  /** Bounded poll — never a fixed sleep (AGENTS.md). Returns false on timeout. */
-  async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<boolean> {
+  /**
+   * Bounded poll — never a fixed sleep (AGENTS.md). Returns false on timeout.
+   *
+   * timeoutMs must stay under vitest's default 5000ms testTimeout (apps/api
+   * configures none) or the deadline can never be reached: the test itself
+   * times out first, discarding the diagnostic messages below in favour of a
+   * bare "Test timed out in 5000ms" that doesn't say which predicate failed.
+   * 3000ms is still ~150x the observed park latency.
+   */
+  async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 3_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       if (await predicate()) return true;

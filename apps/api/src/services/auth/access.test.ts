@@ -39,6 +39,37 @@ const adminToken: Access = { ...base, kind: 'admin-token', isGlobalAdmin: true }
 const readToken: Access = { ...base, kind: 'read-token' };
 const projectToken = (id: string): Access => ({ ...base, kind: 'project-token', projectId: id });
 
+/**
+ * A type-valid Access that the real classifier never actually produces:
+ * `middleware/access.ts`'s ONE construction site for `admin-token` always
+ * pairs it with `isGlobalAdmin: true`, so every test above that exercises
+ * `adminToken` never actually reaches `canReadProject`/`canWriteProject`'s
+ * `case 'admin-token'` branches or `canAdministerTeams`'s
+ * `|| kind === 'admin-token'` clause — the `isGlobalAdmin` guard at the top
+ * of each function already returns first. Nothing at the type level links
+ * the two fields, though: they are independently-settable. This fixture
+ * asks "if a future call site ever constructed admin-token access WITHOUT
+ * also setting isGlobalAdmin, would these functions still be safe?" — the
+ * belt in "belt and suspenders". `false` cases below prove the reverse: the
+ * kind check does not ALSO leak into non-admin-token kinds.
+ */
+const adminTokenKindOnly: Access = { ...base, kind: 'admin-token', isGlobalAdmin: false };
+
+/**
+ * Same shape of question for `canEnterAdminApi`'s `access.kind === 'user'`
+ * guard: `roleByTeam` and `kind` are independently-settable fields, and in
+ * production `roleByTeam` is only ever populated for `kind: 'user'`
+ * (`resolveAccessValue`, middleware/access.ts) — every other kind is built
+ * from `anonymousAccess()`'s `roleByTeam: {}`. This asks "if some other kind
+ * ever carried team_admin-shaped data in roleByTeam, would the kind check
+ * still refuse it?"
+ */
+const roleDataOnNonUserKind: Access = {
+  ...base,
+  kind: 'read-token',
+  roleByTeam: { [TEAM_A]: 'team_admin' },
+};
+
 describe('anonymousAccess', () => {
   it('is unprivileged and un-teamed', () => {
     const a = anonymousAccess();
@@ -86,6 +117,13 @@ describe('canReadProject — global admin', () => {
     expect(canReadProject(access, projectInA)).toBe(true);
     expect(canReadProject(access, projectInB)).toBe(true);
     expect(canReadProject(access, orphan)).toBe(true);
+  });
+});
+
+describe('canReadProject — admin-token kind alone, independent of isGlobalAdmin', () => {
+  it('reads everything, including orphans, purely from kind — the belt behind the isGlobalAdmin suspenders', () => {
+    expect(canReadProject(adminTokenKindOnly, projectInA)).toBe(true);
+    expect(canReadProject(adminTokenKindOnly, orphan)).toBe(true);
   });
 });
 
@@ -149,6 +187,11 @@ describe('canWriteProject', () => {
   it('anonymous may NOT write — open reads never implied open writes (plan 031)', () => {
     expect(canWriteProject(anonymousAccess(), projectInA)).toBe(false);
   });
+
+  it('admin-token kind alone writes everything, independent of isGlobalAdmin', () => {
+    expect(canWriteProject(adminTokenKindOnly, projectInA)).toBe(true);
+    expect(canWriteProject(adminTokenKindOnly, orphan)).toBe(true);
+  });
 });
 
 describe('canAdministerTeams', () => {
@@ -161,6 +204,10 @@ describe('canAdministerTeams', () => {
     ['anonymous', anonymousAccess(), false],
   ])('%s → %s', (_label, access, expected) => {
     expect(canAdministerTeams(access as Access)).toBe(expected);
+  });
+
+  it('admin-token kind alone administers teams, independent of isGlobalAdmin', () => {
+    expect(canAdministerTeams(adminTokenKindOnly)).toBe(true);
   });
 });
 
@@ -180,6 +227,10 @@ describe('canEnterAdminApi', () => {
     ['anonymous', anonymousAccess(), false],
   ])('%s → %s', (_label, access, expected) => {
     expect(canEnterAdminApi(access as Access)).toBe(expected);
+  });
+
+  it('refuses a non-user kind even if roleByTeam happens to hold team_admin-shaped data', () => {
+    expect(canEnterAdminApi(roleDataOnNonUserKind)).toBe(false);
   });
 });
 

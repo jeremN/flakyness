@@ -405,6 +405,66 @@ describeScope('GET /api/v1/projects list filtering', () => {
     expect(ids).toContain(a.project.id);
     expect(ids).toContain(b.project.id);
   });
+
+  // Task 3's review found the DoD's "an orphaned project is invisible to
+  // every non-global-admin" line was proven only at unit level
+  // (services/auth/access.test.ts's canReadProject cases) and never over
+  // HTTP, even though both the list filter (scopesProjectList/canReadProject
+  // above) and the per-route guard (resolveAccess -> canReadProject) share
+  // the same predicate. This closes that gap end-to-end: create a project
+  // with NO teamId (POST /admin/projects omits it — team_id IS NULL, per
+  // canReadProject's 'user' branch in services/auth/access.ts, which requires
+  // project.teamId !== null before it even checks membership), then assert
+  // both the single-project read AND the list are consistent for a member vs
+  // a global admin.
+  it('an orphaned project (no teamId) is invisible to a member but visible to a global admin', async () => {
+    const orphan = (await json(await app.request('/api/v1/admin/projects', {
+      method: 'POST', headers: adminHeaders(), body: JSON.stringify({ name: uniq('orphan') }),
+    }))).project;
+    expect(
+      orphan.teamId,
+      'fixture assumption: POST /admin/projects without teamId must leave the project unassigned'
+    ).toBeNull();
+
+    const member = await fixture('member');
+
+    const singleRead = await app.request(`/api/v1/projects/${orphan.id}/stats`, as(member.cookie));
+    expect(singleRead.status, 'a member must not be able to read an orphaned project').toBe(404);
+
+    const memberList = await json(await app.request('/api/v1/projects', as(member.cookie)));
+    const memberIds = memberList.projects.map((p: { id: string }) => p.id);
+    expect(
+      memberIds,
+      'an orphaned project must not appear in a member\'s project list'
+    ).not.toContain(orphan.id);
+
+    // See the doc comment on the 'a global admin reads any team\'s project'
+    // test above for why the lock must span creation through the final
+    // assertion, not just the create call.
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const adminUser = await json(await app.request('/api/v1/admin/users', {
+        method: 'POST', headers: adminHeaders(),
+        body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
+      }));
+      const loginRes = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: adminUser.user.email, password: adminUser.temporaryPassword }),
+      });
+      const cookie = (loginRes.headers.get('set-cookie') ?? '')
+        .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+
+      const adminRead = await app.request(`/api/v1/projects/${orphan.id}/stats`, as(cookie!));
+      expect(adminRead.status, 'a global admin must be able to read an orphaned project').toBe(200);
+
+      const adminList = await json(await app.request('/api/v1/projects', as(cookie!)));
+      const adminIds = adminList.projects.map((p: { id: string }) => p.id);
+      expect(
+        adminIds,
+        'a global admin must see the orphaned project in their project list too'
+      ).toContain(orphan.id);
+    });
+  });
 });
 
 describeScope('admin API accepts a global-admin session', () => {

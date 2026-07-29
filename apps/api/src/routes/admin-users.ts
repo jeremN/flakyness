@@ -106,12 +106,15 @@ export const GLOBAL_ADMIN_MUTEX = 958_304_502;
 // With every remover serialised, each guard's own read is a PLAIN,
 // NON-LOCKING `SELECT`. That is the point of the design, not an oversight:
 //
-//   - Its snapshot is taken AFTER the mutex is held (READ COMMITTED — the
-//     Postgres default, and no isolation level is configured anywhere in
-//     this codebase — gives every statement a fresh snapshot), and no other
-//     remover can be mid-transaction at that moment: they are all still
-//     parked on the mutex, before their own first read. So its rows are
-//     committed truth as far as removals are concerned.
+//   - Its snapshot is taken AFTER the mutex is held: `pg_advisory_xact_lock`
+//     is the FIRST snapshot-taking statement in the transaction, so the
+//     guard's `SELECT` sees everything committed while this transaction was
+//     parked. Measured to hold under read committed, repeatable read and
+//     serializable alike. Do NOT add a read before the lock: under repeatable
+//     read that fixes the transaction snapshot pre-block and reopens the
+//     round-4 hole. And no other remover can be mid-transaction at that
+//     moment: they are all still parked on the mutex, before their own first
+//     read. So its rows are committed truth as far as removals are concerned.
 //   - A concurrent promote can commit after that snapshot, since it takes no
 //     lock. It can only ADD to the admin set, so both a stale-low count and
 //     a target that looks like a non-admin are conservative, never

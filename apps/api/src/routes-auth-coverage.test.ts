@@ -2,11 +2,11 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import app from './index';
 
 /**
- * Fail-loud guard: every read endpoint has readAuth mounted.
+ * Fail-loud guard: every read endpoint has readAuth AND resolveAccess mounted.
  *
  * This is a STATIC SCAN of Hono's route table, not a test of request
  * behaviour. It asserts that the middleware is *mounted*, not that it
- * *works* — that is read-auth.test.ts's job.
+ * *works* — that is read-auth.test.ts's (and access-scope.test.ts's) job.
  *
  * Why it exists: plan 041 mounts readAuth route-by-route rather than
  * router-wide (design decision D4), because testsRouter is mixed — three
@@ -68,8 +68,7 @@ function isReadAuthHandler(handler: unknown): boolean {
 // this tag every scoped route would be double-counted here (once for
 // resolveAccess, once for the terminal handler) — inflating readRoutes and
 // breaking EXPECTED_READ_ROUTE_COUNT on a mount that added no new route.
-// This file only counts/verifies readAuth coverage; asserting resolveAccess
-// coverage itself is Task 6's job (see plan 058 progress.md).
+// Task 6 (plan 058) adds the resolveAccess coverage assertion itself, below.
 function isResolveAccessHandler(handler: unknown): boolean {
   return (
     typeof handler === 'function' && (handler as { isResolveAccess?: boolean }).isResolveAccess === true
@@ -88,6 +87,10 @@ const readRoutes = app.routes.filter(
 
 const readAuthPaths = new Set(
   app.routes.filter((r) => r.method === 'GET' && isReadAuthHandler(r.handler)).map((r) => r.path)
+);
+
+const resolveAccessPaths = new Set(
+  app.routes.filter((r) => r.method === 'GET' && isResolveAccessHandler(r.handler)).map((r) => r.path)
 );
 
 describe('read-route auth coverage', () => {
@@ -130,6 +133,33 @@ describe('read-route auth coverage', () => {
     expect(readAuthPaths.has('/api/v1/projects/:id/stats')).toBe(true);
   });
 
+  it.each(readRoutes.map((r) => r.path))('has resolveAccess mounted: GET %s', (path) => {
+    expect(
+      resolveAccessPaths.has(path),
+      `GET ${path} has no resolveAccess mounted. Every read endpoint must be mounted as\n` +
+        `  router.get('<path>', readAuth(<resolver>), resolveAccess(<resolver>), handler)\n` +
+        `sharing the SAME resolver. readAuth answers "may you read at all?" (READ_TOKEN\n` +
+        `posture); resolveAccess answers "which projects?" (team membership).\n\n` +
+        `Without it this endpoint returns another team's data to any signed-in user —\n` +
+        `a 200 with plausible content, which no behavioural test will flag. See plan 058.\n\n` +
+        `Routes on the HANDLER_SCOPED allowlist (${HANDLER_SCOPED.join(', ')}) legitimately\n` +
+        `mount resolveAccess() with no resolver — the target project there is a property of\n` +
+        `a row, not the request, so the scope check lives in the handler via\n` +
+        `assertProjectReadable instead. The isResolveAccess tag is still set regardless of\n` +
+        `whether a resolver was passed, so this loop covers their mount point too; the\n` +
+        `handler-level check itself is covered behaviourally by access-scope.test.ts, not\n` +
+        `by this static scan.\n\n` +
+        `If the target project is only knowable after a database lookup, mount\n` +
+        `resolveAccess() with no resolver, call assertProjectReadable() in the handler,\n` +
+        `and add the path to HANDLER_SCOPED above with a covering test in\n` +
+        `access-scope.test.ts.`
+    ).toBe(true);
+  });
+
+  it('detects a known-covered route for resolveAccess (guard is not vacuous)', () => {
+    expect(resolveAccessPaths.has('/api/v1/projects/:id/stats')).toBe(true);
+  });
+
   it.each(SELF_GATED)('self-gated route still exists and gates itself: GET %s', (path) => {
     const mounted = app.routes.some((r) => r.method === 'GET' && r.path === path);
     expect(
@@ -139,21 +169,4 @@ describe('read-route auth coverage', () => {
         'exempts nothing and hides the next route that lands on that path.'
     ).toBe(true);
   });
-
-  it.each(HANDLER_SCOPED)(
-    'handler-scoped route still mounts readAuth: GET %s',
-    (path) => {
-      const mounted = app.routes.some(
-        (r) => r.method === 'GET' && r.path === path && isReadAuthHandler(r.handler)
-      );
-      expect(
-        mounted,
-        `${path} is on the HANDLER_SCOPED allowlist but readAuth is no longer mounted on it ` +
-          '(or the route was renamed/removed). This static guard cannot verify its project-scope ' +
-          'check — that check lives in the handler via assertProjectReadable, not a resolveAccess ' +
-          'resolver — so a stale or unmounted entry here would silently stop asserting anything. ' +
-          'See access-scope.test.ts for the behavioural coverage.'
-      ).toBe(true);
-    }
-  );
 });

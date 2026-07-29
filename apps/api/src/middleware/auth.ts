@@ -4,6 +4,8 @@ import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { db, projects } from '../db';
 import { extractBearerToken, tokensMatch } from './token';
+import { resolveAccessValue } from './access';
+import { canEnterAdminApi } from '../services/auth/access';
 
 // extractBearerToken/tokensMatch moved to the DB-free ./token module (so the
 // rate limiter can reuse them without importing the database). Re-exported here
@@ -96,6 +98,57 @@ export function adminAuth(): MiddlewareHandler {
     }
 
     await next();
+  };
+}
+
+/**
+ * Admin-API gate that accepts EITHER a valid ADMIN_TOKEN bearer OR a session
+ * with standing on this surface (global admin, or team_admin in some team).
+ *
+ * Note the deliberate asymmetry with adminAuth(): an unset ADMIN_TOKEN is no
+ * longer a 500. Once accounts exist, "the operator did not configure a static
+ * admin token" is a legitimate, in fact preferable, deployment — the account
+ * system is the intended path and the static token is break-glass. A session
+ * must still be able to get in.
+ *
+ * A team_admin passes this gate and is then scoped per-project by the route.
+ * Team CRUD and user CRUD call canAdministerTeams() on top, because those are
+ * never delegated.
+ */
+export function adminOrGlobalAdminAuth(): MiddlewareHandler {
+  return async (c: Context, next) => {
+    const access = await resolveAccessValue(c);
+    c.set('access', access);
+
+    if (canEnterAdminApi(access)) {
+      await next();
+      return;
+    }
+
+    // 401 and 403 are different facts and the split is deliberate: 403 means
+    // "we know who you are and the answer is no", which is only sayable to
+    // someone identified. Answering an anonymous caller 403 would both tell
+    // them to stop retrying when logging in would in fact help, and confirm
+    // the endpoint exists.
+    if (access.kind === 'user') {
+      throw new HTTPException(403, { message: 'Admin access required' });
+    }
+
+    // Below this point the caller could not be identified as a session or a
+    // recognised token — the same territory adminAuth() used to cover alone.
+    // Mirror its exact message text for these two sub-cases: admin.test.ts
+    // (predates this plan, out of scope for this task, "fix the handler, not
+    // the test") pins both strings verbatim.
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader) {
+      throw new HTTPException(401, { message: 'Authorization header required' });
+    }
+    if (!extractBearerToken(authHeader)) {
+      throw new HTTPException(401, {
+        message: 'Invalid authorization format. Use: Bearer <token>',
+      });
+    }
+    throw new HTTPException(401, { message: 'Invalid admin token' });
   };
 }
 

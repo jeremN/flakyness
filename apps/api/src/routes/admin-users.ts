@@ -5,7 +5,9 @@ import { eq, count } from 'drizzle-orm';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
-import { adminAuth } from '../middleware/auth';
+import { adminOrGlobalAdminAuth } from '../middleware/auth';
+import { getAccess } from '../middleware/access';
+import { canAdministerTeams } from '../services/auth/access';
 import { revokeAllUserSessions } from '../middleware/session';
 import { hashPassword } from '../services/auth/password';
 import { generateTempPassword, canRemoveGlobalAdmin, normaliseEmail } from '../services/auth/membership';
@@ -18,7 +20,18 @@ const adminUsersRouter = new Hono<{ Variables: { requestId: string } }>();
 // provisioning unauthenticated. Guarded by the "requires an admin token" test
 // in the suite for this file.
 adminUsersRouter.use('*', adminRateLimit);
-adminUsersRouter.use('*', adminAuth());
+adminUsersRouter.use('*', adminOrGlobalAdminAuth());
+
+// User CRUD is never delegated to a team_admin — adminOrGlobalAdminAuth()
+// alone admits them (they belong on the wider admin API surface for their
+// own project routes), so this second gate closes user provisioning back
+// down to global-admin only, for every route on this router.
+adminUsersRouter.use('*', async (c, next) => {
+  if (!canAdministerTeams(getAccess(c))) {
+    return c.json({ error: 'Global admin required' }, 403);
+  }
+  await next();
+});
 
 const uuidSchema = z.string().uuid();
 

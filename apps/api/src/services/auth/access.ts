@@ -92,6 +92,20 @@ export function canAdministerTeams(access: Access): boolean {
 }
 
 /**
+ * May this caller reach the admin API at all?
+ *
+ * Wider than canAdministerTeams (a team_admin belongs here; the routes below
+ * scope them per project) and narrower than "has a session". A plain member is
+ * refused: everything they need is on /api/v1/projects, so admitting them and
+ * trusting each route to filter would put the burden of not leaking on every
+ * admin route ever added, instead of on one gate.
+ */
+export function canEnterAdminApi(access: Access): boolean {
+  if (canAdministerTeams(access)) return true;
+  return access.kind === 'user' && Object.values(access.roleByTeam).includes('team_admin');
+}
+
+/**
  * Should a project LIST be filtered for this caller?
  *
  * The complement of "sees everything". Kept as its own function so a list

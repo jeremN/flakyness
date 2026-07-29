@@ -406,3 +406,186 @@ describeScope('GET /api/v1/projects list filtering', () => {
     expect(ids).toContain(b.project.id);
   });
 });
+
+describeScope('admin API accepts a global-admin session', () => {
+  async function globalAdminCookie() {
+    const created = await json(await app.request('/api/v1/admin/users', {
+      method: 'POST', headers: adminHeaders(),
+      body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
+    }));
+    const res = await app.request('/api/v1/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: created.user.email, password: created.temporaryPassword }),
+    });
+    // Split the optional-chain result out of the return statement rather
+    // than asserting `?.[1]!` inline — same value, but oxlint's
+    // no-non-null-asserted-optional-chain rule (deny-warnings) flags the
+    // inline form. Matches the style `fixture()` above already uses.
+    const cookie = (res.headers.get('set-cookie') ?? '')
+      .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+    return cookie!;
+  }
+
+  // MANDATORY: every test that creates a global admin holds GLOBAL_ADMIN_LOCK_KEY
+  // across its ENTIRE body — creation through final assertion — not just around
+  // globalAdminCookie(). `admin-users.test.ts`'s withSoleGlobalAdmin demotes every
+  // ambient global admin and asserts its target is the sole one; a concurrent
+  // creation makes that demote legal and reddens it. Task 3 shipped this bug once
+  // and then hit a SECOND variant of it when the first fix released the lock after
+  // creation but before the assertion — the freshly-made admin got demoted in that
+  // gap. Shrinking the window is not closing it. See `test-support/advisory-lock.ts`.
+  it('a global admin session can list projects without ADMIN_TOKEN', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const cookie = await globalAdminCookie();
+      const res = await app.request('/api/v1/admin/projects', as(cookie));
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it('a global admin session can administer teams', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const cookie = await globalAdminCookie();
+      const res = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${cookie}` },
+        body: JSON.stringify({ name: uniq('ga-team') }),
+      });
+      expect(res.status).toBe(201);
+    });
+  });
+
+  it('a team_admin session is REFUSED on team CRUD (never delegated)', async () => {
+    const f = await fixture('team_admin');
+    const res = await app.request('/api/v1/admin/teams', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+      body: JSON.stringify({ name: uniq('nope') }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('a team_admin session is REFUSED on user provisioning', async () => {
+    const f = await fixture('team_admin');
+    const res = await app.request('/api/v1/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+      body: JSON.stringify({ email: `${uniq('x')}@example.test` }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  // The claim is "everywhere", so assert everywhere — one route would leave
+  // the other admin surfaces free to admit a member by omission, which is the
+  // precise failure the closed gate exists to prevent.
+  it('a plain member session is refused everywhere on the admin API', async () => {
+    const f = await fixture('member');
+    for (const path of ['/api/v1/admin/projects', '/api/v1/admin/teams', '/api/v1/admin/users']) {
+      const res = await app.request(path, as(f.cookie));
+      expect(res.status, `${path} must refuse a plain member`).toBe(403);
+    }
+  });
+
+  it('an anonymous caller gets 401 on the admin API, not 403', async () => {
+    // 401 and 403 are different facts: 403 means "we know who you are and the
+    // answer is no", which is only sayable to someone identified. Telling an
+    // anonymous caller 403 also confirms the endpoint exists to anyone.
+    const res = await app.request('/api/v1/admin/projects');
+    expect(res.status).toBe(401);
+  });
+
+  it('a team_admin may NOT create a project (operator act, not a team act)', async () => {
+    const f = await fixture('team_admin');
+    const res = await app.request('/api/v1/admin/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+      body: JSON.stringify({ name: uniq('nope') }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('GET /admin/projects is filtered for a team_admin', async () => {
+    const mine = await fixture('team_admin');
+    const theirs = await fixture('team_admin');
+    const body = await json(await app.request('/api/v1/admin/projects', as(mine.cookie)));
+    const ids = body.projects.map((p: { id: string }) => p.id);
+    expect(ids).toContain(mine.project.id);
+    expect(ids).not.toContain(theirs.project.id);
+  });
+
+  it('a team_admin may PATCH their own project\'s settings but not another team\'s', async () => {
+    const mine = await fixture('team_admin');
+    const theirs = await fixture('team_admin');
+
+    const ok = await app.request(`/api/v1/admin/projects/${mine.project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ minRuns: 7 }),
+    });
+    expect(ok.status).toBe(200);
+
+    const denied = await app.request(`/api/v1/admin/projects/${theirs.project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ minRuns: 7 }),
+    });
+    expect(denied.status).toBe(404);
+  });
+
+  it('a team_admin may NOT delete a project (destructive ops stay global-admin)', async () => {
+    const mine = await fixture('team_admin');
+    const res = await app.request(`/api/v1/admin/projects/${mine.project.id}`, {
+      method: 'DELETE',
+      headers: { Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('ADMIN_TOKEN still does everything (break-glass unchanged)', async () => {
+    const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
+    expect(res.status).toBe(200);
+  });
+
+  // Extra coverage beyond the brief's own set: scopedAdminProject() is one
+  // shared helper called from seven routes (rotate-token, PATCH, prune, and
+  // all five rules routes). Only PATCH is exercised above — without this,
+  // removing the check from e.g. rotate-token or a rules route would leave
+  // the whole suite green, which is exactly the vacuous-assertion trap the
+  // task's verification bar warns against.
+  it('a team_admin is scoped on rotate-token, prune and rules routes too', async () => {
+    const mine = await fixture('team_admin');
+    const theirs = await fixture('team_admin');
+
+    const rotate = await app.request(`/api/v1/admin/projects/${theirs.project.id}/rotate-token`, {
+      method: 'POST',
+      headers: { Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+    });
+    expect(rotate.status, 'rotate-token must hide another team\'s project').toBe(404);
+
+    const prune = await app.request(`/api/v1/admin/projects/${theirs.project.id}/prune`, {
+      method: 'POST',
+      headers: { Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+    });
+    expect(prune.status, 'prune must hide another team\'s project').toBe(404);
+
+    const rulesList = await app.request(`/api/v1/admin/projects/${theirs.project.id}/rules`, as(mine.cookie));
+    expect(rulesList.status, 'GET rules must hide another team\'s project').toBe(404);
+
+    const rulesCreate = await app.request(`/api/v1/admin/projects/${theirs.project.id}/rules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ action: 'exempt' }),
+    });
+    expect(rulesCreate.status, 'POST rules must hide another team\'s project').toBe(404);
+
+    // And the same routes succeed against the caller's OWN project, so the
+    // 404s above are scope, not "team_admin can never reach these routes".
+    const ownRotate = await app.request(`/api/v1/admin/projects/${mine.project.id}/rotate-token`, {
+      method: 'POST',
+      headers: { Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+    });
+    expect(ownRotate.status, 'rotate-token must succeed on own project').toBe(200);
+
+    const ownRulesList = await app.request(`/api/v1/admin/projects/${mine.project.id}/rules`, as(mine.cookie));
+    expect(ownRulesList.status, 'GET rules must succeed on own project').toBe(200);
+  });
+});

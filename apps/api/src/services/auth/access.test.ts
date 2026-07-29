@@ -4,6 +4,7 @@ import {
   canReadProject,
   canWriteProject,
   canAdministerTeams,
+  canEnterAdminApi,
   scopesProjectList,
   type Access,
   type ScopedProject,
@@ -160,6 +161,25 @@ describe('canAdministerTeams', () => {
     ['anonymous', anonymousAccess(), false],
   ])('%s → %s', (_label, access, expected) => {
     expect(canAdministerTeams(access as Access)).toBe(expected);
+  });
+});
+
+describe('canEnterAdminApi', () => {
+  it.each([
+    ['global-admin user', globalAdminUser, true],
+    ['ADMIN_TOKEN', adminToken, true],
+    ['team_admin in one team', member({ [TEAM_A]: 'team_admin' }), true],
+    // The whole point: team_admin status in ANY one team is enough, even
+    // alongside plain membership elsewhere.
+    ['team_admin in one team, member in another', member({ [TEAM_A]: 'team_admin', [TEAM_B]: 'member' }), true],
+    // These three pin the human ruling: the gate is closed, not "any session".
+    ['member only', member({ [TEAM_A]: 'member' }), false],
+    ['user in no teams', member({}), false],
+    ['READ_TOKEN', readToken, false],
+    ['project-token', projectToken('p-a'), false],
+    ['anonymous', anonymousAccess(), false],
+  ])('%s → %s', (_label, access, expected) => {
+    expect(canEnterAdminApi(access as Access)).toBe(expected);
   });
 });
 

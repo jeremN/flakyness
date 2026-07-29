@@ -53,9 +53,9 @@ const SELF_GATED = ['/api/v1/auth/me'];
 const HANDLER_SCOPED = ['/api/v1/tests/flaky/:id'];
 
 // The number of GET routes under /api/v1, excluding /admin/* (already gated
-// by adminAuth) and the static /api/v1 index. Bumping this is the point: a
-// new read route forces a deliberate edit here, which forces a reviewer to
-// ask whether readAuth was mounted.
+// by adminOrGlobalAdminAuth, plan 058 Task 5) and the static /api/v1 index.
+// Bumping this is the point: a new read route forces a deliberate edit here,
+// which forces a reviewer to ask whether readAuth was mounted.
 const EXPECTED_READ_ROUTE_COUNT = 11;
 
 function isReadAuthHandler(handler: unknown): boolean {

@@ -512,6 +512,31 @@ describeScope('admin API accepts a global-admin session', () => {
     expect(ids).not.toContain(theirs.project.id);
   });
 
+  // Fix round 1, IMPORTANT: the list must filter on ROLE (canReadProject AND
+  // canWriteProject — the same bar scopedAdminProject uses), not on plain
+  // membership (canReadProject alone). Every row here carries admin-only
+  // detail (webhookUrl, hasToken) that GET /api/v1/projects never exposes —
+  // a caller who is team_admin in A and only a plain member in B must not
+  // get B's admin detail here just because they can read B elsewhere.
+  it('a user who is team_admin in A and a plain member in B does not see B\'s project here', async () => {
+    const teamAdminInA = await fixture('team_admin');
+    const memberInB = await fixture('member');
+
+    await app.request(`/api/v1/admin/teams/${memberInB.team.id}/members`, {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify({ userId: teamAdminInA.user.id, role: 'member' }),
+    });
+
+    const body = await json(await app.request('/api/v1/admin/projects', as(teamAdminInA.cookie)));
+    const ids = body.projects.map((p: { id: string }) => p.id);
+    expect(ids).toContain(teamAdminInA.project.id);
+    expect(
+      ids,
+      'plain membership must not surface admin-only detail for another team\'s project'
+    ).not.toContain(memberInB.project.id);
+  });
+
   it('a team_admin may PATCH their own project\'s settings but not another team\'s', async () => {
     const mine = await fixture('team_admin');
     const theirs = await fixture('team_admin');
@@ -531,6 +556,44 @@ describeScope('admin API accepts a global-admin session', () => {
     expect(denied.status).toBe(404);
   });
 
+  // Fix round 1, CRITICAL: PATCH {teamId} is a reassignment, not a settings
+  // tweak — scopedAdminProject alone only proves the caller may touch the
+  // project's CURRENT team, not the team they're trying to move it to (or
+  // away from). Asserting the PERSISTED value, not just the status: a 403
+  // that still wrote the field would pass a status-only check.
+  it('a team_admin may NOT reassign their own project to another team via PATCH', async () => {
+    const mine = await fixture('team_admin');
+    const otherTeam = (await json(await app.request('/api/v1/admin/teams', {
+      method: 'POST', headers: adminHeaders(), body: JSON.stringify({ name: uniq('t') }),
+    }))).team;
+
+    const res = await app.request(`/api/v1/admin/projects/${mine.project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ teamId: otherTeam.id }),
+    });
+    expect(res.status).toBe(403);
+
+    const list = await json(await app.request('/api/v1/admin/projects', { headers: adminHeaders() }));
+    const persisted = list.projects.find((p: { id: string }) => p.id === mine.project.id);
+    expect(persisted.teamId, 'a 403 must not have written the new teamId').toBe(mine.team.id);
+  });
+
+  it('a team_admin may NOT orphan their own project via PATCH {teamId: null}', async () => {
+    const mine = await fixture('team_admin');
+
+    const res = await app.request(`/api/v1/admin/projects/${mine.project.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+      body: JSON.stringify({ teamId: null }),
+    });
+    expect(res.status).toBe(403);
+
+    const list = await json(await app.request('/api/v1/admin/projects', { headers: adminHeaders() }));
+    const persisted = list.projects.find((p: { id: string }) => p.id === mine.project.id);
+    expect(persisted.teamId, 'a 403 must not have orphaned the project').toBe(mine.team.id);
+  });
+
   it('a team_admin may NOT delete a project (destructive ops stay global-admin)', async () => {
     const mine = await fixture('team_admin');
     const res = await app.request(`/api/v1/admin/projects/${mine.project.id}`, {
@@ -545,15 +608,33 @@ describeScope('admin API accepts a global-admin session', () => {
     expect(res.status).toBe(200);
   });
 
+  // Fix round 1 ruling: GET /admin/health is install-wide operator telemetry
+  // with no team-scope story, so it stays global-admin only.
+  it('a team_admin is REFUSED on GET /admin/health (operator telemetry, global-admin only)', async () => {
+    const f = await fixture('team_admin');
+    const res = await app.request('/api/v1/admin/health', as(f.cookie));
+    expect(res.status).toBe(403);
+  });
+
   // Extra coverage beyond the brief's own set: scopedAdminProject() is one
-  // shared helper called from seven routes (rotate-token, PATCH, prune, and
-  // all five rules routes). Only PATCH is exercised above — without this,
-  // removing the check from e.g. rotate-token or a rules route would leave
-  // the whole suite green, which is exactly the vacuous-assertion trap the
-  // task's verification bar warns against.
+  // shared helper called from EIGHT routes (rotate-token, PATCH, prune, and
+  // all five rules routes: GET, POST, PATCH/:ruleId, DELETE/:ruleId,
+  // POST/reorder). Fix round 1 found that the brief's own PATCH test only
+  // proves >=1 call site is wired — neutering the shared HELPER (as the
+  // original probe 3 did) can't tell you which. Every one of the eight is
+  // asserted below with its OWN message, so a single site losing its check
+  // reddens alone, not "some assertion in this test failed".
   it('a team_admin is scoped on rotate-token, prune and rules routes too', async () => {
     const mine = await fixture('team_admin');
     const theirs = await fixture('team_admin');
+
+    // Seeded via ADMIN_TOKEN (bypasses scope by design) so PATCH/DELETE/
+    // reorder below have a real rule id on theirs.project to target.
+    const seededRule = await json(await app.request(
+      `/api/v1/admin/projects/${theirs.project.id}/rules`,
+      { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ action: 'exempt' }) }
+    ));
+    const theirsRuleId = seededRule.rule.id as string;
 
     const rotate = await app.request(`/api/v1/admin/projects/${theirs.project.id}/rotate-token`, {
       method: 'POST',
@@ -576,6 +657,34 @@ describeScope('admin API accepts a global-admin session', () => {
       body: JSON.stringify({ action: 'exempt' }),
     });
     expect(rulesCreate.status, 'POST rules must hide another team\'s project').toBe(404);
+
+    const rulesPatch = await app.request(
+      `/api/v1/admin/projects/${theirs.project.id}/rules/${theirsRuleId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+        body: JSON.stringify({ enabled: false }),
+      }
+    );
+    expect(rulesPatch.status, 'PATCH rules/:ruleId must hide another team\'s project').toBe(404);
+
+    const rulesReorder = await app.request(
+      `/api/v1/admin/projects/${theirs.project.id}/rules/reorder`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${mine.cookie}` },
+        body: JSON.stringify({ order: [theirsRuleId] }),
+      }
+    );
+    expect(rulesReorder.status, 'POST rules/reorder must hide another team\'s project').toBe(404);
+
+    // DELETE last — it's destructive, and PATCH/reorder above need the
+    // seeded rule to still exist when they run.
+    const rulesDelete = await app.request(
+      `/api/v1/admin/projects/${theirs.project.id}/rules/${theirsRuleId}`,
+      { method: 'DELETE', headers: { Cookie: `${SESSION_COOKIE}=${mine.cookie}` } }
+    );
+    expect(rulesDelete.status, 'DELETE rules/:ruleId must hide another team\'s project').toBe(404);
 
     // And the same routes succeed against the caller's OWN project, so the
     // 404s above are scope, not "team_admin can never reach these routes".

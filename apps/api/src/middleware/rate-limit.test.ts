@@ -529,6 +529,58 @@ describe('hasValidAdminBearer (admin limiter exemption predicate)', () => {
   });
 });
 
+describe('hasAdminStanding (admin limiter exemption predicate — bearer OR session)', () => {
+  // hasAdminStanding reads c.req.header('Authorization') (via
+  // hasValidAdminBearer) and c.get('sessionUser') (via getSessionUser); fake
+  // exactly those two.
+  function ctx(opts: { authHeader?: string; sessionUser?: unknown }): Context {
+    const store: Record<string, unknown> = {};
+    if ('sessionUser' in opts) store.sessionUser = opts.sessionUser;
+    return {
+      req: { header: (n: string) => (n === 'Authorization' ? opts.authHeader : undefined) },
+      get: (key: string) => store[key],
+    } as unknown as Context;
+  }
+
+  const prevToken = process.env.ADMIN_TOKEN;
+  afterEach(() => {
+    if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prevToken;
+  });
+
+  it('is true for a valid ADMIN_TOKEN bearer, no session', async () => {
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasAdminStanding(ctx({ authHeader: 'Bearer the-admin-token' }))).toBe(true);
+  });
+
+  it('is true for ANY signed-in session, no bearer at all — the fix (ruling: exempt every session, not just global-admin ones)', async () => {
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    const plainMemberSession = {
+      id: 'u1',
+      email: 'member@example.test',
+      displayName: null,
+      isGlobalAdmin: false,
+      mustChangePassword: false,
+      sessionId: 's1',
+    };
+    expect(hasAdminStanding(ctx({ sessionUser: plainMemberSession }))).toBe(true);
+  });
+
+  it('is false for neither a valid bearer nor a session', async () => {
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasAdminStanding(ctx({}))).toBe(false);
+  });
+
+  it('is false for a wrong bearer and no session', async () => {
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasAdminStanding(ctx({ authHeader: 'Bearer wrong-token' }))).toBe(false);
+  });
+});
+
 describe('admin limiter exempts a valid admin token (not just throttles bad ones)', () => {
   it('lets a valid-ADMIN_TOKEN flood through well past the 5/min limit', async () => {
     const { Hono } = await import('hono');
@@ -563,6 +615,58 @@ describe('admin limiter exempts a valid admin token (not just throttles bad ones
       __setRateLimitEnabled(false);
       if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
       else process.env.ADMIN_TOKEN = prevToken;
+    }
+  });
+});
+
+// Fix round 1, plan 058 Task 5: before this, every session-authenticated
+// admin call carried no bearer at all, so it landed in the SAME 5/min
+// bucket as anonymous brute-force traffic — invisible in the suite above
+// because that one only ever sends a bearer. This is the regression guard.
+describe('admin limiter exempts a signed-in session, not just ADMIN_TOKEN (fix round 1, plan 058 Task 5)', () => {
+  it('lets a session-authenticated caller — no Authorization header at all — flood well past the 5/min limit', async () => {
+    const { Hono } = await import('hono');
+    const { adminRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      // Typed Variables so c.set('sessionUser', …) below type-checks —
+      // matches the pattern admin-teams.ts/admin-users.ts already use for
+      // their own custom context variable (requestId).
+      const app = new Hono<{ Variables: { sessionUser: unknown } }>();
+      // Simulates sessionAuth() (mounted globally in index.ts, ahead of
+      // every router) populating c.get('sessionUser') before the admin
+      // router's own middleware chain runs — the same order production uses.
+      // A PLAIN MEMBER session on purpose: the ruling is "exempt any
+      // session, not just global-admin ones."
+      app.use('*', async (c, next) => {
+        c.set('sessionUser', {
+          id: 'u1',
+          email: 'member@example.test',
+          displayName: null,
+          isGlobalAdmin: false,
+          mustChangePassword: false,
+          sessionId: 's1',
+        });
+        await next();
+      });
+      app.use('*', adminRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // No Authorization header anywhere in this loop — a session carries
+      // none. limit + 2 requests with neither a bearer nor a session would
+      // 429 (see 'rate limiter enforcement' above); with a session, none
+      // may. Reverting hasAdminStanding to hasValidAdminBearer reds this —
+      // the flood starts 429-ing once past the limit.
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request('/x');
+        codes.push(res.status);
+      }
+      expect(codes).not.toContain(429);
+      expect(codes.every((s) => s === 200)).toBe(true);
+    } finally {
+      __setRateLimitEnabled(false);
     }
   });
 });

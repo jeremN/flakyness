@@ -248,12 +248,19 @@ adminRouter.get('/projects', async (c) => {
     .from(projects)
     .orderBy(desc(projects.createdAt));
 
-  // Filtered in JS against the same predicate the per-project scope guard
-  // uses (scopedAdminProject below), so the list and the mutation routes
-  // cannot disagree about what a team_admin may see — same pattern as
-  // GET /api/v1/projects (routes/projects.ts, Task 3).
+  // Filtered in JS against the SAME predicate scopedAdminProject (above)
+  // uses — canReadProject AND canWriteProject, not canReadProject alone —
+  // so the list and the mutation routes cannot disagree about what a
+  // team_admin may see. This is a deliberate DEVIATION from Task 3's
+  // GET /api/v1/projects, which filters on canReadProject alone: that route
+  // is the member-facing read surface (membership is the right bar), but
+  // this one is the admin surface, where every row exposes admin-only detail
+  // (webhookUrl, hasToken) — a caller who is team_admin in team A and a
+  // plain member in team B must not see team B's project here just because
+  // they can read it elsewhere, since role (not membership) is the bar for
+  // every other route on this router.
   const projectsWithStats = scopesProjectList(access)
-    ? allProjectsWithStats.filter((p) => canReadProject(access, p))
+    ? allProjectsWithStats.filter((p) => canReadProject(access, p) && canWriteProject(access, p))
     : allProjectsWithStats;
 
   const result = projectsWithStats.map((p) => ({
@@ -413,6 +420,25 @@ adminRouter.patch(
 
     if (!(await scopedAdminProject(c, projectId))) {
       return c.json({ error: 'Project not found' }, 404);
+    }
+
+    // Reassigning a project to another team (or to no team at all, via an
+    // explicit `null` — orphaning it) is a global-admin-only act, same tier
+    // as DELETE: it either hands a team_admin's project to a team they may
+    // not even belong to, or produces an orphan, which the plan reserves for
+    // global admins. `scopedAdminProject` above only proves the caller may
+    // touch the project's CURRENT team, not the one they are trying to move
+    // it to (or away from) — a separate check is required. `'teamId' in
+    // data`, not a truthiness check: `{teamId: null}` (the orphaning case)
+    // must be caught too, and a plain truthiness check would miss it. 403,
+    // not 404 — the caller can already see this project, so this is a
+    // refused write, matching the plan's read/write split (a 404 here would
+    // also be a lie: the project is not hidden, the field write is refused).
+    if ('teamId' in data && !canAdministerTeams(getAccess(c))) {
+      return c.json(
+        { error: 'Reassigning a project to another team requires a global admin' },
+        403
+      );
     }
 
     const existing = await db.query.projects.findFirst({
@@ -910,9 +936,16 @@ adminRouter.post(
 /**
  * GET /api/v1/admin/health
  *
- * System health metrics
+ * System health metrics. Global-admin only (ruling, fix round 1): this is
+ * install-wide operator telemetry — nothing about it is team-scoped, so
+ * there is no team-scope story to design, and admitting a team_admin would
+ * be an undecided access question rather than a considered one.
  */
 adminRouter.get('/health', async (c) => {
+  if (!canAdministerTeams(getAccess(c))) {
+    return c.json({ error: 'Global admin required' }, 403);
+  }
+
   const [projectCount] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(projects);

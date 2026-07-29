@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { SESSION_COOKIE } from '../services/auth/session';
+import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -145,20 +146,33 @@ describeScope('per-team read scoping', () => {
   it('a global admin reads any team\'s project', async () => {
     const theirs = await fixture('member');
 
-    const adminUser = await json(await app.request('/api/v1/admin/users', {
-      method: 'POST', headers: adminHeaders(),
-      body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
-    }));
-    const loginRes = await app.request('/api/v1/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: adminUser.user.email, password: adminUser.temporaryPassword }),
-    });
-    const cookie = (loginRes.headers.get('set-cookie') ?? '')
-      .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+    // The whole create → assert window runs under the SAME advisory lock
+    // admin-users.test.ts's withSoleGlobalAdmin() takes (see
+    // GLOBAL_ADMIN_LOCK_KEY's doc comment) — not just the create call.
+    // withSoleGlobalAdmin snapshots the ambient `isGlobalAdmin` set, demotes
+    // ALL of it (including any admin this test has already created), runs
+    // its own assertion, then restores it — so a concurrent
+    // snapshot-demote-restore cycle landing anywhere between this test's
+    // create and its final `expect` would transiently flip this user's
+    // `isGlobalAdmin` back to false, and the GET below would 404 instead of
+    // 200. The lock must stay held until this test no longer depends on the
+    // flag being true, which is the entire body, not just the POST.
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const adminUser = await json(await app.request('/api/v1/admin/users', {
+        method: 'POST', headers: adminHeaders(),
+        body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
+      }));
+      const loginRes = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: adminUser.user.email, password: adminUser.temporaryPassword }),
+      });
+      const cookie = (loginRes.headers.get('set-cookie') ?? '')
+        .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
 
-    const res = await app.request(`/api/v1/projects/${theirs.project.id}/stats`, as(cookie!));
-    expect(res.status).toBe(200);
+      const res = await app.request(`/api/v1/projects/${theirs.project.id}/stats`, as(cookie!));
+      expect(res.status).toBe(200);
+    });
   });
 
   it('a user in no team sees nothing', async () => {

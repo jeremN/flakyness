@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
+import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -45,32 +46,42 @@ async function createUserViaApi(body: Record<string, unknown> = {}) {
  * and deletes the throwaway target in a `finally`, so the suite leaves the
  * database exactly as it found it even if `run`'s assertions throw.
  *
- * Residual risk (documented, not eliminated): the demote → `run` → restore
- * window is not held under a database lock, so a *different* concurrently
- * running test file that creates a global admin during that (single
- * bulk-UPDATE-wide) window could still race this one. Closing that fully
- * would need either a cross-connection table lock or serializing the whole
- * suite (an apps/api-wide vitest config change) — both bigger than this
- * fix. This is the same class of race as the route's own read-then-write
- * TOCTOU, deferred alongside it.
+ * The whole snapshot → demote → `run` → restore window runs under
+ * `withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, ...)` (see
+ * `../test-support/advisory-lock`) — a Postgres session-level advisory
+ * lock, which (unlike an in-process mutex) serialises across the separate
+ * OS processes vitest's forks pool runs each test file in. Every OTHER
+ * caller that mutates the ambient `isGlobalAdmin` set (currently just
+ * `access-scope.test.ts`'s global-admin fixture) must take the SAME lock
+ * around its own create, or this guarantee only holds against itself.
+ * Without it: a concurrently running file that creates a NEW global admin
+ * strictly between the snapshot read and the restore write is invisible to
+ * `ambientIds` (it wasn't there when the snapshot ran) and never gets
+ * demoted — so `targetId` silently stops being the sole admin mid-`run`,
+ * and the "refuses to demote/delete the last global admin" assertions
+ * below can observe 200 instead of 409. Measured before this fix: 2
+ * failures in 8 full-suite runs, 0 in 12 with `access-scope.test.ts`
+ * removed — see plan 058 Task 3's report.
  */
 async function withSoleGlobalAdmin(run: (targetId: string) => Promise<void>): Promise<void> {
-  const ambientAdmins = await db.select({ id: users.id }).from(users).where(eq(users.isGlobalAdmin, true));
-  const ambientIds = ambientAdmins.map((a) => a.id);
-  const { body: target } = await createUserViaApi({ isGlobalAdmin: true });
+  await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+    const ambientAdmins = await db.select({ id: users.id }).from(users).where(eq(users.isGlobalAdmin, true));
+    const ambientIds = ambientAdmins.map((a) => a.id);
+    const { body: target } = await createUserViaApi({ isGlobalAdmin: true });
 
-  if (ambientIds.length > 0) {
-    await db.update(users).set({ isGlobalAdmin: false }).where(inArray(users.id, ambientIds));
-  }
-
-  try {
-    await run(target.user.id);
-  } finally {
     if (ambientIds.length > 0) {
-      await db.update(users).set({ isGlobalAdmin: true }).where(inArray(users.id, ambientIds));
+      await db.update(users).set({ isGlobalAdmin: false }).where(inArray(users.id, ambientIds));
     }
-    await db.delete(users).where(eq(users.id, target.user.id));
-  }
+
+    try {
+      await run(target.user.id);
+    } finally {
+      if (ambientIds.length > 0) {
+        await db.update(users).set({ isGlobalAdmin: true }).where(inArray(users.id, ambientIds));
+      }
+      await db.delete(users).where(eq(users.id, target.user.id));
+    }
+  });
 }
 
 describeAdmin('GET /api/v1/admin/users', () => {

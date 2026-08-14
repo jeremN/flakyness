@@ -15,6 +15,12 @@ export interface Access {
   roleByTeam: Record<string, TeamRole>;
   /** Set only for kind === 'project-token': the single project it may touch. */
   projectId: string | null;
+  /**
+   * The caller is a `user` whose password was admin-provisioned or admin-reset
+   * and not yet rotated. Only ever true for kind === 'user' — every token-kind
+   * Access is built by spreading anonymousAccess(), which sets it false.
+   */
+  mustChangePassword: boolean;
 }
 
 /** The scope-relevant shape of a project. */
@@ -31,8 +37,43 @@ export function anonymousAccess(): Access {
     teamIds: [],
     roleByTeam: {},
     projectId: null,
+    mustChangePassword: false,
   };
 }
+
+/**
+ * Is this caller holding an unrotated temporary password?
+ *
+ * The `kind` check is load-bearing, not defensive noise: it is what guarantees
+ * a token can never be classified as mid-reset even if a future edit spreads a
+ * user Access into one.
+ */
+export function requiresPasswordChange(access: Access): boolean {
+  return access.kind === 'user' && access.mustChangePassword;
+}
+
+/**
+ * Routes reachable while a password change is pending.
+ *
+ * EXPLICIT ABSOLUTE PATHS, never an `/api/v1/auth` prefix — plan 041's
+ * SELF_GATED carries the same warning, for the same reason: a prefix silently
+ * exempts every future auth route. Adding an entry here must be a deliberate,
+ * reviewed edit, and password-change-coverage.test.ts fails CI if a new auth
+ * route appears without one.
+ *
+ * The contents follow AWS IAM's PasswordResetRequired rule — allow what
+ * COMPLETES the remedy, not only the remedy itself:
+ *   change-password  the remedy
+ *   me               the dashboard cannot render the change-password page without it
+ *   logout           never trap a user in a session they cannot leave
+ *   login            re-authenticating must not be blocked by a pending reset
+ */
+export const PASSWORD_CHANGE_ALLOWLIST: readonly string[] = [
+  '/api/v1/auth/change-password',
+  '/api/v1/auth/me',
+  '/api/v1/auth/logout',
+  '/api/v1/auth/login',
+];
 
 /**
  * May this caller READ this project?
@@ -44,6 +85,7 @@ export function anonymousAccess(): Access {
  * would break every existing install the moment this plan merges.
  */
 export function canReadProject(access: Access, project: ScopedProject): boolean {
+  if (requiresPasswordChange(access)) return false;
   if (access.isGlobalAdmin) return true;
 
   switch (access.kind) {
@@ -71,6 +113,7 @@ export function canReadProject(access: Access, project: ScopedProject): boolean 
  * open writes, and must not start to here.
  */
 export function canWriteProject(access: Access, project: ScopedProject): boolean {
+  if (requiresPasswordChange(access)) return false;
   if (access.isGlobalAdmin) return true;
 
   switch (access.kind) {
@@ -88,6 +131,7 @@ export function canWriteProject(access: Access, project: ScopedProject): boolean
 
 /** Team CRUD and user CRUD are global-admin only — never delegated per team. */
 export function canAdministerTeams(access: Access): boolean {
+  if (requiresPasswordChange(access)) return false;
   return access.isGlobalAdmin || access.kind === 'admin-token';
 }
 
@@ -101,6 +145,10 @@ export function canAdministerTeams(access: Access): boolean {
  * admin route ever added, instead of on one gate.
  */
 export function canEnterAdminApi(access: Access): boolean {
+  // Guarded here as well as in canAdministerTeams: the second branch below
+  // does NOT go through canAdministerTeams, so guarding only that function
+  // would leave a mid-reset team_admin with full admin-API entry.
+  if (requiresPasswordChange(access)) return false;
   if (canAdministerTeams(access)) return true;
   return access.kind === 'user' && Object.values(access.roleByTeam).includes('team_admin');
 }

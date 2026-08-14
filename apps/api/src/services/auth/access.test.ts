@@ -6,6 +6,8 @@ import {
   canAdministerTeams,
   canEnterAdminApi,
   scopesProjectList,
+  requiresPasswordChange,
+  PASSWORD_CHANGE_ALLOWLIST,
   type Access,
   type ScopedProject,
 } from './access';
@@ -24,6 +26,7 @@ const base: Access = {
   teamIds: [],
   roleByTeam: {},
   projectId: null,
+  mustChangePassword: false,
 };
 
 const member = (teams: Record<string, 'team_admin' | 'member'>): Access => ({
@@ -250,5 +253,91 @@ describe('scopesProjectList', () => {
     ['anonymous', anonymousAccess()],
   ])('does not scope %s', (_label, access) => {
     expect(scopesProjectList(access as Access)).toBe(false);
+  });
+});
+
+// A mid-reset variant of each fixture the file already uses. Spreading the
+// existing ones rather than rebuilding them is deliberate: if the Access shape
+// changes again, these follow automatically instead of silently going stale.
+const midResetMember = (teams: Record<string, 'team_admin' | 'member'>): Access => ({
+  ...member(teams),
+  mustChangePassword: true,
+});
+const midResetGlobalAdmin: Access = { ...globalAdminUser, mustChangePassword: true };
+
+describe('requiresPasswordChange', () => {
+  it('is true only for a user session carrying the flag', () => {
+    expect(requiresPasswordChange(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(requiresPasswordChange(member({ [TEAM_A]: 'team_admin' }))).toBe(false);
+  });
+
+  it('is false for every non-user kind, even if the flag is somehow set', () => {
+    // Defence against a future edit that spreads a user Access into a token
+    // one. Tokens are never mid-reset; the kind check is what guarantees it.
+    for (const kind of ['project-token', 'read-token', 'admin-token', 'anonymous'] as const) {
+      expect(
+        requiresPasswordChange({ ...base, kind, mustChangePassword: true }),
+        `${kind} must never be treated as mid-reset`
+      ).toBe(false);
+    }
+  });
+
+  it('anonymousAccess() never carries the flag', () => {
+    expect(anonymousAccess().mustChangePassword).toBe(false);
+  });
+});
+
+describe('the four predicates refuse a mid-reset user', () => {
+  // Every case is asserted BOTH ways. A bare `toBe(false)` would also pass if
+  // the predicate refused for an unrelated reason — wrong team, wrong role —
+  // so each refusal is paired with the permit it would otherwise have been.
+  it('canReadProject', () => {
+    expect(canReadProject(member({ [TEAM_A]: 'member' }), projectInA)).toBe(true);
+    expect(canReadProject(midResetMember({ [TEAM_A]: 'member' }), projectInA)).toBe(false);
+  });
+
+  it('canWriteProject', () => {
+    expect(canWriteProject(member({ [TEAM_A]: 'team_admin' }), projectInA)).toBe(true);
+    expect(canWriteProject(midResetMember({ [TEAM_A]: 'team_admin' }), projectInA)).toBe(false);
+  });
+
+  it('canAdministerTeams', () => {
+    expect(canAdministerTeams(globalAdminUser)).toBe(true);
+    expect(canAdministerTeams(midResetGlobalAdmin)).toBe(false);
+  });
+
+  it('canEnterAdminApi — both branches, not just the global-admin one', () => {
+    expect(canEnterAdminApi(globalAdminUser)).toBe(true);
+    expect(canEnterAdminApi(midResetGlobalAdmin)).toBe(false);
+    // canEnterAdminApi's second branch (a plain team_admin) does NOT go through
+    // canAdministerTeams. Guarding only that function is the obvious half-fix,
+    // and this pair is what catches it.
+    expect(canEnterAdminApi(member({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(canEnterAdminApi(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(false);
+  });
+
+  it('the check is ordered BEFORE the isGlobalAdmin shortcut', () => {
+    // canReadProject and canWriteProject both open with
+    // `if (access.isGlobalAdmin) return true`. Putting the new check after it
+    // leaves global admins — the highest-value accounts — entirely unenforced.
+    // `orphan` (teamId: null) is readable by global admins ONLY, so a true here
+    // can come from nothing but the isGlobalAdmin branch having run first.
+    expect(canReadProject(globalAdminUser, orphan)).toBe(true);
+    expect(canReadProject(midResetGlobalAdmin, orphan)).toBe(false);
+    expect(canWriteProject(globalAdminUser, orphan)).toBe(true);
+    expect(canWriteProject(midResetGlobalAdmin, orphan)).toBe(false);
+  });
+});
+
+describe('PASSWORD_CHANGE_ALLOWLIST', () => {
+  it('is exactly the four recovery paths, spelled in full', () => {
+    // Full absolute paths, not suffixes: the gate matches against c.req.path,
+    // which Hono reports as the whole request path even inside a sub-router.
+    expect([...PASSWORD_CHANGE_ALLOWLIST].sort()).toEqual([
+      '/api/v1/auth/change-password',
+      '/api/v1/auth/login',
+      '/api/v1/auth/logout',
+      '/api/v1/auth/me',
+    ]);
   });
 });

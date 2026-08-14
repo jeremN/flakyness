@@ -199,7 +199,26 @@ describe('read-route auth coverage', () => {
  * middleware the route table can see. A route-count assertion would only
  * force a deliberate edit; this asserts the actual property.
  */
-describe('admin project-route scope coverage', () => {
+const adminSource = readFileSync(new URL('./routes/admin.ts', import.meta.url), 'utf8');
+
+// Stryker copies the project into a sandbox and INSTRUMENTS every mutated
+// file, so in a mutation run `routes/admin.ts` no longer contains
+// `adminRouter.get('/projects/:id/rules', ...)` — each string literal becomes
+// `stryMutAct_9fa48(N) ? "" : "/projects/:id/rules"`. The scan below then
+// matches nothing, its own anti-vacuity assertion fires (correctly — it
+// genuinely cannot see the route table any more), and Stryker aborts the
+// whole API run at the dry run. That is exactly what happened on the first
+// nightly run after this guard landed.
+//
+// Skipping under instrumentation costs nothing: this is a STATIC scan, so it
+// has no mutants of its own to kill, and the uninstrumented `Tests` CI job —
+// the one that gates every PR — still runs it. Detected via the marker
+// Stryker injects rather than an env var, because the thing that actually
+// breaks the scan is the rewritten source, not the runner.
+const INSTRUMENTED = adminSource.includes('stryMutAct_');
+const describeAdminScope = INSTRUMENTED ? describe.skip : describe;
+
+describeAdminScope('admin project-route scope coverage', () => {
   // Registration sites in routes/admin.ts whose path is project-scoped
   // (`/projects/:id...`). Bumping this is the point: a new one forces a
   // deliberate edit here, which forces a reviewer to ask whether the handler
@@ -207,17 +226,15 @@ describe('admin project-route scope coverage', () => {
   // they take no project id.
   const EXPECTED_PROJECT_SCOPED_ROUTES = 9;
 
-  const source = readFileSync(new URL('./routes/admin.ts', import.meta.url), 'utf8');
-
   // Matches both the single-line form and the multi-line
   // `adminRouter.post(\n  '/path',` form used when a zValidator is passed.
   const registration = /adminRouter\.(get|post|put|patch|delete)\(\s*'([^']*)'/g;
 
-  const sites = [...source.matchAll(registration)].map((m, i, all) => ({
+  const sites = [...adminSource.matchAll(registration)].map((m, i, all) => ({
     method: m[1],
     path: m[2],
     // The handler body runs to the next registration, or to EOF for the last.
-    body: source.slice(m.index, all[i + 1]?.index ?? source.length),
+    body: adminSource.slice(m.index, all[i + 1]?.index ?? adminSource.length),
   }));
 
   const projectScoped = sites.filter((s) => s.path.startsWith('/projects/:id'));

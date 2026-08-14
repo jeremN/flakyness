@@ -18,9 +18,32 @@
 //    [TSCONFIG_ERROR] Failed to load tsconfig for '...test.ts': Tsconfig
 //    not found`, with or without a root-level `svelte-kit sync` beforehand.
 //    (The `test:mutation` script still runs `svelte-kit sync` at the repo
-//    root first too, matching the other dashboard test scripts — harmless,
-//    but NOT sufficient on its own; this buildCommand is the load-bearing
-//    fix.) Do NOT remove this option.
+//    root first too, matching the other dashboard test scripts.)
+//    Do NOT remove this option.
+//
+//    CORRECTION 2026-08-14: "this buildCommand is the load-bearing fix" was
+//    true locally and FALSE on CI. The nightly Mutation workflow failed on
+//    all 24 of its runs (2026-07-22 .. 2026-08-14, i.e. every run since it
+//    shipped) with exactly the TSCONFIG_ERROR above — the in-sandbox
+//    `svelte-kit sync` does not produce `.svelte-kit` on ubuntu-latest, and
+//    Stryker's execa call captures its output so nothing reaches the Actions
+//    log. Why it no-ops there is still unknown. The fix does not depend on
+//    the answer: `ignorePatterns: ['!.svelte-kit']` below negates the entry
+//    in core's ALWAYS_IGNORE so the ALREADY-SYNCED directory is copied into
+//    the sandbox, which removes the dependency on the buildCommand working
+//    at all. buildCommand is kept as the second layer, not the first.
+//
+// 4. `ignorePatterns: ["!.svelte-kit"]` — see the correction above. User
+//    patterns are appended AFTER core's hardcoded ALWAYS_IGNORE
+//    (`core/dist/src/fs/project-reader.js`), and the walker honours `!`
+//    negation, so this is the supported way to un-ignore one of them. It
+//    only has anything to copy if `.svelte-kit` exists at
+//    `apps/dashboard/` when Stryker starts — which is why the workflow must
+//    invoke `pnpm --filter dashboard run test:mutation` (`svelte-kit sync &&
+//    stryker run`) and NOT `pnpm --filter dashboard exec stryker run`.
+//    Reproduced 2026-08-14: with `.svelte-kit` absent from the sandbox the
+//    dry run dies on 21 files; present (even as `{}`) it passes 21 files /
+//    230 tests.
 //
 // 3. `tsconfigFile: "tsconfig.stryker-unused.json"` — points at a
 //    deliberately nonexistent file to no-op Stryker core's
@@ -44,6 +67,7 @@ export default {
   testRunner: 'vitest',
   plugins: ['@stryker-mutator/vitest-runner'],
   buildCommand: 'svelte-kit sync',
+  ignorePatterns: ['!.svelte-kit'],
   vitest: { configFile: 'vitest.stryker.config.ts' },
   coverageAnalysis: 'perTest',
   concurrency: 2,

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { eq, desc, and, gte } from 'drizzle-orm';
 import { db, testResults, testRuns, flakyTests, quarantineEvents } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import { readAuth } from '../middleware/auth';
 import { resolveAccess, getAccess, loadScopedProject, assertProjectReadable } from '../middleware/access';
 import { canReadProject, canWriteProject } from '../services/auth/access';
@@ -13,6 +14,7 @@ const uuidSchema = z.string().uuid();
 
 // Apply rate limiting
 testsRouter.use('*', apiRateLimit);
+testsRouter.use('*', passwordChangeGate());
 
 // ---------------------------------------------------------------------------
 // Per-test flake-rate trend — pure aggregation (no I/O), so it can be unit

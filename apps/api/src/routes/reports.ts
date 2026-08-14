@@ -4,6 +4,7 @@ import { zValidator } from '@hono/zod-validator';
 import { dispatchReport } from '../parsers/registry';
 import { projectAuth } from '../middleware/auth';
 import { reportRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
 import { reconcileQuarantine, type QuarantineTransition } from '../services/quarantine';
@@ -61,6 +62,7 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 // Apply auth and rate limiting to all routes
 reports.use('*', projectAuth());
 reports.use('*', reportRateLimit);
+reports.use('*', passwordChangeGate());
 
 /**
  * POST /api/v1/reports

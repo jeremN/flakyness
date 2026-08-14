@@ -6,6 +6,7 @@ import { setCookie, deleteCookie } from 'hono/cookie';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import {
   getSessionUser,
   issueSession,
@@ -46,6 +47,10 @@ const authRouter = new Hono<{ Variables: { requestId: string } }>();
 authRouter.use('*', apiRateLimit);
 authRouter.use('/login', authRateLimit);
 authRouter.use('/change-password', authRateLimit);
+// All four current auth routes are allowlisted, so this mount changes nothing
+// today. That is the point: it is what makes a FUTURE auth route refused by
+// default rather than silently exempt.
+authRouter.use('*', passwordChangeGate());
 
 const loginSchema = z.object({
   email: z.string().email().max(255),

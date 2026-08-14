@@ -4,6 +4,7 @@ import { eq, desc, and, gte, inArray, sql } from 'drizzle-orm';
 import { db, projects, flakyTests, testRuns, testResults } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import { readAuth } from '../middleware/auth';
 import { resolveAccess, getAccess } from '../middleware/access';
 import { scopesProjectList, canReadProject } from '../services/auth/access';
@@ -31,6 +32,7 @@ const runResultsStatusSchema = z.enum(['all', 'failed', 'flaky', 'passed', 'skip
 
 // Apply rate limiting
 projectsRouter.use('*', apiRateLimit);
+projectsRouter.use('*', passwordChangeGate());
 
 /**
  * Escape regex metacharacters so a test name is matched literally inside the

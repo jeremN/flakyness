@@ -6,6 +6,7 @@ import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { adminOrGlobalAdminAuth } from '../middleware/auth';
+import { passwordChangeGate } from '../middleware/password-change';
 import { getAccess } from '../middleware/access';
 import { canAdministerTeams } from '../services/auth/access';
 import { revokeAllUserSessions } from '../middleware/session';
@@ -20,6 +21,7 @@ const adminUsersRouter = new Hono<{ Variables: { requestId: string } }>();
 // provisioning unauthenticated. Guarded by the "requires an admin token" test
 // in the suite for this file.
 adminUsersRouter.use('*', adminRateLimit);
+adminUsersRouter.use('*', passwordChangeGate());
 adminUsersRouter.use('*', adminOrGlobalAdminAuth());
 
 // User CRUD is never delegated to a team_admin — adminOrGlobalAdminAuth()

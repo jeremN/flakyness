@@ -6,6 +6,7 @@ import { db, teams, teamMembers, users, projects } from '../db';
 import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { adminOrGlobalAdminAuth } from '../middleware/auth';
+import { passwordChangeGate } from '../middleware/password-change';
 import { getAccess } from '../middleware/access';
 import { canAdministerTeams } from '../services/auth/access';
 import { TEAM_ROLES } from '../services/auth/membership';
@@ -16,6 +17,7 @@ const adminTeamsRouter = new Hono<{ Variables: { requestId: string } }>();
 // Hono instance from routes/admin.ts, so it does NOT inherit that router's
 // `use('*', ...)` middleware. Guarded by the "requires an admin token" test.
 adminTeamsRouter.use('*', adminRateLimit);
+adminTeamsRouter.use('*', passwordChangeGate());
 adminTeamsRouter.use('*', adminOrGlobalAdminAuth());
 
 // Team CRUD is never delegated to a team_admin (see canAdministerTeams'

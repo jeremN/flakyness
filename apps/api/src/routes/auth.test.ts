@@ -482,6 +482,75 @@ describeAuth('POST /api/v1/auth/change-password', () => {
     expect((await login(user.email, PASSWORD)).status).toBe(401);
   });
 
+  /**
+   * NIST SP 800-63B §6.1.1 — "Temporary secrets SHALL NOT be reused".
+   *
+   * The attack this closes: a temporary password leaks (Slack thread, ticket).
+   * The attacker logs in — allowlisted while mid-reset — and POSTs
+   * change-password with currentPassword and newPassword BOTH set to the
+   * leaked value. Before the fix that returned 200, cleared the flag, revoked
+   * every session and minted a fresh one for the attacker; the legitimate user
+   * later signed in with the password they were given and was never prompted.
+   * Silent standing access, reached through the one route that is supposed to
+   * be the exit from the boundary.
+   */
+  it('refuses reusing the current password as the new one, and changes NOTHING', async () => {
+    const user = await createUser({ mustChangePassword: true });
+    const cookie = sessionCookieFrom(await login(user.email))!;
+
+    const res = await changePassword(cookie, {
+      currentPassword: PASSWORD,
+      newPassword: PASSWORD,
+    });
+
+    expect(res.status).toBe(400);
+    // The `code` is the contract the dashboard branches on — a bare 400 is
+    // indistinguishable from the zod min-length rejection tested above.
+    expect(await res.json()).toEqual({
+      error: 'New password must differ from the current one',
+      code: 'password_reused',
+    });
+
+    const [after] = await db.select().from(users).where(eq(users.id, user.id));
+    // The whole point: a refused change must leave the caller INSIDE the
+    // boundary. A 400 that still cleared the flag would be the same silent
+    // standing access with an unhappy-looking status code.
+    expect(after.mustChangePassword, 'a refused change must not clear the flag').toBe(true);
+    expect(after.passwordHash, 'a refused change must not rewrite the hash').toBe(user.passwordHash);
+
+    // And the session lifecycle must not have run either. revokeAllUserSessions
+    // + issueSession is the half that hands the attacker a working credential,
+    // so "did the rotation happen" is a separate fact from "did the flag clear"
+    // and gets its own assertions.
+    expect(sessionCookieFrom(res), 'a refused change must not mint a session').toBeNull();
+    const survivors = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+    expect(survivors, 'a refused change must not revoke the existing session').toHaveLength(1);
+
+    const stillSignedIn = await app.request('/api/v1/auth/me', {
+      headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(stillSignedIn.status, 'the original session must still work').toBe(200);
+    expect((await stillSignedIn.json()).user.mustChangePassword).toBe(true);
+  });
+
+  it('compares against the STORED HASH, not the submitted currentPassword string', async () => {
+    // Distinguishes the implemented fix from the tempting shortcut
+    // `if (newPassword === currentPassword)`. Password comparison is
+    // byte-exact, so a currentPassword that verifies while differing as a
+    // string is not constructible here; what IS constructible is the reverse
+    // direction — proving the refusal is keyed to the account's real password
+    // rather than to string equality of the two request fields. A user whose
+    // password is X, submitting {current: X, new: X}, is refused; the same
+    // user submitting {current: X, new: Y} is not.
+    const user = await createUser();
+    const cookie = sessionCookieFrom(await login(user.email))!;
+
+    expect((await changePassword(cookie, { currentPassword: PASSWORD, newPassword: PASSWORD })).status).toBe(400);
+    // Same session, same account, only newPassword differs — so a 200 here can
+    // come from nothing but the hash comparison having been the deciding fact.
+    expect((await changePassword(cookie, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD })).status).toBe(200);
+  });
+
   it('revokes every OTHER session and re-issues the caller a fresh cookie', async () => {
     const user = await createUser();
     const cookieA = sessionCookieFrom(await login(user.email))!;

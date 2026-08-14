@@ -213,7 +213,12 @@ forced first-login reset (`mustChangePassword`).
 }
 ```
 `newPassword` must be at least 12 characters — length only, no
-character-class rules (NIST SP 800-63B recommends length over composition).
+character-class rules (NIST SP 800-63B recommends length over composition) —
+and must **differ from the current password**. Reusing it is refused with
+`400 password_reused`; NIST SP 800-63B §6.1.1 requires that a temporary secret
+not be reused, and this route is the only exit from the
+`password_change_required` boundary, so "rotating" a leaked temporary password
+to itself would clear the flag while leaving the leaked secret live.
 
 **Response (200):**
 ```json
@@ -229,6 +234,7 @@ anything.
 | Status | Condition |
 |--------|-----------|
 | `400` | `newPassword` shorter than 12 characters, or a malformed body. |
+| `400` | `{ "error": "New password must differ from the current one", "code": "password_reused" }` — key off `code`, not the message. Nothing is changed: the flag stays set, the hash is untouched, and no session is revoked or re-issued. |
 | `401` | Not authenticated, or `{ "error": "Current password is incorrect" }`. |
 | `429` | Rate limited — 10 attempts/minute per IP. |
 
@@ -2264,6 +2270,10 @@ Key off `code`, never the message text. The four paths that remain available
 are `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password`,
 `GET /api/v1/auth/me` and `POST /api/v1/auth/logout` — enough to complete the
 change and to leave the session.
+
+Completing the change requires a **genuinely new** password: submitting the
+current (temporary) one as `newPassword` is refused with `400 password_reused`
+and leaves the caller inside the boundary. See *Change Password* above.
 
 This applies to **session** callers only. `ADMIN_TOKEN`, `READ_TOKEN` and
 project tokens never carry the flag and are unaffected. A request presenting

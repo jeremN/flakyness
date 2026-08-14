@@ -189,6 +189,45 @@ describeEnforcement('mustChangePassword enforcement', () => {
 
       await cleanup(u);
     });
+
+    /**
+     * ...but the remedy must be a REAL rotation. NIST SP 800-63B §6.1.1,
+     * "Temporary secrets SHALL NOT be reused" — the design spec's own lead
+     * citation, and until this test the one rule the exit route permitted
+     * violating.
+     *
+     * This sits in the LOCKOUT describe on purpose: it is the boundary's exit
+     * door, and the two facts about a door are that it opens for the right
+     * person (the test above) and does not open for the wrong one (this one).
+     * Exercised against a genuinely provisioned temporary password rather than
+     * a hand-seeded row, because that is the exact secret the attack leaks.
+     */
+    it('POST /api/v1/auth/change-password REFUSES reusing the temporary password, leaving the caller mid-reset', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/change-password', {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify({ currentPassword: u.password, newPassword: u.password }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'New password must differ from the current one',
+        code: 'password_reused',
+      });
+
+      const [row] = await db.select({ f: users.mustChangePassword }).from(users).where(eq(users.id, u.id));
+      expect(row.f, 'a refused rotation must leave the account inside the boundary').toBe(true);
+
+      // Still refused everywhere, i.e. the boundary is genuinely still up —
+      // not merely a flag that reads true while the gate has moved on.
+      const after = await app.request('/api/v1/admin/projects', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(after.status).toBe(403);
+      expect((await after.json()).code).toBe('password_change_required');
+
+      await cleanup(u);
+    });
   });
 
   /**

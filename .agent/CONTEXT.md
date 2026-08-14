@@ -449,14 +449,44 @@ the global error handler (`index.ts:44-51`) renders exceptions as
 which would leave a caller with only free-text to key off (the "Keycloak
 `invalid_grant`" failure mode called out in the source comment).
 
-**The allowlist** (`PASSWORD_CHANGE_ALLOWLIST` in `access.ts`) is four
-explicit absolute paths, never a prefix: `/api/v1/auth/change-password`
-(the remedy), `/api/v1/auth/me` (so the dashboard can render the
-change-password page at all), `/api/v1/auth/logout` (never trap a user in a
-session they can't leave), `/api/v1/auth/login` (re-authenticating must not
-itself be blocked). Adding a route to `auth.ts` without adding it here fails
+**The allowlist** (`PASSWORD_CHANGE_ALLOWLIST` in `access.ts`) is a list of
+explicit **METHOD + absolute PATH pairs**, never a prefix and never a bare
+path: `POST /api/v1/auth/change-password` (the remedy), `GET` **and `HEAD`**
+`/api/v1/auth/me` (so the dashboard can render the change-password page at
+all), `POST /api/v1/auth/logout` (never trap a user in a session they can't
+leave), `POST /api/v1/auth/login` (re-authenticating must not itself be
+blocked). The gate matches through `isPasswordChangeExempt(method, path)`.
+
+Three measured Hono 4.12.33 facts sit behind that shape, and each one is
+pinned by a test:
+
+- **Pairs, not paths.** A path-only exemption extends to every method that
+  path ever grows — a future `DELETE /api/v1/auth/me` would have been allowed
+  mid-reset with nobody deciding it, and the coverage guard (which deduped
+  paths into a `Set`) could not have seen it.
+- **`HEAD /api/v1/auth/me` is a real entry.** Hono answers HEAD from a GET
+  route: status 200, and the middleware observes `c.req.method === 'HEAD'`.
+  Delete that entry and every HEAD probe of `/me` starts 403-ing mid-reset.
+  The coverage guard expands each `GET` registration into `GET` + `HEAD` for
+  exactly this reason.
+- **`OPTIONS` is deliberately absent.** `cors()` is mounted globally at
+  `index.ts:29`, ahead of every router, and answers preflight itself with a
+  204 — the gate never runs for an OPTIONS request. If `cors()` is ever moved
+  below the routers, revisit this.
+
+`c.req.path` is the post-normalisation routing key: Hono percent-decodes and
+resolves `..` before **both** dispatch and `c.req.path`, so gate and router
+always read the same string and no traversal/encoding bypass exists. Never add
+normalisation of your own here — a second, differently-implemented pass is the
+only way to desynchronise them.
+
+Adding a route to `auth.ts` without listing it fails
 `password-change-coverage.test.ts`, which also asserts all seven gate mounts
-exist, in the correct order relative to each router's rate limiter.
+exist, in the correct order relative to each router's rate limiter. That guard
+compares against the **union** of the allowlist and an explicit
+`AUTH_ROUTES_DELIBERATELY_REFUSED` list, so "this new auth route is *not* part
+of recovery" is a one-line answer — the guard must never be greenable only by
+widening the allowlist.
 
 **Scope: session callers only.** `ADMIN_TOKEN`, `READ_TOKEN`, and project
 tokens never carry the flag — confirmed by the gate's own first line

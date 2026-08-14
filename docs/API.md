@@ -2266,10 +2266,21 @@ recovery paths below:
 403 { "error": "Password change required", "code": "password_change_required" }
 ```
 
-Key off `code`, never the message text. The four paths that remain available
-are `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password`,
-`GET /api/v1/auth/me` and `POST /api/v1/auth/logout` — enough to complete the
-change and to leave the session.
+Key off `code`, never the message text. What remains available is a list of
+exact **method + path** pairs — enough to complete the change and to leave the
+session, and nothing else:
+
+| Method | Path |
+|---|---|
+| `POST` | `/api/v1/auth/login` |
+| `POST` | `/api/v1/auth/change-password` |
+| `GET` | `/api/v1/auth/me` |
+| `HEAD` | `/api/v1/auth/me` |
+| `POST` | `/api/v1/auth/logout` |
+
+The exemption is keyed to the **pair**, not the path: any other method on one
+of these paths is refused like any other endpoint. `OPTIONS` never reaches
+this check — CORS preflight is answered globally, before the gate.
 
 Completing the change requires a **genuinely new** password: submitting the
 current (temporary) one as `newPassword` is refused with `400 password_reused`

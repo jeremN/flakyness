@@ -1,6 +1,6 @@
 import { Context, MiddlewareHandler } from 'hono';
 import { getSessionUser } from './session';
-import { PASSWORD_CHANGE_ALLOWLIST } from '../services/auth/access';
+import { isPasswordChangeExempt } from '../services/auth/access';
 
 /**
  * Tagged for the same reason readAuth and resolveAccess are
@@ -15,7 +15,10 @@ export interface PasswordChangeGateMiddleware extends MiddlewareHandler {
 
 /**
  * Refuse every request from a session holding an unrotated temporary password,
- * except the four paths that let the holder complete the change.
+ * except the handful of METHOD+PATH pairs that let the holder complete the
+ * change (PASSWORD_CHANGE_ALLOWLIST). Matching on the pair rather than the
+ * path alone is what stops a future method on an already-exempt path — a
+ * `DELETE /api/v1/auth/me`, say — from inheriting the exemption silently.
  *
  * MOUNT POINT: `use('*')` inside each router, AFTER that router's rate limiter.
  * NOT `app.use('*')` on the root app. A denial returns without calling next(),
@@ -36,7 +39,7 @@ export function passwordChangeGate(): PasswordChangeGateMiddleware {
   const mw: MiddlewareHandler = async (c: Context, next) => {
     const sessionUser = getSessionUser(c);
     if (!sessionUser?.mustChangePassword) return await next();
-    if (PASSWORD_CHANGE_ALLOWLIST.includes(c.req.path)) return await next();
+    if (isPasswordChangeExempt(c.req.method, c.req.path)) return await next();
 
     return c.json(
       { error: 'Password change required', code: 'password_change_required' },

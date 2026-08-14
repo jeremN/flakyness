@@ -128,6 +128,41 @@ describeEnforcement('mustChangePassword enforcement', () => {
       await cleanup(u);
     });
 
+    it('HEAD /api/v1/auth/me works too — the method the pair-matching fix could have locked out', async () => {
+      // Exemptions became METHOD+PATH pairs. Hono answers HEAD from a GET
+      // route (200, with the middleware observing method 'HEAD'), so HEAD /me
+      // is genuinely reachable in production and was exempt by accident under
+      // the old path-only match. It must stay exempt on purpose. This runs
+      // through the REAL app, not the isolated gate, so it also proves nothing
+      // between cors() and the auth router turns HEAD into something else.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/me', {
+        method: 'HEAD',
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status, 'a HEAD probe of /me must not 403 mid-reset').toBe(200);
+      await cleanup(u);
+    });
+
+    it('DELETE /api/v1/auth/me is REFUSED — the path is allowlisted, the method is not', async () => {
+      // The other half of pair-matching, proven on the real app. There is no
+      // DELETE handler today, so an unenforced caller gets 404; a mid-reset
+      // caller gets the gate's 403 because the gate runs before the router's
+      // 404. That is the point: if such a route were ever added, it would be
+      // refused by default rather than inheriting /me's exemption silently.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/me', {
+        method: 'DELETE',
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Password change required',
+        code: 'password_change_required',
+      });
+      await cleanup(u);
+    });
+
     it('POST /api/v1/auth/logout ends the session', async () => {
       const u = await provisionMustChangeUser();
       const res = await app.request('/api/v1/auth/logout', {

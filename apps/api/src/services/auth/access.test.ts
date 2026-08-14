@@ -8,6 +8,7 @@ import {
   scopesProjectList,
   requiresPasswordChange,
   PASSWORD_CHANGE_ALLOWLIST,
+  isPasswordChangeExempt,
   type Access,
   type ScopedProject,
 } from './access';
@@ -380,14 +381,61 @@ describe('the four predicates refuse a mid-reset user', () => {
 });
 
 describe('PASSWORD_CHANGE_ALLOWLIST', () => {
-  it('is exactly the four recovery paths, spelled in full', () => {
+  it('is exactly the recovery METHOD+PATH pairs, spelled in full', () => {
     // Full absolute paths, not suffixes: the gate matches against c.req.path,
     // which Hono reports as the whole request path even inside a sub-router.
-    expect([...PASSWORD_CHANGE_ALLOWLIST].sort()).toEqual([
-      '/api/v1/auth/change-password',
-      '/api/v1/auth/login',
-      '/api/v1/auth/logout',
-      '/api/v1/auth/me',
+    // And METHOD+PATH pairs, not bare paths: a path-only entry silently
+    // extends to every method that path ever grows.
+    expect(
+      [...PASSWORD_CHANGE_ALLOWLIST].map((r) => `${r.method} ${r.path}`).sort()
+    ).toEqual([
+      'GET /api/v1/auth/me',
+      // HEAD is a REAL entry, not padding. Hono answers HEAD from a GET route
+      // (measured on 4.12.33: 200, and the middleware sees method 'HEAD'), so
+      // dropping this line 403s every HEAD probe of /me for a mid-reset caller.
+      'HEAD /api/v1/auth/me',
+      'POST /api/v1/auth/change-password',
+      'POST /api/v1/auth/login',
+      'POST /api/v1/auth/logout',
     ]);
+  });
+
+  it('OPTIONS is deliberately absent — cors() answers preflight before the gate runs', () => {
+    // Pinned as a decision rather than an omission. index.ts:29 mounts cors()
+    // globally, ahead of every router, and it returns 204 itself; measured,
+    // the gate never runs for an OPTIONS request. An entry here would imply a
+    // protection this layer does not provide.
+    expect(PASSWORD_CHANGE_ALLOWLIST.some((r) => r.method === 'OPTIONS')).toBe(false);
+  });
+});
+
+describe('isPasswordChangeExempt', () => {
+  it('matches on the pair, so a new method on an exempt path is NOT inherited', () => {
+    expect(isPasswordChangeExempt('GET', '/api/v1/auth/me')).toBe(true);
+    expect(isPasswordChangeExempt('HEAD', '/api/v1/auth/me')).toBe(true);
+    // The whole reason pairs exist: a future DELETE /api/v1/auth/me must be a
+    // deliberate addition, never a silent consequence of /me being listed.
+    expect(isPasswordChangeExempt('DELETE', '/api/v1/auth/me')).toBe(false);
+    expect(isPasswordChangeExempt('POST', '/api/v1/auth/me')).toBe(false);
+  });
+
+  it('matches on the pair, so a method is not exempt across unrelated paths', () => {
+    expect(isPasswordChangeExempt('POST', '/api/v1/auth/login')).toBe(true);
+    expect(isPasswordChangeExempt('POST', '/api/v1/projects')).toBe(false);
+    // The cross product must not be exempt just because both halves appear
+    // somewhere in the list.
+    expect(isPasswordChangeExempt('GET', '/api/v1/auth/login')).toBe(false);
+  });
+
+  it('matches the FULL path, never a suffix', () => {
+    expect(isPasswordChangeExempt('GET', '/api/v1/projects/auth/me')).toBe(false);
+    expect(isPasswordChangeExempt('GET', '/auth/me')).toBe(false);
+  });
+
+  it('is case-sensitive on the method, matching what Hono reports', () => {
+    // c.req.method is always upper-case for the standard verbs, so a
+    // lower-case entry in the list would be dead. Pinned so nobody "helpfully"
+    // adds a toUpperCase() that masks a typo in the list itself.
+    expect(isPasswordChangeExempt('get', '/api/v1/auth/me')).toBe(false);
   });
 });

@@ -52,8 +52,21 @@ export function requiresPasswordChange(access: Access): boolean {
   return access.kind === 'user' && access.mustChangePassword;
 }
 
+/** One exempt request: a METHOD and a PATH, never a path alone. */
+export interface AllowedRequest {
+  readonly method: string;
+  readonly path: string;
+}
+
 /**
- * Routes reachable while a password change is pending.
+ * Requests reachable while a password change is pending.
+ *
+ * METHOD **AND** PATH, not path alone. A path-only exemption silently extends
+ * to every method that path ever grows: a future `DELETE /api/v1/auth/me`
+ * ("close my account") would have been allowed mid-reset without anyone
+ * deciding that, and the coverage guard — which deduped paths into a Set —
+ * could not have seen the difference. Pairing is what forces the decision to
+ * be made once per method.
  *
  * EXPLICIT ABSOLUTE PATHS, never an `/api/v1/auth` prefix — plan 041's
  * SELF_GATED carries the same warning, for the same reason: a prefix silently
@@ -67,13 +80,46 @@ export function requiresPasswordChange(access: Access): boolean {
  *   me               the dashboard cannot render the change-password page without it
  *   logout           never trap a user in a session they cannot leave
  *   login            re-authenticating must not be blocked by a pending reset
+ *
+ * `HEAD /api/v1/auth/me` is a REAL entry, not defensive padding, and removing
+ * it is a live regression. Hono answers HEAD from a GET route — measured on
+ * 4.12.33: `HEAD /api/v1/auth/me` returns 200 and this middleware observes
+ * `c.req.method === 'HEAD'`. Under the old path-only match that was exempt by
+ * accident; under pairs it must be exempt on purpose, or every HEAD probe of
+ * /me starts 403-ing mid-reset.
+ *
+ * `OPTIONS` is deliberately ABSENT. `cors()` is mounted globally at
+ * `index.ts:29`, ahead of every router, and answers preflight itself with a
+ * 204 — measured: the gate never runs for an OPTIONS request, with or without
+ * preflight headers. Adding OPTIONS here would be dead code implying a
+ * protection that is not this layer's to give. If `cors()` is ever moved below
+ * the routers, revisit this.
  */
-export const PASSWORD_CHANGE_ALLOWLIST: readonly string[] = [
-  '/api/v1/auth/change-password',
-  '/api/v1/auth/me',
-  '/api/v1/auth/logout',
-  '/api/v1/auth/login',
+export const PASSWORD_CHANGE_ALLOWLIST: readonly AllowedRequest[] = [
+  { method: 'POST', path: '/api/v1/auth/change-password' },
+  { method: 'GET', path: '/api/v1/auth/me' },
+  { method: 'HEAD', path: '/api/v1/auth/me' },
+  { method: 'POST', path: '/api/v1/auth/logout' },
+  { method: 'POST', path: '/api/v1/auth/login' },
 ];
+
+/**
+ * Is this exact request exempt from the password-change gate?
+ *
+ * Takes `c.req.method` / `c.req.path` rather than the Context, so it stays a
+ * pure function that unit tests can drive directly.
+ *
+ * `path` MUST be `c.req.path` and nothing else. Hono percent-decodes and
+ * resolves `..` before BOTH dispatch and `c.req.path` (measured:
+ * `/api/v1/projects/../auth/me` and `/api/v1/auth/%6de` both dispatch to the
+ * `/api/v1/auth/me` handler and both report `c.req.path === '/api/v1/auth/me'`),
+ * so gate and router are reading the same post-normalisation key and cannot
+ * disagree. Do NOT normalise again here — a second, differently-implemented
+ * normalisation is the only way to desynchronise the two.
+ */
+export function isPasswordChangeExempt(method: string, path: string): boolean {
+  return PASSWORD_CHANGE_ALLOWLIST.some((r) => r.method === method && r.path === path);
+}
 
 /**
  * May this caller READ this project?

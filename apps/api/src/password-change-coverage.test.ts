@@ -68,12 +68,39 @@ function isKnownAuthMiddleware(handler: unknown): boolean {
   return handler === apiRateLimit || handler === authRateLimit || isGateHandler(handler);
 }
 
-const authRoutePaths = [
+/**
+ * The methods a single route registration is actually REACHABLE by.
+ *
+ * Hono answers HEAD from a GET route — measured on 4.12.33: `HEAD` against a
+ * `GET` handler returns 200 and middleware observes `c.req.method === 'HEAD'`.
+ * So one `GET` registration is two reachable requests, and both need an
+ * explicit allowlist decision. Without this expansion the guard would demand
+ * that `HEAD /api/v1/auth/me` be *removed* from the allowlist (it is not in
+ * the route table), and removing it 403s every HEAD probe of /me for a
+ * mid-reset caller.
+ *
+ * `OPTIONS` is deliberately NOT expanded: `cors()` is mounted globally at
+ * index.ts:29 ahead of every router and answers preflight itself with a 204,
+ * so an OPTIONS request never reaches the gate at all (measured; pinned in
+ * middleware/password-change.test.ts).
+ */
+function reachableMethods(method: string): readonly string[] {
+  return method === 'GET' ? ['GET', 'HEAD'] : [method];
+}
+
+const format = (method: string, path: string) => `${method} ${path}`;
+
+// METHOD+PATH pairs, not bare paths. Deduping into a Set of PATHS — which this
+// did until final review — makes the guard blind to a new METHOD on an
+// already-listed path: a future `DELETE /api/v1/auth/me` would not change the
+// set, CI would stay green, and the path-only exemption would have admitted it
+// mid-reset without anyone deciding so.
+const authRoutes = [
   ...new Set(
     app.routes
       .filter((r) => r.path.startsWith('/api/v1/auth/'))
       .filter((r) => !(r.method === 'ALL' && isKnownAuthMiddleware(r.handler)))
-      .map((r) => r.path)
+      .flatMap((r) => reachableMethods(r.method).map((m) => format(m, r.path)))
   ),
 ].sort();
 
@@ -163,6 +190,8 @@ describe('password-change gate coverage', () => {
     // password recovery (add it to PASSWORD_CHANGE_ALLOWLIST) or it is not
     // (leave it out and it is correctly refused). Silence is the one outcome
     // this forbids.
-    expect(authRoutePaths).toEqual([...PASSWORD_CHANGE_ALLOWLIST].sort());
+    expect(authRoutes).toEqual(
+      [...PASSWORD_CHANGE_ALLOWLIST].map((r) => format(r.method, r.path)).sort()
+    );
   });
 });

@@ -112,22 +112,42 @@ deliberate (maintainer decision).
 export function requiresPasswordChange(access: Access): boolean;
 
 /**
- * Routes reachable while a password change is pending. EXPLICIT PATHS, never a
- * `/api/v1/auth` prefix — plan 041's SELF_GATED carries the same warning: a
- * prefix silently exempts every future auth route. Adding one here must be a
- * deliberate, reviewed edit.
+ * Requests reachable while a password change is pending. METHOD + PATH pairs,
+ * with EXPLICIT PATHS, never a `/api/v1/auth` prefix — plan 041's SELF_GATED
+ * carries the same warning: a prefix silently exempts every future auth route.
+ * Adding one here must be a deliberate, reviewed edit.
  */
-export const PASSWORD_CHANGE_ALLOWLIST: readonly string[];
+export interface AllowedRequest { readonly method: string; readonly path: string }
+export const PASSWORD_CHANGE_ALLOWLIST: readonly AllowedRequest[];
+export function isPasswordChangeExempt(method: string, path: string): boolean;
 ```
 
 Allowlist contents — the AWS lesson, allow what completes the remedy:
 
-| Path | Why |
+| Method + path | Why |
 |---|---|
 | `POST /api/v1/auth/change-password` | the remedy itself |
 | `GET /api/v1/auth/me` | the dashboard cannot render the change-password page without it |
+| `HEAD /api/v1/auth/me` | Hono answers HEAD from the GET route (measured: 200, and the gate sees `method === 'HEAD'`); omitting it 403s every HEAD probe of `/me` |
 | `POST /api/v1/auth/logout` | never trap a user in a session they cannot leave |
 | `POST /api/v1/auth/login` | re-authenticating must not be blocked by a pending reset |
+
+**Pairs, not bare paths** — revised in final review. A path-only exemption
+extends to every method that path ever grows: a future `DELETE /api/v1/auth/me`
+would have been allowed mid-reset without anyone deciding it, and the coverage
+guard deduped paths into a `Set`, so the new method would not even have changed
+the set. Matching `{ method, path }` makes each method its own reviewed
+decision.
+
+**`OPTIONS` is deliberately absent.** `cors()` is mounted globally at
+`index.ts:29`, ahead of every router, and answers preflight itself with a 204;
+measured, the gate never runs for an OPTIONS request. Revisit only if `cors()`
+moves below the routers.
+
+**No normalisation in the gate.** `c.req.path` is the post-normalisation
+routing key — Hono percent-decodes and resolves `..` before both dispatch and
+`c.req.path` — so gate and router always read the same string. A second,
+differently-implemented normalisation is the only way to desynchronise them.
 
 ### Layer 1 — authorization (AWS shape)
 

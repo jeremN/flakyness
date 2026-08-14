@@ -136,9 +136,33 @@ describeEnforcement('mustChangePassword enforcement', () => {
       await cleanup(u);
     });
 
-    it('POST /api/v1/auth/login works — proven by loginAs itself asserting 200', async () => {
+    it('POST /api/v1/auth/login re-authenticates a caller who is ALREADY carrying a mid-reset session', async () => {
+      // Routing this through loginAs() would prove nothing: loginAs() sends no
+      // Cookie header at all, so getSessionUser() resolves null,
+      // passwordChangeGate() short-circuits on `!sessionUser?.mustChangePassword`
+      // BEFORE ever consulting the allowlist, and the request would sail
+      // through even if '/api/v1/auth/login' were deleted from
+      // PASSWORD_CHANGE_ALLOWLIST. The real scenario this allowlist entry
+      // protects is a browser that already holds a mid-reset session cookie
+      // and re-authenticates while still sending it — the gate must actually
+      // consult the allowlist and let this specific path through.
       const u = await provisionMustChangeUser();
-      await loginAs(u.email, u.password);
+      const existingSessionCookie = await loginAs(u.email, u.password);
+
+      const res = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: withCookie(existingSessionCookie),
+        body: JSON.stringify({ email: u.email, password: u.password }),
+      });
+      expect(res.status).toBe(200);
+      // A bare status check is weaker than it looks: it would pass even if the
+      // route silently stopped issuing sessions. The cookie is the actual
+      // proof this response re-authenticated the caller rather than just
+      // acknowledging the credentials.
+      const reissuedCookie = (res.headers.get('set-cookie') ?? '')
+        .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+      expect(reissuedCookie, 're-authenticating must issue a fresh session cookie').toBeDefined();
+
       await cleanup(u);
     });
 

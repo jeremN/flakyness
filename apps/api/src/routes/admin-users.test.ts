@@ -456,6 +456,27 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
     }
   }
 
+  /**
+   * Asserts EXACTLY ONE of two concurrent removals won.
+   *
+   * Deliberately two-sided. The obvious phrasing — `.not.toEqual([200, 200])`
+   * — only constrains the upper bound, so it is equally satisfied by
+   * `[409, 409]`, `[500, 500]` and `[401, 401]`: a build that refuses EVERY
+   * demote and delete passes it, and a build whose auth broke entirely passes
+   * it too. Neither is what these five commits of TOCTOU work were about, and
+   * locking the operator out of their own last-admin controls is arguably
+   * worse than the race. Measured: mutating the guard to
+   * `canRemoveGlobalAdmin(admins.length - 1)` (never allow a removal) left the
+   * whole 805-test suite green under the one-sided assertion.
+   */
+  function expectExactlyOneWinner(statuses: number[], label: string): void {
+    expect(
+      statuses.filter((s) => s === 200),
+      `${label}: exactly one of two concurrent removals must win — two winners ` +
+        'means the guard is not serialised, zero means it refuses a removal it should allow'
+    ).toHaveLength(1);
+  }
+
   /** How many of `ids` are STILL flagged isGlobalAdmin (a delete removes the row entirely, so absence also counts as "not remaining"). */
   async function remainingAdminCount(ids: string[]): Promise<number> {
     const rows = await db
@@ -473,6 +494,11 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
     });
     const cookie = (res.headers.get('set-cookie') ?? '')
       .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+    // Asserted, not `!`-asserted: a bare non-null assertion is a TYPE claim
+    // only. If login ever stops issuing a cookie, the self-demote race below
+    // would send `fk_session=undefined`, both requests would 401, and the
+    // test would pass having exercised nothing at all.
+    expect(cookie, 'login must issue a session cookie').toBeDefined();
     return cookie!;
   }
 
@@ -491,13 +517,10 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
               }),
             ]);
 
-            // At most one of the two may succeed. Unfixed (unlocked
+            // Exactly one of the two may succeed. Unfixed (unlocked
             // count-then-write) both read count 2 and both pass — the
             // reviewer measured this reproducing within 2 attempts.
-            expect(
-              [resA.status, resB.status].sort(),
-              `attempt ${i}: both demotes must not succeed together`
-            ).not.toEqual([200, 200]);
+            expectExactlyOneWinner([resA.status, resB.status], `attempt ${i} (demote)`);
 
             expect(
               await remainingAdminCount([a.id, b.id]),
@@ -520,10 +543,7 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
               app.request(`/api/v1/admin/users/${b.id}`, { method: 'DELETE', headers: authHeaders() }),
             ]);
 
-            expect(
-              [resA.status, resB.status].sort(),
-              `attempt ${i}: both deletes must not succeed together`
-            ).not.toEqual([200, 200]);
+            expectExactlyOneWinner([resA.status, resB.status], `attempt ${i} (delete)`);
 
             expect(
               await remainingAdminCount([a.id, b.id]),
@@ -561,10 +581,10 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
               }),
             ]);
 
-            expect(
-              [selfRes.status, otherRes.status].sort(),
-              `attempt ${i}: self+other demote by one session must not both succeed`
-            ).not.toEqual([200, 200]);
+            expectExactlyOneWinner(
+              [selfRes.status, otherRes.status],
+              `attempt ${i} (self+other demote by one session)`
+            );
 
             expect(
               await remainingAdminCount([self.id, other.id]),
@@ -575,6 +595,45 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
       });
     }
   );
+
+  // The guard's ALLOW side. Every other test in this file asserts a REFUSAL
+  // (409, or "not both 200"), which means a guard that refuses unconditionally
+  // satisfies all of them — `canRemoveGlobalAdmin(count - 1)` passed the entire
+  // suite. These two tests are the other half of the contract: with a spare
+  // admin present the removal must actually go through AND be persisted, so
+  // "refuses everything" is no longer a green build.
+  it('demotes a global admin while a spare remains, and persists it', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      await withExactlyTwoGlobalAdmins(async (_a, b) => {
+        const res = await app.request(`/api/v1/admin/users/${b.id}`, {
+          method: 'PATCH',
+          headers: authHeaders(),
+          body: JSON.stringify({ isGlobalAdmin: false }),
+        });
+
+        expect(res.status, 'a demote with a spare admin remaining must be allowed').toBe(200);
+
+        const row = await db.query.users.findFirst({ where: eq(users.id, b.id) });
+        expect(row?.isGlobalAdmin, 'a 200 must actually have written the demotion').toBe(false);
+      });
+    });
+  });
+
+  it('deletes a global admin while a spare remains, and the row is gone', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      await withExactlyTwoGlobalAdmins(async (_a, b) => {
+        const res = await app.request(`/api/v1/admin/users/${b.id}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        });
+
+        expect(res.status, 'a delete with a spare admin remaining must be allowed').toBe(200);
+
+        const row = await db.query.users.findFirst({ where: eq(users.id, b.id) });
+        expect(row, 'a 200 must actually have removed the row').toBeUndefined();
+      });
+    });
+  });
 });
 
 /**

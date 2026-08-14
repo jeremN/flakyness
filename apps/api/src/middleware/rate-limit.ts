@@ -158,17 +158,41 @@ export function hasValidAdminBearer(c: Context): boolean {
  * getSessionUser(c) reads `c.get('sessionUser')`, populated synchronously by
  * sessionAuth() (mounted globally in index.ts, ahead of every router) — no
  * async plumbing needed here despite this predicate itself being sync.
+ *
+ * ONE EXCEPTION, and it is the whole reason this function is not a one-liner:
+ * a session holding an unrotated temporary password (`mustChangePassword`) is
+ * NOT exempt. `passwordChangeGate()` is about to refuse that request with a
+ * 403 no matter what it asks for, and a request the gate will refuse must
+ * never buy its way out of throttling — otherwise a mid-reset cookie hammers
+ * /api/v1/admin/* unthrottled, paying the session DB lookup sessionAuth does
+ * on EVERY request (session.ts:45,49) for each one. That is the exact
+ * unthrottled-cookie hazard the "mount the gate AFTER the limiter" rule
+ * exists to prevent, arriving through a different door: mount order
+ * guarantees the limiter RUNS, but a skip predicate that exempts the very
+ * population the gate is about to refuse makes running it a no-op. Ordering
+ * is necessary, not sufficient.
+ *
+ * The flag is checked BEFORE the bearer, deliberately. A mid-reset cookie
+ * arriving alongside a valid ADMIN_TOKEN is still refused by the gate —
+ * session resolution outranks the bearer (middleware/access.ts:50-70, a plan
+ * 058 decision) — so the bearer must not purchase an exemption the gate will
+ * not honour. Plan 055's real console path (valid ADMIN_TOKEN, no session at
+ * all) is untouched: getSessionUser returns null, `?.` yields undefined, and
+ * the bearer check below exempts it exactly as before.
  */
 export function hasAdminStanding(c: Context): boolean {
-  return hasValidAdminBearer(c) || getSessionUser(c) !== null;
+  const sessionUser = getSessionUser(c);
+  if (sessionUser?.mustChangePassword) return false;
+  return hasValidAdminBearer(c) || sessionUser !== null;
 }
 
 /**
  * Rate limiter for admin endpoints. Very restrictive to slow brute force.
  * Limit: 5/min per IP, applied ONLY to a request with neither a valid admin
- * token NOR a signed-in session — either is exempt (see hasAdminStanding).
- * MUST be mounted BEFORE adminOrGlobalAdminAuth (see admin.ts) or it never
- * runs.
+ * token NOR a signed-in session — either is exempt, EXCEPT a session pending
+ * a forced password change, which is throttled regardless of any bearer that
+ * accompanies it (see hasAdminStanding). MUST be mounted BEFORE
+ * adminOrGlobalAdminAuth (see admin.ts) or it never runs.
  */
 export const adminRateLimit = createRateLimit(
   ADMIN_RATE_LIMIT,

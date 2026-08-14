@@ -552,4 +552,65 @@ describeEnforcement('mustChangePassword enforcement', () => {
       await cleanup(u);
     }
   });
+
+  /**
+   * The SAME hazard as the test above, reached through a different door — and
+   * the door mount-ordering does not cover.
+   *
+   * The admin routers use `adminRateLimit`, whose skip predicate
+   * (`hasAdminStanding`) exempts any signed-in session. Ordering guarantees
+   * the limiter RUNS before the gate; it says nothing about the limiter then
+   * choosing to skip. So a mid-reset session hitting /api/v1/admin/* was
+   * exempted by the limiter, refused by the gate, and could repeat that
+   * forever — unthrottled, paying sessionAuth's session↔users SELECT every
+   * time. The projectsRouter test above cannot catch this: `apiRateLimit` has
+   * no skip predicate at all.
+   *
+   * Both variants matter. Session-only is the dashboard's shape; session PLUS
+   * a valid ADMIN_TOKEN is plan 059's shape, and since the gate refuses on the
+   * session regardless of the bearer, the bearer must not buy an exemption the
+   * gate will not honour.
+   */
+  it.each([
+    ['cookie alone', false],
+    ['cookie PLUS a valid ADMIN_TOKEN', true],
+  ])('a refused mid-reset caller on the ADMIN router is still rate-limited — %s', async (_label, withBearer) => {
+    // Provision and log in FIRST, on the outer app, before the limiter is
+    // enabled — it is a module singleton and this would otherwise spend slots.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    const { __setRateLimitEnabled, ADMIN_RATE_LIMIT } = await import('../middleware/rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const { Hono } = await import('hono');
+      const { HTTPException } = await import('hono/http-exception');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: adminRouter } = await import('./admin');
+
+      const limited = new Hono();
+      limited.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      limited.use('*', sessionAuth());
+      limited.route('/api/v1/admin', adminRouter);
+
+      const headers: Record<string, string> = { Cookie: `${SESSION_COOKIE}=${cookie}` };
+      if (withBearer) headers.Authorization = `Bearer ${process.env.ADMIN_TOKEN}`;
+
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 3; i++) {
+        codes.push((await limited.request('/api/v1/admin/projects', { headers })).status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early requests reached the gate, so the 429s come from
+      // exhausting the bucket rather than everything being refused outright.
+      expect(codes[0]).toBe(403);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+      await cleanup(u);
+    }
+  });
 });

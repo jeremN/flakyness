@@ -15,6 +15,7 @@
 Every task's requirements implicitly include this section.
 
 - **Depends hard on plans 056–058.** The API must already accept global-admin **sessions** on the admin API (plan 058, Task 5) — otherwise the console cannot work without `ADMIN_TOKEN`.
+- **Global admins must see an explicit "Unassigned" grouping in the dashboard's project list (plan 058 pre-flight ruling).** `POST /admin/projects` intentionally leaves `teamId` optional, so a project created without one stays `team_id IS NULL` — and, by `canReadProject`'s design (plan 058), invisible to every non-global-admin. That ruling was made **conditional on this plan surfacing the state**: without it, a project created without a team becomes silently invisible to the very team that created it, and 1,529 of 2,952 projects on the dev database are already in that state. Task 6's team-scoped project list must render an explicit **"Unassigned"** group for `teamId === null` projects, shown only when `locals.user.isGlobalAdmin` (the only caller who can read them at all) — a silent gap is the trap this bullet exists to close.
 - **THE ONE BREAKING CHANGE IN THIS WHOLE FEATURE: `DASHBOARD_PASSWORD` is removed.** After this plan, an operator who upgrades without creating a user account cannot sign in. The upgrade note in `docs/GETTING_STARTED.md` (plan 057, Task 8, Step 3) is what prevents that being a surprise; Task 8 here makes it prominent. Do not leave a fallback path — a dual gate is two things to get wrong, and the account system supersedes the password by design (spec §Dashboard).
 - **`ADMIN_TOKEN` leaves the dashboard entirely.** Today `$lib/server/adminApi.ts` spends a server-held token on behalf of whoever submits a form (plan 053). That was the correct shape when there were no users; it is ambient authority now that there are. The console acts **as the signed-in user**. `ADMIN_TOKEN` stays a valid API credential for operators and scripts — the dashboard simply stops holding one.
 - **No token or session value ever reaches the browser.** The session cookie is `HttpOnly`; all API calls are server-side; every mutation is a named SvelteKit form action. Same contract as plan 053.
@@ -803,6 +804,36 @@ This relies on `teamId` being present on the `GET /api/v1/projects` response, wh
 - [ ] **Step 2: Build `TeamSwitcher.svelte`**
 
 Renders nothing when `teams.length < 2` (a single-team user has no choice to make and should not see a dead control). Otherwise a link-based selector — "All teams" plus one entry per team — each preserving the rest of the query string. Write the query-string composition as a pure helper in `$lib/href.ts` (which already exists and is mutation-gated) rather than inline in the template.
+
+- [ ] **Step 2b: Render the "Unassigned" group — this discharges a Global Constraint**
+
+Do not skip this because it is not in the Step 1 code sample. It is the condition on which plan
+058's pre-flight ruling was made: `POST /admin/projects` keeps `teamId` optional, so a project
+created without one stays `team_id IS NULL` and — by `canReadProject`'s design — is invisible to
+every non-global-admin, **including the team that created it**. 1,529 of 2,952 projects on the
+dev database are already in that state. Keeping that default was allowed *only* because this
+plan surfaces it; without this step the ruling becomes a silent trap.
+
+In the project list, partition on `teamId === null` and render those under an explicit
+**"Unassigned"** heading, shown only when `data.user?.isGlobalAdmin` — they are the only caller
+who can read such a project at all, so the group is empty and meaningless for anyone else.
+
+```svelte
+{#if data.user?.isGlobalAdmin && unassigned.length > 0}
+  <h3>Unassigned</h3>
+  <!-- …same project-link markup as the grouped lists… -->
+{/if}
+```
+
+Derive the partition as a pure helper in `$lib/` (next to the other extracted view logic, so it
+is unit-testable in the node env and mutation-gated) rather than inline in the template.
+
+Add render assertions to `layout.svelte.test.ts` for all three cases: the group **appears** for a
+global admin when an unassigned project exists, **does not appear** for a global admin when none
+does (no empty heading), and **does not appear** for a non-admin even if the array somehow
+contains one. Prove the first assertion bites by removing the group and watching it redden — an
+"Unassigned" heading that renders unconditionally would pass a careless test while telling every
+member about projects they cannot open.
 
 - [ ] **Step 3: Add the user menu and sign-out to `+layout.svelte`**
 

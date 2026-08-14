@@ -9,6 +9,7 @@ import 'dotenv/config';
 // Custom middleware
 import { requestLogger, logError, logger } from './middleware/logger';
 import { extractBearerToken, tokensMatch } from './middleware/auth';
+import { sessionAuth } from './middleware/session';
 import { closeDb } from './db';
 import { renderMetrics } from './metrics';
 
@@ -79,6 +80,22 @@ app.get('/metrics', async (c) => {
   c.header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
   return c.body(await renderMetrics());
 });
+
+// Resolve the session cookie for every request from here down. It never
+// rejects on CREDENTIAL STATE — absent, unknown and expired cookies are all
+// simply anonymous — so mounting it globally cannot 401 an unauthenticated
+// route. It is NOT unconditionally throw-free: the session-lookup SELECT is
+// deliberately left to propagate (plan 056 Task 4, human ruling).
+//
+// Mounted AFTER /health and /metrics, not before: Hono composes handlers in
+// registration order, so a middleware registered here never runs for those
+// two paths above. Mounting ahead of them would turn /health into a database
+// liveness probe for any request that happens to carry an `fk_session`
+// cookie — if Postgres is down, /health starts 500ing and an orchestrator
+// restart-loops the container *during* the outage, turning a degraded read
+// path into an outage amplifier. Nothing on /health or /metrics needs
+// `access`.
+app.use('*', sessionAuth());
 
 // API routes
 app.get('/api/v1', (c) => {

@@ -1,23 +1,50 @@
-import { Hono } from 'hono';
+import { Hono, Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests, quarantineRules, teams } from '../db';
-import { adminAuth, hashToken, generateToken } from '../middleware/auth';
+import { adminOrGlobalAdminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { logger } from '../middleware/logger';
 import { resolveProjectConfig } from '../services/flakiness';
 import { globToRegExp } from '../services/rules';
+import { getAccess, loadScopedProject } from '../middleware/access';
+import {
+  canAdministerTeams,
+  canReadProject,
+  canWriteProject,
+  scopesProjectList,
+  type ScopedProject,
+} from '../services/auth/access';
 
 const adminRouter = new Hono();
 
 const uuidSchema = z.string().uuid();
 
 // Rate limiting MUST come before auth: a brute-force flood of bad tokens has to
-// be throttled here, not waved through to adminAuth (which would 401 each
-// attempt and never reach the limiter). Guarded by rate-limit.test.ts.
+// be throttled here, not waved through to adminOrGlobalAdminAuth (which would
+// 401/403 each attempt and never reach the limiter). Guarded by rate-limit.test.ts.
 adminRouter.use('*', adminRateLimit);
-adminRouter.use('*', adminAuth());
+adminRouter.use('*', adminOrGlobalAdminAuth());
+
+/**
+ * Load the project this admin request targets, enforcing scope.
+ *
+ * Returns null when the caller may not see it — the caller then 404s, so a
+ * team_admin cannot probe another team's project ids. Requires BOTH read and
+ * write, not just write: a project outside the caller's teams should be
+ * indistinguishable from a project that does not exist at all, which
+ * canReadProject alone would not guarantee (e.g. an open-reads deployment
+ * with READ_TOKEN unset — moot here since the gate above only ever admits
+ * 'user' or 'admin-token' kinds, but the AND keeps the helper correct on its
+ * own terms rather than by accident of what currently calls it).
+ */
+async function scopedAdminProject(c: Context, projectId: string): Promise<ScopedProject | null> {
+  const project = await loadScopedProject(projectId);
+  if (!project) return null;
+  const access = getAccess(c);
+  return canReadProject(access, project) && canWriteProject(access, project) ? project : null;
+}
 
 // Schemas
 const createProjectSchema = z.object({
@@ -183,7 +210,9 @@ async function assertTeamExists(teamId: string): Promise<boolean> {
  * List all projects with stats (single query with subqueries, no N+1)
  */
 adminRouter.get('/projects', async (c) => {
-  const projectsWithStats = await db
+  const access = getAccess(c);
+
+  const allProjectsWithStats = await db
     .select({
       id: projects.id,
       name: projects.name,
@@ -219,6 +248,21 @@ adminRouter.get('/projects', async (c) => {
     .from(projects)
     .orderBy(desc(projects.createdAt));
 
+  // Filtered in JS against the SAME predicate scopedAdminProject (above)
+  // uses — canReadProject AND canWriteProject, not canReadProject alone —
+  // so the list and the mutation routes cannot disagree about what a
+  // team_admin may see. This is a deliberate DEVIATION from Task 3's
+  // GET /api/v1/projects, which filters on canReadProject alone: that route
+  // is the member-facing read surface (membership is the right bar), but
+  // this one is the admin surface, where every row exposes admin-only detail
+  // (webhookUrl, hasToken) — a caller who is team_admin in team A and a
+  // plain member in team B must not see team B's project here just because
+  // they can read it elsewhere, since role (not membership) is the bar for
+  // every other route on this router.
+  const projectsWithStats = scopesProjectList(access)
+    ? allProjectsWithStats.filter((p) => canReadProject(access, p) && canWriteProject(access, p))
+    : allProjectsWithStats;
+
   const result = projectsWithStats.map((p) => ({
     id: p.id,
     name: p.name,
@@ -249,12 +293,18 @@ adminRouter.get('/projects', async (c) => {
 /**
  * POST /api/v1/admin/projects
  *
- * Create a new project and generate an API token
+ * Create a new project and generate an API token. Global-admin only —
+ * creating a project is an operator act, not a team act (a team_admin is
+ * scoped to projects that already belong to their team).
  */
 adminRouter.post(
   '/projects',
   zValidator('json', createProjectSchema),
   async (c) => {
+    if (!canAdministerTeams(getAccess(c))) {
+      return c.json({ error: 'Global admin required' }, 403);
+    }
+
     const { name, gitlabProjectId, teamId } = c.req.valid('json');
 
     // Check if project name already exists
@@ -313,6 +363,10 @@ adminRouter.post('/projects/:id/rotate-token', async (c) => {
   }
   const projectId = parsed.data;
 
+  if (!(await scopedAdminProject(c, projectId))) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
   // Check project exists
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
@@ -363,6 +417,29 @@ adminRouter.patch(
     }
     const projectId = parsed.data;
     const data = c.req.valid('json');
+
+    if (!(await scopedAdminProject(c, projectId))) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
+
+    // Reassigning a project to another team (or to no team at all, via an
+    // explicit `null` — orphaning it) is a global-admin-only act, same tier
+    // as DELETE: it either hands a team_admin's project to a team they may
+    // not even belong to, or produces an orphan, which the plan reserves for
+    // global admins. `scopedAdminProject` above only proves the caller may
+    // touch the project's CURRENT team, not the one they are trying to move
+    // it to (or away from) — a separate check is required. `'teamId' in
+    // data`, not a truthiness check: `{teamId: null}` (the orphaning case)
+    // must be caught too, and a plain truthiness check would miss it. 403,
+    // not 404 — the caller can already see this project, so this is a
+    // refused write, matching the plan's read/write split (a 404 here would
+    // also be a lie: the project is not hidden, the field write is refused).
+    if ('teamId' in data && !canAdministerTeams(getAccess(c))) {
+      return c.json(
+        { error: 'Reassigning a project to another team requires a global admin' },
+        403
+      );
+    }
 
     const existing = await db.query.projects.findFirst({
       where: eq(projects.id, projectId),
@@ -507,6 +584,10 @@ adminRouter.post('/projects/:id/prune', async (c) => {
   }
   const projectId = parsed.data;
 
+  if (!(await scopedAdminProject(c, projectId))) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
   });
@@ -605,9 +686,16 @@ adminRouter.post('/projects/:id/prune', async (c) => {
 /**
  * DELETE /api/v1/admin/projects/:id
  *
- * Delete a project and all associated data inside a transaction
+ * Delete a project and all associated data inside a transaction.
+ * Global-admin only — destructive ops stay off the team_admin surface even
+ * for a project the caller can otherwise write to (brief's own wording:
+ * "destructive ops stay global-admin").
  */
 adminRouter.delete('/projects/:id', async (c) => {
+  if (!canAdministerTeams(getAccess(c))) {
+    return c.json({ error: 'Global admin required' }, 403);
+  }
+
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -649,6 +737,10 @@ adminRouter.get('/projects/:id/rules', async (c) => {
   }
   const projectId = parsed.data;
 
+  if (!(await scopedAdminProject(c, projectId))) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
   });
@@ -679,6 +771,10 @@ adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema)
   }
   const projectId = parsed.data;
   const body = c.req.valid('json');
+
+  if (!(await scopedAdminProject(c, projectId))) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
 
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, projectId),
@@ -731,6 +827,10 @@ adminRouter.patch(
     const ruleId = ruleIdParsed.data;
     const patch = c.req.valid('json');
 
+    if (!(await scopedAdminProject(c, projectId))) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
+
     const [existing] = await db
       .select()
       .from(quarantineRules)
@@ -770,6 +870,10 @@ adminRouter.delete('/projects/:id/rules/:ruleId', async (c) => {
   const projectId = idParsed.data;
   const ruleId = ruleIdParsed.data;
 
+  if (!(await scopedAdminProject(c, projectId))) {
+    return c.json({ error: 'Project not found' }, 404);
+  }
+
   const deleted = await db
     .delete(quarantineRules)
     .where(and(eq(quarantineRules.id, ruleId), eq(quarantineRules.projectId, projectId)))
@@ -797,6 +901,10 @@ adminRouter.post(
     }
     const projectId = parsed.data;
     const { order } = c.req.valid('json');
+
+    if (!(await scopedAdminProject(c, projectId))) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
 
     const current = await db
       .select({ id: quarantineRules.id })
@@ -828,9 +936,16 @@ adminRouter.post(
 /**
  * GET /api/v1/admin/health
  *
- * System health metrics
+ * System health metrics. Global-admin only (ruling, fix round 1): this is
+ * install-wide operator telemetry — nothing about it is team-scoped, so
+ * there is no team-scope story to design, and admitting a team_admin would
+ * be an undecided access question rather than a considered one.
  */
 adminRouter.get('/health', async (c) => {
+  if (!canAdministerTeams(getAccess(c))) {
+    return c.json({ error: 'Global admin required' }, 403);
+  }
+
   const [projectCount] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(projects);

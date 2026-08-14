@@ -100,6 +100,53 @@ import { pathToFileURL } from 'node:url';
 // same pattern as password.ts/session.ts): 100.00% both runs, 10/10 mutants
 // killed, 0 survived, 0 no-coverage — deterministic, identical across both
 // runs. Floor 95.
+// Plan 058 (access control enforcement, task 7) baselined
+// services/auth/access.ts 2026-07-29 via
+// `stryker run --mutate src/services/auth/access.ts,src/services/auth/membership.ts`
+// (pure, DB-free decision table — same pattern as password.ts/session.ts/
+// membership.ts; membership.ts was re-run alongside it only to refresh its
+// own row in this machine's local mutation.json, not because its floor
+// changed). First calibration run scored only 86-87% (7-8 survivors, plus 4
+// NoCoverage) because the test file's `adminToken` fixture always paired
+// `kind: 'admin-token'` with `isGlobalAdmin: true` — so every assertion hit
+// the `if (access.isGlobalAdmin) return true` guard at the top of
+// canReadProject/canWriteProject/canAdministerTeams and never actually
+// exercised those functions' own `case 'admin-token'` branches or
+// `|| kind === 'admin-token'` clause, and canEnterAdminApi's
+// `kind === 'user'` guard was never tested against a non-'user' kind
+// carrying team_admin-shaped `roleByTeam` data. This was exactly the "hole
+// in the decision matrix, not a floor worth lowering" case the plan 056
+// Task 8 procedure warns about: both fields are independently-settable on
+// `Access` (nothing at the type level links them), so these branches are a
+// real belt-and-suspenders defense, not dead code — access.test.ts gained
+// `adminTokenKindOnly` (kind: 'admin-token', isGlobalAdmin: false) and
+// `roleDataOnNonUserKind` (kind: 'read-token', roleByTeam holding
+// team_admin) fixtures to exercise them directly. Re-baselined after: 95.40%
+// both runs, 83/87 killed, identical 4 survivors both times (deterministic).
+// The 4 are genuine equivalent mutants, verified not chased:
+//  - access.ts:50 and :52 — removing the `return true;` from
+//    `case 'admin-token':` or `case 'read-token':` merely falls through to
+//    the NEXT case in canReadProject's switch (`read-token`/`anonymous`
+//    respectively), which also unconditionally `return true` — same
+//    observable result for every input. (The equivalent `case 'anonymous':`
+//    version does NOT survive: it falls through to `case 'project-token':`,
+//    whose `return` is a different expression, so removing ITS return IS
+//    observable and gets killed.) canWriteProject's `case 'admin-token':` at
+//    line 77 does not have this problem — its next case, `project-token`,
+//    already returns a different expression — and is killed now that
+//    `adminTokenKindOnly` covers it.
+//  - access.ts:61 and :82 — `project.teamId !== null && ...includes(...)` /
+//    `...roleByTeam[...] === 'team_admin'` mutated to drop the `!== null`
+//    guard. Equivalent because `access.teamIds` (populated from
+//    `team_members.team_id`, `NOT NULL`) and `access.roleByTeam`'s keys
+//    (same source) never contain `null`/the string `"null"` in any
+//    reachable state: `[...].includes(null)` and `{...}[null]` (JS coerces
+//    the key to `"null"`) both evaluate the same false/undefined result
+//    with or without the guard. Distinguishing them would require a test
+//    that manually injects `null` into `teamIds`/`roleByTeam` — violating
+//    the type contract to chase a mutant of an invariant no real code path
+//    can break, unlike the admin-token pair above (which guards against a
+//    plausible FUTURE call-site bug, not a DB-enforced impossibility).
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -112,6 +159,7 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/password.ts', floor: 83 }, // baseline: 88.14% (reliable, reproduced 2x; plan 056)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',  floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/membership.ts', floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 057)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/access.ts',   floor: 90 }, // baseline: 95.40% (reliable, reproduced 2x; plan 058; 4 verified-equivalent survivors)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

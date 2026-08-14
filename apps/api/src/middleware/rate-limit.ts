@@ -2,6 +2,7 @@ import { rateLimiter } from 'hono-rate-limiter';
 import { createMiddleware } from 'hono/factory';
 import type { Context, MiddlewareHandler } from 'hono';
 import { extractBearerToken, tokensMatch } from './token';
+import { getSessionUser } from './session';
 
 // Rate limiting is disabled under the test runner by default (hammering
 // endpoints in tests would otherwise trip the limits). Unlike the previous
@@ -134,15 +135,44 @@ export function hasValidAdminBearer(c: Context): boolean {
 }
 
 /**
+ * True when the request is either a valid ADMIN_TOKEN bearer OR a
+ * signed-in session (ANY session — not just global-admin, per fix-round-1
+ * ruling on plan 058 Task 5). The admin limiter exempts both: brute-force
+ * protection exists to throttle wrong or absent credentials, not a caller
+ * who already holds one.
+ *
+ * Exempting every session, not only global-admin ones, does not reopen the
+ * brute-force hole the limiter exists to close — a session was never
+ * guessed at this endpoint. It was minted by POST /auth/login, which sits
+ * behind its OWN throttle (authRateLimit, 10/min per IP) and a valid
+ * password. This limiter's 5/min ceiling was sized for anonymous bearer
+ * guesses against ADMIN_TOKEN; once a caller has a session, the credential
+ * that would need brute-forcing is a password, not this endpoint.
+ *
+ * Also fixes a real production gap, not just a test nicety: every
+ * session-authenticated admin call carries no bearer at all, so before this
+ * fix EVERY such call (dashboard console traffic from plan 059, all sharing
+ * one SSR-server IP) landed in the SAME 5-per-minute-per-IP bucket as
+ * anonymous brute-force traffic.
+ *
+ * getSessionUser(c) reads `c.get('sessionUser')`, populated synchronously by
+ * sessionAuth() (mounted globally in index.ts, ahead of every router) — no
+ * async plumbing needed here despite this predicate itself being sync.
+ */
+export function hasAdminStanding(c: Context): boolean {
+  return hasValidAdminBearer(c) || getSessionUser(c) !== null;
+}
+
+/**
  * Rate limiter for admin endpoints. Very restrictive to slow brute force.
- * Limit: 5/min per IP, applied ONLY to requests with a missing or invalid admin
- * token — a request bearing a valid ADMIN_TOKEN is exempt (see
- * hasValidAdminBearer). MUST be mounted BEFORE adminAuth (see admin.ts) or it
- * never runs.
+ * Limit: 5/min per IP, applied ONLY to a request with neither a valid admin
+ * token NOR a signed-in session — either is exempt (see hasAdminStanding).
+ * MUST be mounted BEFORE adminOrGlobalAdminAuth (see admin.ts) or it never
+ * runs.
  */
 export const adminRateLimit = createRateLimit(
   ADMIN_RATE_LIMIT,
   getClientIp,
   'Admin rate limit exceeded.',
-  hasValidAdminBearer
+  hasAdminStanding
 );

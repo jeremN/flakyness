@@ -136,6 +136,18 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   reorder for rules is live on the API (`/api/v1/admin/projects/:id/rules`,
   `routes/admin.ts`); a dashboard console UI to manage them is a deferred
   fast-follow (see `plans/README.md`).
+- **Every read route needs BOTH `readAuth()` and `resolveAccess()`, sharing one
+  resolver (plan 058).** `readAuth` decides *whether* the caller may read
+  (`READ_TOKEN` posture, plan 041); `resolveAccess` decides *which projects*
+  (team membership) and 404s — never 403s — on a cross-team read. Both are
+  enforced by `routes-auth-coverage.test.ts`, which carries a hard-coded route
+  count you must bump deliberately. **Anonymous callers stay unscoped**: teams
+  scope identified callers only, so an install that left `READ_TOKEN` unset
+  behaves exactly as it did before teams existed. Two routes
+  (`GET/PATCH /tests/flaky/:id`) resolve their project from a row rather than
+  the request, so they mount `resolveAccess()` without a resolver and check via
+  `assertProjectReadable()` in the handler — the static guard cannot see those,
+  `access-scope.test.ts` covers them.
 - **A Drizzle column interpolated into a raw `sql` correlated subquery binds
   to the wrong table.** On a single-table select with no joins, Drizzle
   treats an interpolated column's table qualifier as redundant and drops it

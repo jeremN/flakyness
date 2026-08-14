@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import app from './index';
 import { PASSWORD_CHANGE_ALLOWLIST } from './services/auth/access';
+import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './middleware/rate-limit';
 
 /**
  * Fail-loud guard: every /api/v1 router mounts passwordChangeGate().
@@ -40,11 +41,39 @@ function isGateHandler(handler: unknown): boolean {
 
 const gatePaths = new Set(app.routes.filter((r) => isGateHandler(r.handler)).map((r) => r.path));
 
-// Terminal route registrations under /api/v1/auth — the `ALL` entries are
-// middleware layers (apiRateLimit, authRateLimit, the gate), not routes.
+// Which rate limiter is expected to precede the gate at each mount, keyed by
+// reference identity — each `*RateLimit` export is a single
+// `createRateLimit(...)` call result (middleware/rate-limit.ts:86,98,110,173),
+// i.e. a module-level singleton, not a factory, so `===` reliably picks out
+// that exact registration in app.routes rather than a different call to the
+// same factory.
+const EXPECTED_GATE_ORDER: ReadonlyArray<readonly [string, unknown]> = [
+  ['/api/v1/reports/*', reportRateLimit],
+  ['/api/v1/projects/*', apiRateLimit],
+  ['/api/v1/tests/*', apiRateLimit],
+  ['/api/v1/admin/users/*', adminRateLimit],
+  ['/api/v1/admin/teams/*', adminRateLimit],
+  ['/api/v1/admin/*', adminRateLimit],
+  ['/api/v1/auth/*', apiRateLimit],
+];
+
+// Terminal route registrations under /api/v1/auth — everything else registered
+// as `ALL` is a middleware LAYER (apiRateLimit, authRateLimit, or the gate),
+// not a route, and is excluded by reference identity rather than by a blanket
+// `method !== 'ALL'`. A blanket exclusion would silently swallow a future
+// `authRouter.all('/webhook', handler)`: it registers as `ALL` too, so it
+// would vanish from this list and never be forced through the allowlist
+// decision below — precisely the silent drift this guard exists to forbid.
+function isKnownAuthMiddleware(handler: unknown): boolean {
+  return handler === apiRateLimit || handler === authRateLimit || isGateHandler(handler);
+}
+
 const authRoutePaths = [
   ...new Set(
-    app.routes.filter((r) => r.path.startsWith('/api/v1/auth/') && r.method !== 'ALL').map((r) => r.path)
+    app.routes
+      .filter((r) => r.path.startsWith('/api/v1/auth/'))
+      .filter((r) => !(r.method === 'ALL' && isKnownAuthMiddleware(r.handler)))
+      .map((r) => r.path)
   ),
 ].sort();
 
@@ -78,6 +107,49 @@ describe('password-change gate coverage', () => {
         `authority on every route this router serves.`
     ).toBe(true);
   });
+
+  it.each(EXPECTED_GATE_ORDER)(
+    'mounts the rate limiter before the gate on %s',
+    (path, limiter) => {
+      // Existence of both mounts is proven by the tests above; this test is
+      // ONLY about their relative order. `gatePaths` (a Set) already proved
+      // the gate exists somewhere at `path` — a Set has no notion of position,
+      // which is exactly the gap this test closes.
+      const routesAtPath = app.routes.filter((r) => r.path === path);
+      const limiterIndex = routesAtPath.findIndex((r) => r.handler === limiter);
+      const gateIndex = routesAtPath.findIndex((r) => isGateHandler(r.handler));
+
+      // Anti-vacuity: a missing handler must THROW, not silently compare
+      // -1 < someIndex (true — passes vacuously) or -1 < -1 (false — looks
+      // like a real failure but says nothing true about ordering).
+      if (limiterIndex === -1) {
+        throw new Error(
+          `No rate-limiter registration found for ${path} matching the expected ` +
+            `limiter reference. Either the limiter mount was removed/changed, or ` +
+            `EXPECTED_GATE_ORDER's mapping for this path is stale — fix whichever ` +
+            `drifted, do not delete this assertion.`
+        );
+      }
+      if (gateIndex === -1) {
+        throw new Error(
+          `No passwordChangeGate registration found for ${path} — this should ` +
+            `already have failed "mounts passwordChangeGate on ${path}" above; ` +
+            `something is very wrong if this throws while that test passes.`
+        );
+      }
+
+      expect(
+        limiterIndex,
+        `On ${path}, passwordChangeGate is registered at index ${gateIndex} but its ` +
+          `rate limiter is at index ${limiterIndex} — the gate must be mounted AFTER ` +
+          `the limiter, never before it (see the mount-point comment in ` +
+          `middleware/password-change.ts). A gate ahead of its limiter means a denied ` +
+          `request returns without calling next(), so the limiter never runs and never ` +
+          `counts the request — the exact hazard rate-limit.test.ts:341-361 guards ` +
+          `against.`
+      ).toBeLessThan(gateIndex);
+    }
+  );
 
   it('has no gate mount this list does not know about', () => {
     // The other direction: a new router that DID mount the gate but was never

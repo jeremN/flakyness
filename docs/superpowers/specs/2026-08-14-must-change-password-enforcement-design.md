@@ -75,18 +75,35 @@ Neither leaves it to the UI.
 
 ## Design
 
-Defence in depth: **two enforcement points, one shared rule, two independent
-inputs.** The redundancy is deliberate (maintainer decision). The two failure
-modes of redundancy are designed out rather than accepted:
+Defence in depth: **two enforcement points, one shared rule.** The redundancy is
+deliberate (maintainer decision).
 
-- *Drift* — both layers import the same `requiresPasswordChange` predicate;
-  there is no second copy of the rule to fall out of sync. Only layer 2 consults
-  the allowlist (layer 1 exempts the auth routes structurally, by never being
-  invoked on them), so the allowlist likewise has exactly one consumer and one
-  definition.
-- *Illusory redundancy* — the layers read the fact through **different** code
-  paths, so a bug in either resolver is still caught by the other. Two checks of
-  one resolver would fail together and buy nothing.
+- *Drift is designed out* — both layers import the same `requiresPasswordChange`
+  predicate; there is no second copy of the rule to fall out of sync. Only layer
+  2 consults the allowlist (layer 1 exempts the auth routes structurally, by
+  never being invoked on them), so the allowlist likewise has exactly one
+  consumer and one definition.
+
+- **The layers are independent in COVERAGE, not in INPUT.** An earlier draft of
+  this spec claimed independent inputs. That was false and is corrected here:
+  `resolveAccessValue` opens with `getSessionUser(c)`
+  (`middleware/access.ts:51`) — the very function layer 2 would call — so both
+  layers read one value, set once by `sessionAuth()` from one row
+  (`middleware/session.ts:100-107`).
+
+  What the two layers *do* cover independently: layer 2 catches a route that
+  never consults the decision table; layer 1 catches a wrong allowlist entry or
+  a router that failed to mount the gate. Different *forgetting* bugs.
+
+  What they do **not** cover: a session-resolution bug. If `sessionAuth` stops
+  populating the context, or a future edit drops `mustChangePassword` from the
+  projection at `session.ts:105`, **both layers fail open together**.
+
+  Buying real input independence would cost a second DB read on every
+  authenticated request. Rejected as poor value. Instead the single point of
+  failure is guarded **directly**: a test asserts `mustChangePassword` is present
+  in the `SessionUser` projection, so the field cannot be silently dropped (see
+  Testing #8). Guard the real failure, do not manufacture fake redundancy.
 
 ### Shared rule — `services/auth/access.ts`
 
@@ -116,9 +133,8 @@ Allowlist contents — the AWS lesson, allow what completes the remedy:
 
 `Access` gains `mustChangePassword: boolean`. `anonymousAccess()` sets it
 `false`, and because every token-kind `Access` is built by spreading
-`anonymousAccess()` (`middleware/access.ts:73-92`), **machine credentials are
-covered in one place by construction** — `admin-token`, `read-token` and
-`project-token` can never carry the flag.
+`anonymousAccess()` (`middleware/access.ts:73-92`), `admin-token`, `read-token`
+and `project-token` can never carry the flag.
 
 `resolveAccessValue`'s user branch populates it from `sessionUser`.
 
@@ -128,16 +144,62 @@ covered in one place by construction** — `admin-token`, `read-token` and
 `/api/v1/auth/*` never consults the decision table, so this layer exempts the
 allowlist **structurally** — no path matching involved.
 
+**Separate the two jobs: the predicates give the authorization *guarantee*, the
+middleware emit the *contract*.** Conflating them is what produced the next two
+defects, both found by reading the call sites rather than trusting the earlier
+draft's summary of them:
+
+- A `canReadProject === false` falls into plan 058's existence-hiding path and
+  returns **404** (`middleware/access.ts:125,148,150`).
+- An earlier draft claimed "writes and admin entry already 403, so only the read
+  path needs this." **Both halves are wrong.** Writes: `PATCH /tests/flaky/:id`
+  checks `canReadProject` *first* and 404s (`routes/tests.ts:411`), and
+  `scopedAdminProject` returns `null` when **either** predicate fails
+  (`routes/admin.ts:46`), which its callers render as 404. Admin entry: it does
+  403, but as `HTTPException(403, 'Admin access required')`
+  (`middleware/auth.ts:134`) — **no `code` field at all**, and a misleading
+  message. So under layer 1 alone, all three surfaces violate the contract this
+  spec calls non-negotiable.
+
+Fix: an explicit `requiresPasswordChange(access)` check that returns the 403
+contract below, placed **before** any project lookup or predicate call, in
+exactly two middleware:
+
+| Where | Covers |
+|---|---|
+| `resolveAccess()` / `assertProjectReadable()` | every read, plus `PATCH /tests/flaky/:id` — it mounts `resolveAccess()` (`routes/tests.ts:336`), so its route-local checks never run |
+| `adminOrGlobalAdminAuth()`, ahead of `canEnterAdminApi` | the whole admin router, and therefore every `scopedAdminProject` caller behind it |
+
+The predicate short-circuits stay regardless. They are the backstop for a route
+that mounts neither middleware — and a test asserts they refuse, independent of
+what any middleware emits.
+
 ### Layer 2 — choke point (Keycloak shape)
 
-`passwordChangeGate()` middleware, mounted `app.use('*', …)` immediately after
-`sessionAuth()` (`index.ts:98`) and before the route mounts (`:143-152`).
-`/health` and `/metrics` are registered *before* line 98 and terminate without
-calling `next()`, so they are unaffected — the same property plan 058 verified
-empirically for `sessionAuth` (ruling F5).
+`passwordChangeGate()` middleware, reading `getSessionUser(c)`.
 
-It reads `getSessionUser(c)` **directly** rather than `getAccess(c)` — that is
-what makes the two inputs independent.
+**Mount point: inside each router, immediately AFTER that router's rate
+limiter** — NOT `app.use('*')` after `sessionAuth()`. A global mount ahead of
+the routers runs before every per-router limiter, and because a denial returns
+without calling `next()`, the limiter never counts the request. Measured
+consequence: a must-change session can send unlimited requests to a
+non-allowlisted path, each still paying the session DB lookup
+(`middleware/session.ts:45,49`), and **none ever return 429** — reintroducing
+precisely the unthrottled-cookie path that plan 056's rate-limiter ruling and
+its regression test (`middleware/rate-limit.test.ts:341-361`) exist to prevent.
+A short-circuit is not neutral: everything downstream stops running, including
+the defences.
+
+Mounts required: `auth`, `projects`, `tests`, `reports`, `admin`,
+`admin/users`, `admin/teams`. Because this is now N mounts rather than one, a
+static coverage guard asserts every `/api/v1` router carries it (Testing #6) —
+same pattern as `readAuth`/`resolveAccess` in `routes-auth-coverage.test.ts`.
+The list is the complete set of `app.route('/api/v1/...')` calls at
+`index.ts:143-152`; the guard derives from that file so a new router cannot be
+added without either mounting the gate or failing CI.
+
+`/health` and `/metrics` are registered before `sessionAuth()` (`index.ts:58,69,81`)
+and return directly, so they are unaffected either way.
 
 ### Error contract
 
@@ -148,10 +210,32 @@ what makes the two inputs independent.
 **403, not 404.** Deliberately unlike plan 058's cross-team reads: that 404
 hides existence from a caller who should not know. Here the caller is
 authenticated, known, and the state is actionable — hiding it would be wrong.
+Concealment is not weakened: a nonexistent project and a forbidden one both
+still 404 when the caller is *not* mid-reset.
 
 **The `code` field is non-negotiable.** It is the direct lesson from Keycloak's
 opaque `invalid_grant`: the dashboard keys its redirect off `code`, never off
 message text.
+
+### Mixed credentials — a narrowed claim
+
+`resolveAccessValue` checks the session **before** the bearer
+(`middleware/access.ts:51-70`), a deliberate plan-058 decision this spec does
+not reverse. Consequence: a request carrying **both** a must-change session
+cookie **and** a valid `ADMIN_TOKEN`/project token classifies as `kind: 'user'`
+and is refused.
+
+So the accurate claim is: **machine credentials presenting no session cookie are
+unaffected.** CI ingest sends a bearer only and is unaffected. The dashboard is
+the case to watch — it holds `ADMIN_TOKEN` server-side today (plan 053) and
+gains a session cookie in plan 059; a server-side call that forwards a
+must-change cookie alongside the token will be refused, which is correct but
+must not surprise 059.
+
+`ADMIN_TOKEN`-only break-glass is verified intact: no cookie ⇒ `sessionAuth`
+continues anonymously (`session.ts:43,45`) ⇒ the gate continues ⇒
+`resolveAccessValue` classifies `admin-token` with global-admin standing
+(`access.ts:90,103`).
 
 ## Testing
 
@@ -170,17 +254,52 @@ every test would still pass.
 4. **The lockout test — the most important test in this feature.** With the flag
    set, every allowlisted route must still work. Getting this wrong bricks every
    account with no recovery short of hand-written SQL.
-5. **Allowlist coverage guard** — a static test asserting
-   `PASSWORD_CHANGE_ALLOWLIST` matches the auth router's real route table, so a
-   new `/api/v1/auth/*` route forces a deliberate decision. Mirrors
-   `EXPECTED_READ_ROUTE_COUNT` in `routes-auth-coverage.test.ts`.
-6. **Machine credentials unchanged** — `POST /api/v1/reports` with a project
-   token, and `ADMIN_TOKEN`/`READ_TOKEN` routes, all behave exactly as before.
+5. **Contract uniformity across all three surfaces** — table-driven: one read,
+   one write, one admin-API request, each asserted to return exactly `403` with
+   `code: 'password_change_required'`. This is the regression test for the defect
+   above; it fails on today's code three different ways (404, 404, and a
+   `code`-less 403), which is what makes it worth writing.
+6. **Coverage guards, two of them** — (a) `PASSWORD_CHANGE_ALLOWLIST` matches the
+   auth router's real route table, so a new `/api/v1/auth/*` route forces a
+   deliberate decision; (b) every `/api/v1` router mounts
+   `passwordChangeGate()`, since it is now N mounts rather than one global one.
+   Both mirror `EXPECTED_READ_ROUTE_COUNT` in `routes-auth-coverage.test.ts`.
+   Note the plan-058 lesson: a source-text scan must tolerate Stryker
+   instrumentation (`stryMutAct_`), and any `it.each` guard needs its own
+   anti-vacuity assertion — `it.each([])` runs zero assertions and passes.
+7. **Machine credentials with no session cookie unchanged** —
+   `POST /api/v1/reports` with a project token, and `ADMIN_TOKEN`/`READ_TOKEN`
+   routes, behave exactly as before. Plus the mixed-credential case asserted
+   explicitly: cookie + bearer together is refused, and that is intended.
+8. **The `SessionUser` projection guard** — assert `mustChangePassword` is
+   present on the object `sessionAuth()` sets (`session.ts:100-107`). This is the
+   single point of failure both layers share; dropping the field would fail both
+   open at once, and nothing else would notice.
+9. **Rate limiting still applies to a refused caller** — a must-change session
+   hammering a non-allowlisted path must still receive `429`. This is the
+   regression test for the mount-order defect above, and it fails against the
+   naive global mount.
 
 ## Out of scope
 
-- Session invalidation on password change (other live sessions surviving a reset
-  is a real question, but a separate one).
+- Session invalidation. **Already solved, verified, no work needed here** — an
+  earlier draft listed this as an open question, which was wrong.
+  `POST /auth/change-password` revokes every session and re-issues one for the
+  caller in the same response (`routes/auth.ts:255-260`), and
+  `POST /admin/users/:id/reset-password` revokes every session too
+  (`routes/admin-users.ts:311`). So there is no re-login trap on the remedy path,
+  and no stale session survives a reset.
+- **The reset-delivery atomicity hole — pre-existing, unfixed, deliberately not
+  fixed here.** `reset-password` writes the new hash, revokes the sessions, and
+  then hands the temp password to the admin *only in the HTTP response body*
+  (`routes/admin-users.ts:306-317`). Lose that response — dropped connection,
+  proxy timeout, closed tab — and the password is unrecoverable: nobody has it.
+  Normally another global admin resets again. But a **sole** global admin
+  resetting their own account locks the whole install out, and the
+  `GLOBAL_ADMIN_MUTEX` last-admin guard does not cover this route (it guards
+  demote at `:244,268` and delete at `:346,358` only). Out of scope because it is
+  orthogonal to enforcement and predates it — but enforcement makes the blast
+  radius larger, so it gets a follow-up in `plans/README.md`, not silence.
 - Password strength/expiry policy. NIST Rev 4 argues against periodic rotation;
   nothing here introduces it.
 - Dashboard behaviour — plan 059 owns the redirect and consumes `code`.
@@ -189,7 +308,8 @@ every test would still pass.
 ## Definition of done
 
 - A `user` session with `mustChangePassword` gets `403 password_change_required`
-  on reads, writes and the admin API.
+  on reads, writes and the admin API — the same status **and the same `code`** on
+  all three, not merely "refused" on all three.
 - All four allowlisted auth routes work with the flag set.
 - Machine credentials byte-identical in behaviour; existing suites green
   untouched.

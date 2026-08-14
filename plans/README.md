@@ -869,6 +869,18 @@ rationale. Items 5–7 remain unplanned.
     dissolves follow-up #6) and rewriting the guard — the alternative already recorded as
     deferred in plan 040, blocked on a Dependabot dry-run to de-risk `dependabot-core`
     #11135/#10203.
+24. **[OPEN — found 2026-08-14 by Codex reviewing the `mustChangePassword` spec]
+    `POST /admin/users/:userId/reset-password` delivers the temp password non-atomically.**
+    It writes the new hash and revokes every session (`routes/admin-users.ts:306-311`), then
+    returns the plaintext temp password **only** in the HTTP response body (`:314-317`). If that
+    response is lost — dropped connection, proxy timeout, closed tab — nobody holds the password
+    and the account is unreachable. Usually another global admin just resets again; but a
+    **sole** global admin resetting their own account locks the entire install out, and the
+    `GLOBAL_ADMIN_MUTEX` last-admin guard does not cover this route (it guards demote at
+    `:244,268` and delete at `:346,358` only). Pre-existing and orthogonal to enforcement, but
+    enforcing `mustChangePassword` widens the blast radius, so it is recorded rather than
+    silently carried. Fix shapes worth weighing: a last-global-admin guard on self-reset, or
+    generating the temp password before the write and making delivery idempotent.
 
 ## Findings considered and rejected
 

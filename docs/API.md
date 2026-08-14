@@ -2202,7 +2202,7 @@ scrape_configs:
 
 ## Error Responses
 
-Every error carries an `error` message:
+Most errors carry an `error` **string**:
 
 ```json
 {
@@ -2213,6 +2213,28 @@ Every error carries an `error` message:
 Some also carry a machine-readable `code` alongside it — see
 [Password change required](#password-change-required) below for the one
 that does today.
+
+**Request-validation failures are the exception.** Routes validated by
+`@hono/zod-validator` are mounted without a custom error hook, so a `400`
+from schema validation returns the validator's own shape, in which `error`
+is an **object**, not a string:
+
+```json
+{
+  "success": false,
+  "error": {
+    "name": "ZodError",
+    "message": "[\n  {\n    \"expected\": \"string\", ... }\n]"
+  }
+}
+```
+
+Note that `message` is itself a JSON-encoded string of the issue array —
+parse it a second time to read the individual issues. Do not write a
+client that assumes `typeof body.error === 'string'`; branch on the
+status code, or check `body.success === false`, to tell the two shapes
+apart. (This shape is the validator library's default and is not part of
+a stability guarantee — see follow-up #25 in `plans/README.md`.)
 
 ### Common Status Codes
 

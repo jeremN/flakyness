@@ -302,7 +302,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | DONE (merged via PR #119, squash `23a6e9a`) |
 | 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | DONE (merged via PR #120, squash `e65c3dc`) |
 | 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | DONE (merged via PR #129, squash `3d09576`) |
-| 058b | `mustChangePassword` enforcement: `Access.mustChangePassword` + four predicate short-circuits (layer 1), `passwordChangeGate()` mounted per-router after each rate limiter with a four-path recovery allowlist (layer 2), uniform `403 password_change_required`. Settles the decision plan 058 deferred | P2 | S–M | **058 (hard)** | DONE (see `docs/superpowers/specs/2026-08-14-must-change-password-enforcement-design.md`) |
+| 058b | `mustChangePassword` enforcement: `Access.mustChangePassword` + four predicate short-circuits (layer 1), `passwordChangeGate()` mounted per-router after each rate limiter with a four-path recovery allowlist (layer 2), uniform `403 password_change_required`. Settles the decision plan 058 deferred | P2 | S–M | **058 (hard)** | OPEN (this branch; implemented + reviewed, awaiting merge) |
 | 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain; the mustChangePassword contract it consumes is settled by 058b |
 
 **Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
@@ -882,6 +882,24 @@ rationale. Items 5–7 remain unplanned.
     enforcing `mustChangePassword` widens the blast radius, so it is recorded rather than
     silently carried. Fix shapes worth weighing: a last-global-admin guard on self-reset, or
     generating the temp password before the write and making delivery idempotent.
+
+25. **[OPEN — found 2026-08-15 while fact-checking plan 058b's docs] Validation `400`s return
+    `@hono/zod-validator`'s internal shape, breaking the API's own `{error: string}` contract.**
+    All 14 `zValidator(...)` call sites (`routes/{admin,admin-users,admin-teams,auth,reports}.ts`)
+    are mounted **without** the optional third `hook` argument, so the library's default runs:
+    `if (!result.success) return c.json(result, 400)` (`@hono/zod-validator@0.9.0/dist/index.mjs:23`).
+    The body is therefore `{"success": false, "error": {"name": "ZodError", "message": "<JSON string>"}}`
+    — `error` is an **object**, and its `message` is a *second* JSON encoding of the issue array, so a
+    client must `JSON.parse` twice to read the issues. Every other error path in the API returns
+    `{"error": "<string>"}`. Verified empirically 2026-08-15 against the installed version, not
+    inferred from source. Two consequences: clients that branch on `typeof body.error === 'string'`
+    break on validation errors, and because this shape is the library's default rather than
+    something we assert, a `@hono/zod-validator` bump can change the public contract silently
+    with no test failing. `docs/API.md` now documents the divergence rather than hiding it.
+    Fix shape: one shared `hook` that maps `ZodError.issues` to
+    `{error: '<summary>', code: 'validation_failed', issues: [...]}`, applied at all 14 sites,
+    plus a route test pinning the shape so the next bump fails loudly. Note this is a **breaking
+    change** for any existing consumer already parsing the current shape.
 
 ## Findings considered and rejected
 

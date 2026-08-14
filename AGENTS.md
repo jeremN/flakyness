@@ -29,6 +29,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   environment. `docker compose` also refuses to even parse its config
   unless `DB_PASSWORD` and `ADMIN_TOKEN` have values (from `.env` or the
   shell).
+- **`pnpm --filter dashboard check` reports 3 phantom errors if you exported
+  `.env` in that shell.** `svelte-kit sync` generates the `$env/dynamic/private`
+  `env` type from **the ambient environment at sync time**, declaring every
+  variable it happens to find as a *required* `string` (the generated
+  `.svelte-kit/ambient.d.ts` will contain your unrelated shell vars too). With
+  `ADMIN_TOKEN` exported it becomes non-optional, so
+  `adminApi.test.ts`'s `delete privateEnv.ADMIN_TOKEN` becomes TS2790
+  *"The operand of a 'delete' operator must be optional"* — ×3. In a clean
+  shell the property falls through to the index signature and the same 479
+  files report **0 errors**. CI never sees this: its Type Check job does not
+  export `.env` (only the Tests job does), so PRs are green and correctly so.
+  The trap is that this guide tells you to export `.env` for the API suites,
+  and the typecheck command then fails for reasons unrelated to your change —
+  run it in a clean shell (`env -u ADMIN_TOKEN pnpm --filter dashboard check`)
+  before believing it. Verified 2026-08-14 by toggling only the export.
 - **TypeScript is split across the workspace**: `apps/api` is on **TS 7**;
   `apps/dashboard` is pinned to **TS 6** because `svelte-check` 4.x crashes
   under TS 7 (it reads `ts.default.sys`, which the native rewrite removed).

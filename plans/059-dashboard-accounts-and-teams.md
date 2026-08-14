@@ -805,6 +805,36 @@ This relies on `teamId` being present on the `GET /api/v1/projects` response, wh
 
 Renders nothing when `teams.length < 2` (a single-team user has no choice to make and should not see a dead control). Otherwise a link-based selector — "All teams" plus one entry per team — each preserving the rest of the query string. Write the query-string composition as a pure helper in `$lib/href.ts` (which already exists and is mutation-gated) rather than inline in the template.
 
+- [ ] **Step 2b: Render the "Unassigned" group — this discharges a Global Constraint**
+
+Do not skip this because it is not in the Step 1 code sample. It is the condition on which plan
+058's pre-flight ruling was made: `POST /admin/projects` keeps `teamId` optional, so a project
+created without one stays `team_id IS NULL` and — by `canReadProject`'s design — is invisible to
+every non-global-admin, **including the team that created it**. 1,529 of 2,952 projects on the
+dev database are already in that state. Keeping that default was allowed *only* because this
+plan surfaces it; without this step the ruling becomes a silent trap.
+
+In the project list, partition on `teamId === null` and render those under an explicit
+**"Unassigned"** heading, shown only when `data.user?.isGlobalAdmin` — they are the only caller
+who can read such a project at all, so the group is empty and meaningless for anyone else.
+
+```svelte
+{#if data.user?.isGlobalAdmin && unassigned.length > 0}
+  <h3>Unassigned</h3>
+  <!-- …same project-link markup as the grouped lists… -->
+{/if}
+```
+
+Derive the partition as a pure helper in `$lib/` (next to the other extracted view logic, so it
+is unit-testable in the node env and mutation-gated) rather than inline in the template.
+
+Add render assertions to `layout.svelte.test.ts` for all three cases: the group **appears** for a
+global admin when an unassigned project exists, **does not appear** for a global admin when none
+does (no empty heading), and **does not appear** for a non-admin even if the array somehow
+contains one. Prove the first assertion bites by removing the group and watching it redden — an
+"Unassigned" heading that renders unconditionally would pass a careless test while telling every
+member about projects they cannot open.
+
 - [ ] **Step 3: Add the user menu and sign-out to `+layout.svelte`**
 
 Show the display name or email, a "Teams"/"Users" nav entry **only when `user.isGlobalAdmin`**, and a sign-out form posting to `/logout`. Add render assertions to `layout.svelte.test.ts` for: the admin links appearing for a global admin, **not** appearing for a member, and the switcher's absence for a single-team user.

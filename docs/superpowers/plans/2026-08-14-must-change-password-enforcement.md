@@ -767,13 +767,15 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, users, teams } from '../db';
 import { SESSION_COOKIE } from '../services/auth/session';
-import type { Hono } from 'hono';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
 const describeEnforcement = hasDatabase && hasAdminToken ? describe : describe.skip;
 
-let app: Hono;
+// Not `let app: Hono` — the app is a parameterised `Hono<{ Variables: ... }>`
+// and a bare `Hono` annotation fails with TS2322. This is the idiom every
+// sibling suite already uses (access-scope, admin, admin-users, admin-teams).
+let app: typeof import('../index').default;
 beforeAll(async () => {
   if (hasDatabase) app = (await import('../index')).default;
 });
@@ -902,9 +904,31 @@ describeEnforcement('mustChangePassword enforcement', () => {
       await cleanup(u);
     });
 
-    it('POST /api/v1/auth/login works — proven by loginAs itself asserting 200', async () => {
+    it('POST /api/v1/auth/login works while ALREADY holding a mid-reset session', async () => {
+      // The cookie is the entire point. `loginAs()` sends none, so the gate
+      // short-circuits on `!sessionUser` and never consults the allowlist —
+      // a test built on it would stay green with '/api/v1/auth/login' deleted
+      // from PASSWORD_CHANGE_ALLOWLIST, proving only that anonymous login
+      // works, which was never in doubt.
+      //
+      // The scenario the allowlist entry actually protects: a user re-
+      // authenticates while the browser still holds their mid-reset session.
+      // Without the entry, the gate 403s the login and they can never get back in.
       const u = await provisionMustChangeUser();
-      await loginAs(u.email, u.password);
+      const cookie = await loginAs(u.email, u.password);
+
+      const res = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: withCookie(cookie),
+        body: JSON.stringify({ email: u.email, password: u.password }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(
+        res.headers.get('set-cookie'),
+        're-login must issue a fresh session, not merely return 200'
+      ).toContain(SESSION_COOKIE);
+
       await cleanup(u);
     });
 
@@ -1114,6 +1138,18 @@ Append inside the `describeEnforcement` block, after the contract-uniformity des
       const { default: adminRouter } = await import('./admin');
 
       const ungated = new Hono();
+      // The error handler is REQUIRED, not decoration. adminOrGlobalAdminAuth
+      // refuses by throwing HTTPException, and Hono's getResponse() falls back
+      // to `new Response(this.message)` — PLAIN TEXT, no JSON
+      // (hono/dist/http-exception.js:28). Without an onError mirroring
+      // index.ts:44-52, `await res.json()` throws SyntaxError before the
+      // assertion ever runs, and the test fails for a reason unrelated to the
+      // property under test.
+      ungated.onError((err, c) =>
+        err instanceof HTTPException
+          ? c.json({ error: err.message }, err.status)
+          : c.json({ error: 'Internal server error' }, 500)
+      );
       ungated.use('*', sessionAuth());
       ungated.route('/api/v1/admin', adminRouter);
 
@@ -1271,8 +1307,12 @@ Add to the "Sharp edges" list in both files (`.agent/CONTEXT.md` is the deeper v
   `HTTPException` — the global error handler drops the `code` field, which is
   the one thing plan 059's redirect keys off. Layer 1 (short-circuits in
   `services/auth/access.ts`'s four predicates) is the backstop for a router
-  that never mounts the gate; it refuses with a 404 via existence-hiding, which
-  is why the gate — not the predicates — owns the error contract.
+  that never mounts the gate. It does NOT emit one uniform contract — it just
+  falls through to whatever each route already does on denial: 404 via
+  plan 058's existence-hiding on reads and project writes, but a code-less 403
+  on the admin surface (`middleware/auth.ts:134` "Admin access required",
+  `routes/admin-teams.ts:30` "Global admin required"). That non-uniformity is
+  exactly why the gate — not the predicates — owns the error contract.
 ```
 
 - [ ] **Step 3: Update `plans/README.md`**

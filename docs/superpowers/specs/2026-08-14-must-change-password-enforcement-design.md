@@ -178,9 +178,18 @@ So `resolveAccess`, `assertProjectReadable` and `adminOrGlobalAdminAuth` are
 **not modified at all**. Smaller diff, one contract emitter, nothing to drift.
 
 The predicate short-circuits stay regardless. They are the backstop for a router
-that never mounts the gate — where a 404 instead of a 403 is an acceptable
-failure mode, because it still refuses. A test asserts they refuse, independent
-of what any middleware emits.
+that never mounts the gate, and a test asserts they refuse independent of what
+any middleware emits.
+
+**What layer 1 alone emits is deliberately NOT uniform** — corrected during
+implementation, where the earlier draft's blanket "404 via existence-hiding" was
+found to be true of only half the surfaces. Layer 1 sets no contract of its own;
+it falls through to whatever each route already does on denial: 404 on reads and
+project writes (plan 058's existence-hiding), but a code-less **403** on the
+admin surface (`middleware/auth.ts:134` "Admin access required",
+`routes/admin-teams.ts:30` "Global admin required"). Acceptable for a backstop,
+since every branch still refuses — and precisely why the contract belongs to
+layer 2 rather than being spread across three unrelated call sites.
 
 **Implementation constraint discovered while planning:** the gate must
 `return c.json(..., 403)` directly. It cannot `throw new HTTPException(403, ...)`

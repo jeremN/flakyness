@@ -161,18 +161,32 @@ draft's summary of them:
   message. So under layer 1 alone, all three surfaces violate the contract this
   spec calls non-negotiable.
 
-Fix: an explicit `requiresPasswordChange(access)` check that returns the 403
-contract below, placed **before** any project lookup or predicate call, in
-exactly two middleware:
+**Fix: layer 2 alone emits the contract, on every surface.** An earlier draft
+patched the contract into `resolveAccess()` *and* `adminOrGlobalAdminAuth()` —
+two more edits to security-critical middleware. Unnecessary. Because
+`passwordChangeGate()` is mounted `use('*')` on each router, and Hono runs
+router-level middleware before both per-route middleware and any later
+`use('*')`, the gate already precedes every one of these code paths:
 
-| Where | Covers |
+| Surface | Gate runs before |
 |---|---|
-| `resolveAccess()` / `assertProjectReadable()` | every read, plus `PATCH /tests/flaky/:id` — it mounts `resolveAccess()` (`routes/tests.ts:336`), so its route-local checks never run |
-| `adminOrGlobalAdminAuth()`, ahead of `canEnterAdminApi` | the whole admin router, and therefore every `scopedAdminProject` caller behind it |
+| reads | `resolveAccess()`, which is mounted **per route** (`routes/tests.ts:299,336`) |
+| project writes | `tests.ts:411`'s read-first check, and `scopedAdminProject` (`admin.ts:46`) |
+| admin API | `adminOrGlobalAdminAuth()` at `admin.ts:28`, `admin-users.ts:23`, `admin-teams.ts:19` |
 
-The predicate short-circuits stay regardless. They are the backstop for a route
-that mounts neither middleware — and a test asserts they refuse, independent of
-what any middleware emits.
+So `resolveAccess`, `assertProjectReadable` and `adminOrGlobalAdminAuth` are
+**not modified at all**. Smaller diff, one contract emitter, nothing to drift.
+
+The predicate short-circuits stay regardless. They are the backstop for a router
+that never mounts the gate — where a 404 instead of a 403 is an acceptable
+failure mode, because it still refuses. A test asserts they refuse, independent
+of what any middleware emits.
+
+**Implementation constraint discovered while planning:** the gate must
+`return c.json(..., 403)` directly. It cannot `throw new HTTPException(403, ...)`
+— the global error handler renders exceptions as `c.json({ error: err.message },
+err.status)` (`index.ts:44-52`), which **drops any `code` field**. Throwing here
+would silently produce exactly the opaque refusal the Keycloak lesson forbids.
 
 ### Layer 2 — choke point (Keycloak shape)
 
@@ -190,13 +204,18 @@ its regression test (`middleware/rate-limit.test.ts:341-361`) exist to prevent.
 A short-circuit is not neutral: everything downstream stops running, including
 the defences.
 
-Mounts required: `auth`, `projects`, `tests`, `reports`, `admin`,
-`admin/users`, `admin/teams`. Because this is now N mounts rather than one, a
-static coverage guard asserts every `/api/v1` router carries it (Testing #6) —
-same pattern as `readAuth`/`resolveAccess` in `routes-auth-coverage.test.ts`.
-The list is the complete set of `app.route('/api/v1/...')` calls at
-`index.ts:143-152`; the guard derives from that file so a new router cannot be
-added without either mounting the gate or failing CI.
+Mounts required — the complete set of `app.route('/api/v1/...')` calls at
+`index.ts:143-152`: `reports`, `projects`, `tests`, `admin/users`,
+`admin/teams`, `admin`, `auth`. Because this is now seven mounts rather than
+one, a static coverage guard asserts every one carries it (Testing #6).
+
+The guard is mechanically feasible — **verified, not assumed**: a router's
+`use('*', mw)` registrations surface in `app.routes` as `ALL /api/v1/<mount>/*`
+entries (probed against the live route table, 102 entries, all seven mounts
+present). So the guard reuses the tagged-middleware pattern `readAuth` and
+`resolveAccess` already use (`isReadAuth`, `isResolveAccess` in
+`routes-auth-coverage.test.ts:62-77`): tag the gate, then assert the tagged
+`ALL .../*` paths equal the expected seven.
 
 `/health` and `/metrics` are registered before `sessionAuth()` (`index.ts:58,69,81`)
 and return directly, so they are unaffected either way.

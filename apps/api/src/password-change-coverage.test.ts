@@ -104,6 +104,61 @@ const authRoutes = [
   ),
 ].sort();
 
+/**
+ * Auth routes that exist and are deliberately NOT part of password recovery.
+ *
+ * Empty today, and that is fine — its job is to exist. The assertion below
+ * compares the live auth route table against the UNION of this list and
+ * PASSWORD_CHANGE_ALLOWLIST, which makes "refuse it" a one-line answer.
+ *
+ * Why that matters, and why the old exact-equality-against-the-allowlist form
+ * was actively dangerous: its comment blessed a two-outcome decision ("either
+ * add it to the allowlist, or leave it out and it is correctly refused"), but
+ * only ONE of those outcomes made the test green. Leaving a new route out left
+ * CI red with no obvious remedy except appending to the allowlist — i.e. the
+ * lowest-friction way to get green was the insecure direction.
+ *
+ * That is not hypothetical. The obvious next auth route once accounts exist is
+ * `POST /api/v1/auth/tokens`. Reflexively allowlisting it would let a mid-reset
+ * session mint a bearer credential carrying NO mustChangePassword flag at all
+ * (every token-kind `Access` spreads `anonymousAccess()`), a complete and
+ * permanent escape from the boundary — reached by making a red test green.
+ *
+ * Adding an entry here is still a deliberate, reviewed edit. It just stops
+ * being a *harder* edit than the unsafe one.
+ */
+export const AUTH_ROUTES_DELIBERATELY_REFUSED: readonly string[] = [
+  // e.g. 'POST /api/v1/auth/tokens',  ← refuse; a mid-reset session must not
+  //      mint a credential that outlives the boundary.
+];
+
+/**
+ * The two-sided diff between the live auth route table and the routes someone
+ * has actually made a decision about (allowlisted ∪ deliberately refused).
+ *
+ * A pure function so the guard's own logic can be tested against synthetic
+ * inputs (see the self-test below) instead of being trusted, and so a failure
+ * names its DIRECTION — the two directions have opposite remedies and
+ * confusing them is how the lockout gets shipped:
+ *
+ *   undecided  a live route nobody classified. Either recovery (allowlist it)
+ *              or not (refuse it). Also what a DELETED allowlist entry looks
+ *              like while its route still exists — the instant-lockout case.
+ *   stale      a listed route that no longer exists. The list is lying; drop
+ *              the entry. NEVER "fix" this by re-adding the route.
+ */
+function authRouteDrift(
+  routes: readonly string[],
+  decided: readonly string[]
+): { undecided: string[]; stale: string[] } {
+  const decidedSet = new Set(decided);
+  const routeSet = new Set(routes);
+  return {
+    undecided: routes.filter((r) => !decidedSet.has(r)).sort(),
+    stale: decided.filter((d) => !routeSet.has(d)).sort(),
+  };
+}
+
 describe('password-change gate coverage', () => {
   beforeAll(() => {
     // Anti-vacuity, both directions. Without these, a refactor that changes how
@@ -185,13 +240,99 @@ describe('password-change gate coverage', () => {
     expect([...gatePaths].sort()).toEqual([...EXPECTED_GATE_MOUNTS].sort());
   });
 
-  it('the allowlist matches the auth router route table exactly', () => {
-    // A new /api/v1/auth/* route is a deliberate decision: either it is part of
-    // password recovery (add it to PASSWORD_CHANGE_ALLOWLIST) or it is not
-    // (leave it out and it is correctly refused). Silence is the one outcome
-    // this forbids.
-    expect(authRoutes).toEqual(
-      [...PASSWORD_CHANGE_ALLOWLIST].map((r) => format(r.method, r.path)).sort()
-    );
+  const allowlisted = PASSWORD_CHANGE_ALLOWLIST.map((r) => format(r.method, r.path));
+
+  it('every auth route is EITHER allowlisted OR deliberately refused — never unlisted', () => {
+    // A new /api/v1/auth/* route is a deliberate decision with TWO valid
+    // answers, and both are one line:
+    //   - part of password recovery  -> PASSWORD_CHANGE_ALLOWLIST (access.ts)
+    //   - not part of it             -> AUTH_ROUTES_DELIBERATELY_REFUSED (above)
+    // Silence is the one outcome forbidden. Comparing against the UNION is what
+    // makes the safe answer as cheap as the unsafe one — see the long comment
+    // on AUTH_ROUTES_DELIBERATELY_REFUSED for the POST /auth/tokens scenario
+    // this exists to stop.
+    //
+    // Both directions are asserted, and all three failure modes matter:
+    //   - a route in neither list  -> `undecided` (the drift case)
+    //   - a stale entry either list-> `stale`     (the list lies)
+    //   - a recovery entry DELETED while its route still exists
+    //                              -> `undecided` (instant lockout)
+    expect(
+      authRouteDrift(authRoutes, [...allowlisted, ...AUTH_ROUTES_DELIBERATELY_REFUSED]),
+      'Auth routes and the gate\'s decision lists have drifted.\n' +
+        '  undecided: a live /api/v1/auth route nobody classified. Add it to\n' +
+        '    PASSWORD_CHANGE_ALLOWLIST (services/auth/access.ts) if completing the\n' +
+        '    password change REQUIRES it, otherwise to\n' +
+        '    AUTH_ROUTES_DELIBERATELY_REFUSED in this file. Both are one line;\n' +
+        '    pick the correct one rather than the one that turns CI green.\n' +
+        '  stale: a listed route that no longer exists — delete the entry.'
+    ).toEqual({ undecided: [], stale: [] });
+  });
+
+  it('lists no route twice', () => {
+    // authRouteDrift is set-based, so a duplicated entry inside either list is
+    // invisible to it. Harmless at runtime, but a duplicate is always a botched
+    // edit and the guard should say so rather than absorb it.
+    const decided = [...allowlisted, ...AUTH_ROUTES_DELIBERATELY_REFUSED];
+    expect(decided).toEqual([...new Set(decided)]);
+  });
+
+  describe('authRouteDrift — the guard\'s own logic, on synthetic input', () => {
+    // The live assertion above passes because the real lists agree with the
+    // real route table. That says nothing about whether it would still catch a
+    // disagreement. These drive the same function with inputs a real edit
+    // would produce.
+    const RECOVERY = 'POST /api/v1/auth/change-password';
+    const TOKENS = 'POST /api/v1/auth/tokens';
+
+    it('reports a live route nobody classified', () => {
+      expect(authRouteDrift([RECOVERY, TOKENS], [RECOVERY])).toEqual({
+        undecided: [TOKENS],
+        stale: [],
+      });
+    });
+
+    it('accepts a route classified as REFUSED, not only as allowlisted', () => {
+      // The whole point of F4: refusing must be a green answer. If this ever
+      // reddens, the guard is back to being greenable only by widening the
+      // allowlist — the insecure direction.
+      expect(authRouteDrift([RECOVERY, TOKENS], [RECOVERY, TOKENS])).toEqual({
+        undecided: [],
+        stale: [],
+      });
+    });
+
+    it('reports a stale entry whose route no longer exists', () => {
+      expect(authRouteDrift([RECOVERY], [RECOVERY, TOKENS])).toEqual({
+        undecided: [],
+        stale: [TOKENS],
+      });
+    });
+
+    it('reports a DELETED recovery entry as undecided — the instant-lockout case', () => {
+      // Deleting `POST /api/v1/auth/change-password` from the allowlist while
+      // the route still exists bricks every provisioned account. It must land
+      // in `undecided`, not be silently tolerated.
+      expect(authRouteDrift([RECOVERY], [])).toEqual({ undecided: [RECOVERY], stale: [] });
+    });
+
+    it('distinguishes METHOD on the same path', () => {
+      // The F5 property, at the guard level: `DELETE /api/v1/auth/me` must not
+      // be considered decided just because `GET /api/v1/auth/me` is.
+      expect(
+        authRouteDrift(['GET /api/v1/auth/me', 'DELETE /api/v1/auth/me'], ['GET /api/v1/auth/me'])
+      ).toEqual({ undecided: ['DELETE /api/v1/auth/me'], stale: [] });
+    });
+  });
+
+  it('no route is BOTH allowlisted and deliberately refused', () => {
+    // The union assertion above cannot see a contradiction: an entry present
+    // in both lists appears twice on the right, so the comparison fails with a
+    // duplicate-element message that reads like drift rather than like the
+    // real problem. Naming it separately makes the diagnosis immediate — and
+    // "exempt" and "refused" are opposite claims about the same request, so
+    // one of the two edits is definitely wrong.
+    const both = allowlisted.filter((r) => AUTH_ROUTES_DELIBERATELY_REFUSED.includes(r));
+    expect(both, 'a route cannot be both exempt from and refused by the gate').toEqual([]);
   });
 });

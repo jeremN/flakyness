@@ -1755,18 +1755,18 @@ DELETE /api/v1/admin/users/:userId
 ```
 
 Mounted at `/api/v1/admin/users` — a sibling of, and matched **before**,
-`/api/v1/admin/*` — same `ADMIN_TOKEN` gate as every other admin endpoint,
-and the same rate limiting: see [Rate Limiting](#rate-limiting) — 5
-requests/minute per IP applies only to requests with a missing or invalid
-`ADMIN_TOKEN`; a request bearing a valid one is exempt. There is no
-self-service sign-up: it is **`ADMIN_TOKEN`, not `isGlobalAdmin`**, that
-provisions every account (plan 057) — `isGlobalAdmin` is stored on the user
-record and returned by this API, but as of this plan no route reads it to
-make an authorization decision. Every `/admin/*` endpoint, including this
-one, is gated solely by `ADMIN_TOKEN`; `ADMIN_TOKEN` therefore remains a
-superuser credential independent of any user's `isGlobalAdmin` flag. Plan
-058 is what decides whether `ADMIN_TOKEN` keeps that superuser status once
-`isGlobalAdmin` starts driving real enforcement.
+`/api/v1/admin/*` — same gate as every other admin endpoint, and the same
+rate limiting: see [Rate Limiting](#rate-limiting) — 5 requests/minute per IP
+applies only to requests with **neither** a valid `ADMIN_TOKEN` **nor** a
+signed-in session. There is no self-service sign-up: an account is
+provisioned only through this endpoint (plan 057).
+
+Since plan 058, `isGlobalAdmin` **does** drive authorization. `/admin/*`
+accepts a global-admin session as well as `ADMIN_TOKEN`, and this router
+additionally requires global-admin standing — a `team_admin` session that
+can reach other admin endpoints gets **`403`** here. `ADMIN_TOKEN` keeps its
+superuser status as the break-glass credential. See
+[Authorization model](#authorization-model).
 
 #### List Users
 

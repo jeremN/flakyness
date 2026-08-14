@@ -370,8 +370,13 @@ import type { SessionUser } from './session';
  * sessionAuth writes the context variable that the real one would, so this
  * file proves the GATE, not the session plumbing.
  */
-function appWith(sessionUser: SessionUser | null): Hono {
-  const app = new Hono();
+// The Variables generic is required, not decoration: a bare `new Hono()` has an
+// empty Variables map, so `c.set('sessionUser', ...)` matches no overload and
+// fails with TS2769. `rate-limit.test.ts:636` already does this for the same
+// reason. The return type is inferred — the parameterised Hono is not
+// assignable to a bare `Hono` annotation.
+function appWith(sessionUser: SessionUser | null) {
+  const app = new Hono<{ Variables: { sessionUser: SessionUser } }>();
   app.use('*', async (c, next) => {
     if (sessionUser) c.set('sessionUser', sessionUser);
     await next();

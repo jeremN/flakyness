@@ -53,8 +53,14 @@ jobs:
       - name: Mutation test API (Stryker + Postgres)
         run: pnpm --filter api exec stryker run
 
+      # `run test:mutation`, NOT `exec stryker run`: the script is
+      # `svelte-kit sync && stryker run`, and that sync is what creates the
+      # `.svelte-kit/tsconfig.json` that `tsconfig.json` extends. `exec`
+      # skips it, leaving nothing for stryker.conf.mjs's
+      # `ignorePatterns: ['!.svelte-kit']` to copy into the sandbox — which
+      # is how this step failed on every one of its first 24 nightly runs.
       - name: Mutation test dashboard $lib (Stryker)
-        run: pnpm --filter dashboard exec stryker run
+        run: pnpm --filter dashboard run test:mutation
 
       - name: Upload mutation HTML reports
         if: always()

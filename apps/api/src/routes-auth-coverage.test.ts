@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { readFileSync } from 'node:fs';
 import app from './index';
 
 /**
@@ -169,4 +170,93 @@ describe('read-route auth coverage', () => {
         'exempts nothing and hides the next route that lands on that path.'
     ).toBe(true);
   });
+});
+
+/**
+ * The same guarantee, for the admin surface the scan above deliberately excludes.
+ *
+ * `readRoutes` filters out `/api/v1/admin` because those routes are gated by
+ * `adminOrGlobalAdminAuth`. That gate proves **standing, not scope**:
+ * `canEnterAdminApi` admits any user who is `team_admin` in ANY team. From
+ * there, the only thing keeping a `team_admin` out of another team's project
+ * is a per-route `scopedAdminProject(c, projectId)` call the author has to
+ * remember to write.
+ *
+ * Before plan 058 that was harmless — `/api/v1/admin` was `ADMIN_TOKEN`-only,
+ * so a forgotten check was reachable only by the operator who already had
+ * superuser rights. Task 5 changed the audience; Task 6 pointed its guard at
+ * the read surface and explicitly away from this one. The gap is only visible
+ * across those two tasks, which is why it survived every per-diff review.
+ *
+ * Measured, not theorised: appending a plausible
+ * `GET /projects/:id/webhook` returning `webhookUrl` + `tokenHash` with no
+ * scope check passed all 805 tests, `tsc --noEmit` and `oxlint` — while
+ * handing every other team's ingest credential to any `team_admin` session.
+ *
+ * This is a SOURCE-TEXT scan rather than a route-table scan on purpose: the
+ * property that matters is "the handler performs a scope check", and a scope
+ * check is an ordinary function call inside the body, not a mountable
+ * middleware the route table can see. A route-count assertion would only
+ * force a deliberate edit; this asserts the actual property.
+ */
+describe('admin project-route scope coverage', () => {
+  // Registration sites in routes/admin.ts whose path is project-scoped
+  // (`/projects/:id...`). Bumping this is the point: a new one forces a
+  // deliberate edit here, which forces a reviewer to ask whether the handler
+  // scope-checks. `/projects` (collection) and `/health` are not included —
+  // they take no project id.
+  const EXPECTED_PROJECT_SCOPED_ROUTES = 9;
+
+  const source = readFileSync(new URL('./routes/admin.ts', import.meta.url), 'utf8');
+
+  // Matches both the single-line form and the multi-line
+  // `adminRouter.post(\n  '/path',` form used when a zValidator is passed.
+  const registration = /adminRouter\.(get|post|put|patch|delete)\(\s*'([^']*)'/g;
+
+  const sites = [...source.matchAll(registration)].map((m, i, all) => ({
+    method: m[1],
+    path: m[2],
+    // The handler body runs to the next registration, or to EOF for the last.
+    body: source.slice(m.index, all[i + 1]?.index ?? source.length),
+  }));
+
+  const projectScoped = sites.filter((s) => s.path.startsWith('/projects/:id'));
+
+  it('the source scan actually found the route table (guard is not vacuous)', () => {
+    expect(
+      sites.length,
+      'No adminRouter registrations were matched in routes/admin.ts. The registration ' +
+        'style changed (or the file moved) and this whole guard is now asserting nothing. ' +
+        'Fix the regex, do not delete this file.'
+    ).toBeGreaterThan(0);
+
+    expect(
+      projectScoped.length,
+      'The number of project-scoped admin routes changed. If you ADDED one, confirm its ' +
+        'handler calls scopedAdminProject(c, projectId) — or canAdministerTeams(getAccess(c)) ' +
+        'if it is operator-only — before it touches the project, then bump this count. ' +
+        'adminOrGlobalAdminAuth() does NOT scope: any team_admin in any team clears it, so ' +
+        'an unscoped handler returns another team’s project as a 200 with correct-looking ' +
+        'data that no behavioural test will flag.'
+    ).toBe(EXPECTED_PROJECT_SCOPED_ROUTES);
+  });
+
+  it.each(projectScoped.map((s) => [`${s.method.toUpperCase()} ${s.path}`, s] as const))(
+    'scope-checks the project it operates on: %s',
+    (label, site) => {
+      const scoped =
+        site.body.includes('scopedAdminProject') || site.body.includes('canAdministerTeams');
+
+      expect(
+        scoped,
+        `${label} carries a :id project segment but its handler never calls\n` +
+          `scopedAdminProject() or canAdministerTeams().\n\n` +
+          `adminOrGlobalAdminAuth() proves STANDING, not SCOPE — canEnterAdminApi admits any\n` +
+          `team_admin in any team. Without a scope check this endpoint serves (or mutates)\n` +
+          `another team's project for any signed-in team_admin, as a 200 with plausible\n` +
+          `content. Use scopedAdminProject(c, projectId) for per-project access, or\n` +
+          `canAdministerTeams(getAccess(c)) to restrict the route to global admins.`
+      ).toBe(true);
+    }
+  );
 });

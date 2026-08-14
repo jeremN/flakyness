@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, users, teams } from '../db';
 import { SESSION_COOKIE } from '../services/auth/session';
@@ -261,5 +261,144 @@ describeEnforcement('mustChangePassword enforcement', () => {
       expect(await res.json()).toEqual(REFUSED_403);
       await cleanup(u);
     });
+  });
+
+  /**
+   * The zero-behaviour-change promise. An install with no user accounts must
+   * not notice this feature at all.
+   */
+  describe('machine credentials presenting no session cookie are unaffected', () => {
+    it('ADMIN_TOKEN still reaches the admin API', async () => {
+      const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
+      expect(res.status).toBe(200);
+    });
+
+    it('a mid-reset user existing on the instance does not affect a token caller', async () => {
+      // The flag lives on a row, not on the request. This pins that the gate
+      // reads the CALLER's session and nothing else.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
+      expect(res.status).toBe(200);
+      await cleanup(u);
+    });
+  });
+
+  it('a mid-reset cookie sent ALONGSIDE a valid ADMIN_TOKEN is still refused', async () => {
+    // Session outranks bearer (middleware/access.ts:50-70), a deliberate plan
+    // 058 decision this feature does not reverse. Documented here as intended
+    // behaviour so plan 059 does not discover it as a surprise: the dashboard
+    // holds ADMIN_TOKEN server-side and will gain a session cookie.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+    const res = await app.request('/api/v1/admin/projects', {
+      headers: { ...adminHeaders(), Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('password_change_required');
+    await cleanup(u);
+  });
+
+  it('layer 1 alone still refuses when the gate is mocked out', async () => {
+    // Each layer must be proven to bite ALONE, or redundancy masks breakage:
+    // the gate always fires first, so layer 1 could be entirely broken and
+    // every other test in this file would still pass.
+    //
+    // Only THIS direction needs its own test. The reverse — "layer 2 alone
+    // bites" — is what every test above already proves, because layer 1 is
+    // never reached while the gate is mounted.
+    //
+    // The surface is the admin API on purpose. A read would be a bad choice:
+    // GET /api/v1/projects is a LIST route, so layer 1 refusing yields an empty
+    // 200, not a refusal — a test asserting 404 there would fail for the wrong
+    // reason, and one asserting "not 200" would pass with both layers broken.
+    // canEnterAdminApi, by contrast, is a clean permit/deny.
+    //
+    // Note the contract differs by design: this is `403 Admin access required`
+    // with NO code — layer 1 refuses, layer 2 owns the contract. Asserting the
+    // exact body is what proves the mock really took effect rather than the
+    // real gate having answered.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    vi.doMock('../middleware/password-change', () => ({
+      passwordChangeGate: () =>
+        Object.assign(async (_c: unknown, next: () => Promise<void>) => await next(), {
+          isPasswordChangeGate: true as const,
+        }),
+    }));
+    try {
+      const { Hono } = await import('hono');
+      const { HTTPException } = await import('hono/http-exception');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: adminRouter } = await import('./admin');
+
+      const ungated = new Hono();
+      // Mirrors index.ts's app.onError: outside the full app, an uncaught
+      // HTTPException's default getResponse() is plain text, not JSON — this
+      // is scaffolding to reproduce the real production contract, not a
+      // relaxation of the assertion below.
+      ungated.onError((err, c) => {
+        if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+        throw err;
+      });
+      ungated.use('*', sessionAuth());
+      ungated.route('/api/v1/admin', adminRouter);
+
+      const res = await ungated.request('/api/v1/admin/projects', {
+        headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+      });
+      expect(res.status, 'with the gate neutralised, layer 1 must still refuse').toBe(403);
+      expect(await res.json()).toEqual({ error: 'Admin access required' });
+    } finally {
+      vi.doUnmock('../middleware/password-change');
+      vi.resetModules();
+      await cleanup(u);
+    }
+  });
+
+  it('a refused mid-reset caller is still rate-limited', async () => {
+    // The regression test for the mount-order defect. Mounting the gate
+    // globally (app.use('*')) rather than per-router runs it before every
+    // limiter; because a denial returns without next(), the limiter never
+    // counts the request and this test never sees a 429 — an unthrottled path
+    // that still pays a session DB lookup per request. Same hazard, same
+    // shape, as rate-limit.test.ts:341-361, which is also where this idiom
+    // (resetModules, enable the flag, build a MINIMAL app) comes from.
+    //
+    // Provision and log in FIRST, on the outer app: the limiter is a module
+    // singleton, and doing this after enabling it would spend real slots.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    const { __setRateLimitEnabled, API_RATE_LIMIT } = await import('../middleware/rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const { Hono } = await import('hono');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: projectsRouter } = await import('./projects');
+
+      const limited = new Hono();
+      limited.use('*', sessionAuth());
+      limited.route('/api/v1/projects', projectsRouter);
+
+      const codes: number[] = [];
+      for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
+        const res = await limited.request('/api/v1/projects', {
+          headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early requests really did reach the gate, proving the 429s
+      // came from exhausting the limiter rather than from everything being
+      // rejected outright — the assertion that fails under the global mount.
+      expect(codes[0]).toBe(403);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+      await cleanup(u);
+    }
   });
 });

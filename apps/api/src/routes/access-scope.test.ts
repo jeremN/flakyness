@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { SESSION_COOKIE } from '../services/auth/session';
 import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
+import { clearMustChangePassword } from '../test-support/onboard-provisioned-user';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -66,6 +67,9 @@ async function fixture(role: 'team_admin' | 'member') {
     method: 'POST', headers: adminHeaders(),
     body: JSON.stringify({ email: `${uniq('u')}@example.test` }),
   })));
+  // This suite is about team scoping, not the password lifecycle — onboard
+  // the user past the forced first-time change before it logs in below.
+  await clearMustChangePassword(user.user.id);
 
   await app.request(`/api/v1/admin/teams/${team.id}/members`, {
     method: 'POST', headers: adminHeaders(),
@@ -162,6 +166,9 @@ describeScope('per-team read scoping', () => {
         method: 'POST', headers: adminHeaders(),
         body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
       }));
+      // Onboard past the forced first-time change — see
+      // clearMustChangePassword's doc comment.
+      await clearMustChangePassword(adminUser.user.id);
       const loginRes = await app.request('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,6 +188,9 @@ describeScope('per-team read scoping', () => {
       method: 'POST', headers: adminHeaders(),
       body: JSON.stringify({ email: `${uniq('lone')}@example.test` }),
     }));
+    // Onboard past the forced first-time change — see
+    // clearMustChangePassword's doc comment.
+    await clearMustChangePassword(loner.user.id);
     const loginRes = await app.request('/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -446,6 +456,9 @@ describeScope('GET /api/v1/projects list filtering', () => {
         method: 'POST', headers: adminHeaders(),
         body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
       }));
+      // Onboard past the forced first-time change — see
+      // clearMustChangePassword's doc comment.
+      await clearMustChangePassword(adminUser.user.id);
       const loginRes = await app.request('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -473,6 +486,9 @@ describeScope('admin API accepts a global-admin session', () => {
       method: 'POST', headers: adminHeaders(),
       body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
     }));
+    // Onboard past the forced first-time change — see
+    // clearMustChangePassword's doc comment.
+    await clearMustChangePassword(created.user.id);
     const res = await app.request('/api/v1/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: created.user.email, password: created.temporaryPassword }),

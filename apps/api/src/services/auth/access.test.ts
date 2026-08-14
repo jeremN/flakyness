@@ -316,6 +316,56 @@ describe('the four predicates refuse a mid-reset user', () => {
     expect(canEnterAdminApi(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(false);
   });
 
+  it('scopesProjectList — a mid-reset caller is FILTERED, including a global admin', () => {
+    // The odd one out, and the one a reviewer found unguarded. scopesProjectList
+    // does not decide access; it decides whether canReadProject is consulted at
+    // all. So `false` is the UNSAFE answer here — the inverse of every
+    // predicate above — and "its safe direction is already true" is wrong for
+    // exactly one caller: the global admin, who took the unfiltered branch and
+    // so never reached canReadProject's mid-reset guard at all.
+    //
+    // Each case is paired with its non-mid-reset counterpart, so a predicate
+    // that returned true unconditionally would fail on the second half.
+    expect(scopesProjectList(globalAdminUser)).toBe(false);
+    expect(
+      scopesProjectList(midResetGlobalAdmin),
+      'a mid-reset GLOBAL ADMIN must be filtered — otherwise the list route hands them every project'
+    ).toBe(true);
+
+    // The already-filtered kinds must stay filtered. These passed before the
+    // fix too, which is precisely why the existing coverage missed the hole.
+    expect(scopesProjectList(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(scopesProjectList(member({ [TEAM_A]: 'team_admin' }))).toBe(true);
+
+    // Token kinds are never mid-reset (requiresPasswordChange gates on
+    // kind === 'user'), so the new first line must not perturb them.
+    expect(scopesProjectList(adminToken)).toBe(false);
+    expect(scopesProjectList(readToken)).toBe(false);
+    expect(scopesProjectList(anonymousAccess())).toBe(false);
+    expect(scopesProjectList(projectToken('p-a'))).toBe(true);
+  });
+
+  it('a filtered mid-reset global admin sees NO project — the end-to-end layer-1 outcome on a list', () => {
+    // scopesProjectList and canReadProject compose into the actual behaviour
+    // the list routes get. Asserting the composition, not just each half,
+    // is what pins the outcome as "empty list" rather than "some filter ran".
+    // `orphan` is in the set on purpose: it is global-admin-only, so a leak
+    // through the isGlobalAdmin branch would show up here first.
+    const rows = [projectInA, projectInB, orphan];
+    const visible = scopesProjectList(midResetGlobalAdmin)
+      ? rows.filter((p) => canReadProject(midResetGlobalAdmin, p))
+      : rows;
+    expect(visible).toEqual([]);
+
+    // The control: the same admin, not mid-reset, still sees everything. Without
+    // this the assertion above would also pass against a predicate that hid
+    // every project from every global admin.
+    const healthy = scopesProjectList(globalAdminUser)
+      ? rows.filter((p) => canReadProject(globalAdminUser, p))
+      : rows;
+    expect(healthy).toEqual(rows);
+  });
+
   it('the check is ordered BEFORE the isGlobalAdmin shortcut', () => {
     // canReadProject and canWriteProject both open with
     // `if (access.isGlobalAdmin) return true`. Putting the new check after it

@@ -396,14 +396,36 @@ every token `Access` is built by spreading `anonymousAccess()`, which fixes
 `canEnterAdminApi`. This is a **backstop**, not a second copy of the gate's
 error contract: a denied predicate just returns `false`, so the caller falls
 through to whatever that route already does on a normal denial. In practice
-that is two different outcomes: the two project-scoped predicates feed
-`loadScopedProject`-based routes, which turn `false` into the same `404`
-existence-hiding response an out-of-team read gets; `canAdministerTeams` /
-`canEnterAdminApi` feed routes that answer with their own code-less `403`
-(e.g. `adminOrGlobalAdminAuth` throws
-`HTTPException(403, 'Admin access required')`, `admin-teams.ts` answers
-`{ error: 'Global admin required' }`). Neither carries
-`code: 'password_change_required'`.
+that is **three** different outcomes, and none of them carries
+`code: 'password_change_required'`:
+
+1. `404` — the two project-scoped predicates feed `loadScopedProject`-based
+   routes, which turn `false` into the same existence-hiding response an
+   out-of-team read gets.
+2. A code-less `403` — `canAdministerTeams` / `canEnterAdminApi` feed routes
+   that answer with their own message (e.g. `adminOrGlobalAdminAuth` throws
+   `HTTPException(403, 'Admin access required')`, `admin-teams.ts` answers
+   `{ error: 'Global admin required' }`).
+3. `200` **with an empty list** — the two list routes
+   (`GET /api/v1/projects`, `GET /api/v1/admin/projects`) filter rather than
+   refuse, so layer 1 removes every row instead of producing a status.
+
+Outcome 3 runs through a **fifth** predicate the four above do not cover:
+`scopesProjectList`, which answers "should this list be filtered" rather than
+"is this allowed". Its polarity is therefore inverted — `true` is the safe
+answer, and `false` skips `canReadProject` altogether — so it checks
+`requiresPasswordChange` **first**, ahead of its `isGlobalAdmin` shortcut.
+Without that ordering a mid-reset **global admin** took the unfiltered branch,
+`canReadProject` was never consulted, and layer 1 provided no backstop at all
+on the list routes for the single highest-privilege caller on the instance
+(caught in final review; regression-tested in
+`services/auth/access.test.ts` and
+`routes/password-change-enforcement.test.ts`).
+
+The two layers are therefore **not** independent in the strong sense of
+"either alone produces the documented behaviour" — layer 2 alone produces the
+contract, layer 1 alone only guarantees that no data escapes. Do not read
+"two layers" as "the gate is optional".
 
 **Layer 2 — `passwordChangeGate()`**
 (`apps/api/src/middleware/password-change.ts`) is the layer that actually

@@ -138,8 +138,9 @@ and `project-token` can never carry the flag.
 
 `resolveAccessValue`'s user branch populates it from `sessionUser`.
 
-`canReadProject`, `canWriteProject` and `canEnterAdminApi` each short-circuit on
-`requiresPasswordChange(access)`.
+`canReadProject`, `canWriteProject`, `canAdministerTeams` and `canEnterAdminApi`
+each short-circuit on `requiresPasswordChange(access)`. `scopesProjectList` also
+consults it, but in the opposite direction — see "the list branch" below.
 
 `/api/v1/auth/*` never consults the decision table, so this layer exempts the
 allowlist **structurally** — no path matching involved.
@@ -183,13 +184,33 @@ any middleware emits.
 
 **What layer 1 alone emits is deliberately NOT uniform** — corrected during
 implementation, where the earlier draft's blanket "404 via existence-hiding" was
-found to be true of only half the surfaces. Layer 1 sets no contract of its own;
-it falls through to whatever each route already does on denial: 404 on reads and
-project writes (plan 058's existence-hiding), but a code-less **403** on the
-admin surface (`middleware/auth.ts:134` "Admin access required",
-`routes/admin-teams.ts:30` "Global admin required"). Acceptable for a backstop,
-since every branch still refuses — and precisely why the contract belongs to
-layer 2 rather than being spread across three unrelated call sites.
+found to be true of only half the surfaces, and corrected again in final review,
+where a **third** outcome turned up. Layer 1 sets no contract of its own; it
+falls through to whatever each route already does on denial:
+
+| Surface | Layer-1-alone outcome |
+|---|---|
+| Single-project reads and project writes | `404` (plan 058's existence-hiding) |
+| Admin surface | code-less `403` (`middleware/auth.ts:134` "Admin access required", `routes/admin-teams.ts:30` "Global admin required") |
+| Project **lists** (`GET /api/v1/projects`, `GET /api/v1/admin/projects`) | `200` with an empty array — these routes filter, they never refuse |
+
+Acceptable for a backstop, since every branch still withholds the data — and
+precisely why the contract belongs to layer 2 rather than being spread across
+three unrelated call sites.
+
+**The list branch needed a fifth predicate guarded, not four.** `scopesProjectList`
+answers "should this list be filtered", so its polarity is inverted from the other
+four: `true` is the safe answer and `false` skips `canReadProject` altogether. The
+earlier justification for leaving it alone — "its safe direction is already
+`true`" — was false for exactly one caller. It opened with
+`if (access.isGlobalAdmin) return false`, so a mid-reset **global admin** took the
+unfiltered branch and `canReadProject`'s new guard was never reached: layer 1
+handed the highest-privilege caller on the instance every project. It now checks
+`requiresPasswordChange` first. The pre-existing layer-1 isolation test used a
+`team_admin`, whose filtered branch already yielded `[]`, which is why it passed
+while never exercising the broken branch — the regression tests added for this
+use a global admin specifically (under `GLOBAL_ADMIN_LOCK_KEY`, since
+global-admin state is ambient and shared across test files).
 
 **Implementation constraint discovered while planning:** the gate must
 `return c.json(..., 403)` directly. It cannot `throw new HTTPException(403, ...)`

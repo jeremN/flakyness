@@ -197,11 +197,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `canEnterAdminApi`) is the backstop for a router that forgets to mount the
   gate, but it is **not** a second copy of the gate's contract: each predicate
   just returns `false`, so the caller falls through to whatever that route
-  already does on a normal denial — `404` existence-hiding for the two
-  project-scoped predicates, a *different*, code-less `403` (e.g. `'Global
-  admin required'`) for the two team/admin-scoped ones. Only the gate
-  guarantees the uniform `403 password_change_required` contract, which is
-  why it — not the predicates — owns it.
+  already does on a normal denial. That is **three** outcomes, not two —
+  `404` existence-hiding for the two project-scoped predicates on a
+  single-project route; a *different*, code-less `403` (e.g. `'Global admin
+  required'`) for the two team/admin-scoped ones; and **`200` with an empty
+  list** on the two LIST routes (`GET /api/v1/projects`,
+  `GET /api/v1/admin/projects`), which filter rather than refuse. Only the
+  gate guarantees the uniform `403 password_change_required` contract, which
+  is why it — not the predicates — owns it. The list routes reach layer 1
+  through a **fifth** predicate, `scopesProjectList`, whose polarity is
+  inverted from the other four: it returns "should this list be filtered", so
+  `true` is the safe answer and `false` skips `canReadProject` entirely.
+  It therefore checks `requiresPasswordChange` **first**, ahead of its
+  `isGlobalAdmin` shortcut — without that, a mid-reset *global admin* took the
+  unfiltered branch and layer 1 never ran at all for the highest-privilege
+  caller on the instance.
 
 ## Conventions
 

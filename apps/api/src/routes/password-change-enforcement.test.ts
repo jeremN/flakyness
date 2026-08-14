@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, users, teams } from '../db';
 import { SESSION_COOKIE } from '../services/auth/session';
+import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
+import { clearMustChangePassword } from '../test-support/onboard-provisioned-user';
 
 const hasDatabase = !!process.env.DATABASE_URL;
 const hasAdminToken = !!process.env.ADMIN_TOKEN;
@@ -394,6 +396,116 @@ describeEnforcement('mustChangePassword enforcement', () => {
       vi.resetModules();
       await cleanup(u);
     }
+  });
+
+  /**
+   * The other half of "layer 1 alone still bites" — and the branch the test
+   * above structurally cannot reach.
+   *
+   * `GET /api/v1/projects` filters rather than refuses, and whether it filters
+   * at all is decided by `scopesProjectList`. That predicate used to open with
+   * `if (access.isGlobalAdmin) return false`, i.e. "do not filter" — so with
+   * the gate absent, a mid-reset GLOBAL ADMIN took the unfiltered branch,
+   * `canReadProject`'s mid-reset guard was never called, and layer 1 handed
+   * them EVERY project on the instance. The existing layer-1 test uses a
+   * `team_admin`, whose filtered branch already yielded `[]`, so it passed
+   * while never touching the broken branch.
+   *
+   * Both requests below go through the SAME ungated app with the SAME cookie;
+   * the only thing that changes between them is the database flag. That is
+   * what makes the empty list attributable to the flag rather than to the
+   * instance having no projects, to readAuth, or to the mock.
+   */
+  it('layer 1 alone empties the project LIST for a mid-reset GLOBAL ADMIN', async () => {
+    // MANDATORY: the lock spans the whole body, creation through final
+    // assertion — see the identical note in access-scope.test.ts:505-512.
+    // admin-users.test.ts's withSoleGlobalAdmin() demotes every ambient global
+    // admin and asserts its target is the sole one; releasing early would let
+    // a concurrent cycle flip this admin back to false mid-test, and the
+    // control request below would then see an empty list for the WRONG reason
+    // and go green while proving nothing.
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const stamp = `${Date.now()}-${seq++}`;
+
+      // A project must exist, or "sees an empty list" is true of every
+      // possible implementation and the assertion is vacuous.
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ga-list-team-${stamp}` }),
+      });
+      expect(teamRes.status).toBe(201);
+      const teamId = (await teamRes.json()).team.id;
+
+      const projectRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ga-list-project-${stamp}`, teamId }),
+      });
+      expect(projectRes.status).toBe(201);
+      const projectId = (await projectRes.json()).project.id;
+
+      const userRes = await app.request('/api/v1/admin/users', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ email: `ga-list-${stamp}@example.com`, isGlobalAdmin: true }),
+      });
+      expect(userRes.status).toBe(201);
+      const created = await userRes.json();
+      expect(created.user.isGlobalAdmin, 'the fixture must really be a global admin').toBe(true);
+      expect(created.user.mustChangePassword, 'and must start mid-reset').toBe(true);
+      const userId = created.user.id;
+
+      const cookie = await loginAs(created.user.email, created.temporaryPassword);
+
+      vi.resetModules();
+      vi.doMock('../middleware/password-change', () => ({
+        passwordChangeGate: () =>
+          Object.assign(async (_c: unknown, next: () => Promise<void>) => await next(), {
+            isPasswordChangeGate: true as const,
+          }),
+      }));
+      try {
+        const { Hono } = await import('hono');
+        const { sessionAuth } = await import('../middleware/session');
+        const { default: projectsRouter } = await import('./projects');
+
+        const ungated = new Hono();
+        ungated.use('*', sessionAuth());
+        ungated.route('/api/v1/projects', projectsRouter);
+
+        const listAsCaller = async () => {
+          const res = await ungated.request('/api/v1/projects', {
+            headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+          });
+          // 200, not 403/404: this is the third layer-1 outcome, and pinning
+          // the status is what documents that layer 1 does NOT produce the
+          // uniform refusal contract here — only the gate does.
+          expect(res.status, 'the list route filters, it never refuses').toBe(200);
+          return (await res.json()).projects as Array<{ id: string }>;
+        };
+
+        expect(
+          await listAsCaller(),
+          'with the gate neutralised, a mid-reset global admin must see NO project'
+        ).toEqual([]);
+
+        // Same app, same cookie, flag cleared — the control. Without it the
+        // assertion above would also pass against a route that returned []
+        // to everyone, or against a fixture whose project was never created.
+        await clearMustChangePassword(userId);
+        const healthy = await listAsCaller();
+        expect(
+          healthy.map((p) => p.id),
+          'once rotated, the very same global admin sees the project again'
+        ).toContain(projectId);
+      } finally {
+        vi.doUnmock('../middleware/password-change');
+        vi.resetModules();
+        await db.delete(users).where(eq(users.id, userId));
+        await db.delete(teams).where(eq(teams.id, teamId));
+      }
+    });
   });
 
   it('a refused mid-reset caller is still rate-limited', async () => {

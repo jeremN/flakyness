@@ -159,8 +159,27 @@ export function canEnterAdminApi(access: Access): boolean {
  * The complement of "sees everything". Kept as its own function so a list
  * route cannot drift from the per-project rule by re-deriving the condition
  * inline.
+ *
+ * The mid-reset check comes FIRST, ahead of the isGlobalAdmin shortcut, and
+ * that order is the whole point. This predicate does not decide access — it
+ * decides whether canReadProject is consulted at all. Returning false skips it
+ * entirely, so `false` is the UNSAFE direction here, the exact inverse of the
+ * four predicates above where `false` means "denied". Without this line a
+ * mid-reset GLOBAL ADMIN — the highest-privilege caller on the instance — took
+ * the unfiltered branch, canReadProject's mid-reset guard was never called,
+ * and layer 1 provided no backstop whatsoever on the list routes
+ * (routes/projects.ts, routes/admin.ts). Filtering instead makes
+ * canReadProject run and short-circuit false for every row, so layer 1's
+ * outcome on a LIST is a 200 carrying an empty array.
+ *
+ * That empty-200 is a third layer-1 outcome, alongside the 404 that
+ * project-scoped reads/writes produce and the code-less 403 the team/admin
+ * surface produces. Only layer 2 (passwordChangeGate) turns any of them into
+ * the uniform `403 password_change_required`; layer 1 is the backstop for a
+ * router that forgot to mount the gate, not a second copy of its contract.
  */
 export function scopesProjectList(access: Access): boolean {
+  if (requiresPasswordChange(access)) return true;
   if (access.isGlobalAdmin) return false;
   return access.kind === 'user' || access.kind === 'project-token';
 }

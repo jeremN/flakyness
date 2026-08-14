@@ -178,6 +178,30 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `${}`) — Postgres case-folds the unquoted identifier to lowercase, which
   matches Drizzle's quoted lowercase table name. Always verify with
   `.toSQL().sql` on both sides; don't assume.
+- **`mustChangePassword` is enforced in TWO places, and the gate's mount
+  position is load-bearing.** `passwordChangeGate()`
+  (`middleware/password-change.ts`) is mounted `use('*')` inside **each** of
+  the seven `/api/v1` routers, immediately **after** that router's rate
+  limiter — never as a global `app.use()`. A denial returns without calling
+  `next()`, so a global mount would run ahead of every per-router limiter and
+  starve it: a mid-reset session could then hammer any non-allowlisted path
+  unthrottled, each request still paying the session DB lookup that already
+  runs globally in `sessionAuth` (`middleware/session.ts:45,49`). Guarded by
+  `password-change-coverage.test.ts` (all seven mounts, in the right order,
+  plus the allowlist checked against the live `/api/v1/auth` route table) and
+  by a 429 regression test. The gate must `return c.json(...)`, **not**
+  throw `HTTPException` — the global error handler (`index.ts:44-51`) renders
+  exceptions as `c.json({ error: err.message }, err.status)`, which drops the
+  `code` field entirely. Layer 1 (short-circuits in `services/auth/access.ts`'s
+  four predicates — `canReadProject`, `canWriteProject`, `canAdministerTeams`,
+  `canEnterAdminApi`) is the backstop for a router that forgets to mount the
+  gate, but it is **not** a second copy of the gate's contract: each predicate
+  just returns `false`, so the caller falls through to whatever that route
+  already does on a normal denial — `404` existence-hiding for the two
+  project-scoped predicates, a *different*, code-less `403` (e.g. `'Global
+  admin required'`) for the two team/admin-scoped ones. Only the gate
+  guarantees the uniform `403 password_change_required` contract, which is
+  why it — not the predicates — owns it.
 
 ## Conventions
 

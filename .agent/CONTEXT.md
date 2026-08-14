@@ -379,6 +379,84 @@ docker compose logs -f dashboard
 
 ## 🔐 Security & Performance
 
+### Password Change Enforcement (`mustChangePassword`)
+
+`users.must_change_password` (set on admin-provisioned accounts and on an
+admin-triggered reset) is a real authorization boundary, enforced in TWO
+independent layers — deliberately, since either one alone can be bypassed by
+a route that forgets to wire it in.
+
+**Layer 1 — predicate short-circuits**
+(`apps/api/src/services/auth/access.ts`). `requiresPasswordChange(access)`
+returns true only for `access.kind === 'user'` with `mustChangePassword`
+set — a token-kind `Access` (admin/read/project) can never trip it, because
+every token `Access` is built by spreading `anonymousAccess()`, which fixes
+`mustChangePassword: false`. It gates the top of all four access predicates:
+`canReadProject`, `canWriteProject`, `canAdministerTeams`,
+`canEnterAdminApi`. This is a **backstop**, not a second copy of the gate's
+error contract: a denied predicate just returns `false`, so the caller falls
+through to whatever that route already does on a normal denial. In practice
+that is two different outcomes: the two project-scoped predicates feed
+`loadScopedProject`-based routes, which turn `false` into the same `404`
+existence-hiding response an out-of-team read gets; `canAdministerTeams` /
+`canEnterAdminApi` feed routes that answer with their own code-less `403`
+(e.g. `adminOrGlobalAdminAuth` throws
+`HTTPException(403, 'Admin access required')`, `admin-teams.ts` answers
+`{ error: 'Global admin required' }`). Neither carries
+`code: 'password_change_required'`.
+
+**Layer 2 — `passwordChangeGate()`**
+(`apps/api/src/middleware/password-change.ts`) is the layer that actually
+owns the uniform error contract. It is mounted `use('*')` inside **each of
+the seven** `/api/v1` routers — `reports`, `projects`, `tests`,
+`admin-users`, `admin-teams`, `admin`, `auth` — immediately **after** that
+router's rate limiter, never as one `app.use('*', ...)` on the root app.
+Mount position is load-bearing: a denial returns without calling `next()`,
+so a global mount ahead of the routers would run before every per-router
+limiter and starve it — a mid-reset session could then send unlimited
+requests to a non-allowlisted path and never see a `429`, even though each
+one still pays the session DB lookup that `sessionAuth()` (mounted globally,
+`middleware/session.ts:43-111`) already does on every request regardless of
+this feature. The gate itself does no DB work — it just reads
+`getSessionUser(c)`, which is a plain context lookup (`session.ts:113-115`),
+not a query. On a hit it returns a 403 body
+`{ "error": "Password change required", "code": "password_change_required" }`
+directly via `c.json(...)` — it must **not** throw `HTTPException`, because
+the global error handler (`index.ts:44-51`) renders exceptions as
+`c.json({ error: err.message }, err.status)` and drops `code` entirely,
+which would leave a caller with only free-text to key off (the "Keycloak
+`invalid_grant`" failure mode called out in the source comment).
+
+**The allowlist** (`PASSWORD_CHANGE_ALLOWLIST` in `access.ts`) is four
+explicit absolute paths, never a prefix: `/api/v1/auth/change-password`
+(the remedy), `/api/v1/auth/me` (so the dashboard can render the
+change-password page at all), `/api/v1/auth/logout` (never trap a user in a
+session they can't leave), `/api/v1/auth/login` (re-authenticating must not
+itself be blocked). Adding a route to `auth.ts` without adding it here fails
+`password-change-coverage.test.ts`, which also asserts all seven gate mounts
+exist, in the correct order relative to each router's rate limiter.
+
+**Scope: session callers only.** `ADMIN_TOKEN`, `READ_TOKEN`, and project
+tokens never carry the flag — confirmed by the gate's own first line
+(`getSessionUser(c)`; if there is no session cookie, `sessionUser` is `null`
+and the gate falls straight through to `next()` regardless of any bearer
+token on the request). A request presenting **both** a mid-reset session
+cookie and a bearer token is still refused: `resolveAccessValue`
+(`middleware/access.ts:50-73`) checks for a session first and returns
+immediately if one is found, so the `Authorization` header is never even
+inspected once a session exists — the session is strictly the more specific
+credential.
+
+Covered by `apps/api/src/password-change-coverage.test.ts` (mount presence
+and order, a runtime scan of Hono's route table rather than a source-text
+scan) and `apps/api/src/routes/password-change-enforcement.test.ts` (HTTP
+behaviour, including the 429-starvation regression). Follow-up #20 in
+`plans/README.md` already noted `access.ts` had four surviving mutants
+against its floor of 90 (two genuine coverage gaps, two verified
+equivalents) before this landed; this work adds four new branches to that
+same file, so if the nightly `Mutation` run drops below floor, #20's two
+named gaps are the cheapest place to look first.
+
 ### Rate Limits (Phase 6)
 
 | Endpoint | Limit | Key |

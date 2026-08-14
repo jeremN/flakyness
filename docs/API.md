@@ -2202,13 +2202,17 @@ scrape_configs:
 
 ## Error Responses
 
-All errors follow this format:
+Every error carries an `error` message:
 
 ```json
 {
   "error": "Error message description"
 }
 ```
+
+Some also carry a machine-readable `code` alongside it — see
+[Password change required](#password-change-required) below for the one
+that does today.
 
 ### Common Status Codes
 
@@ -2218,10 +2222,33 @@ All errors follow this format:
 | `201` | Created |
 | `400` | Bad Request - Invalid input |
 | `401` | Unauthorized - Missing or invalid token |
+| `403` | Forbidden - identified, but not permitted (see `code` where present) |
 | `404` | Not Found - Resource doesn't exist |
 | `409` | Conflict - Resource already exists |
 | `429` | Too Many Requests - Rate limit exceeded |
 | `500` | Internal Server Error |
+
+### Password change required
+
+A session belonging to a user whose password was admin-provisioned or
+admin-reset, and not yet rotated, is refused on every endpoint except the four
+recovery paths below:
+
+```
+403 { "error": "Password change required", "code": "password_change_required" }
+```
+
+Key off `code`, never the message text. The four paths that remain available
+are `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password`,
+`GET /api/v1/auth/me` and `POST /api/v1/auth/logout` — enough to complete the
+change and to leave the session.
+
+This applies to **session** callers only. `ADMIN_TOKEN`, `READ_TOKEN` and
+project tokens never carry the flag and are unaffected. A request presenting
+both a mid-reset session cookie *and* a bearer token is refused: session
+resolution short-circuits before the `Authorization` header is even
+inspected, so the request is classified as the mid-reset user regardless of
+what token rides along with it.
 
 ---
 

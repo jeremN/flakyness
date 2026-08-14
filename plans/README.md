@@ -299,9 +299,10 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 053 | Roadmap #4a: password-gated `/admin` dashboard console — project list, create with show-once token reveal, per-project settings editor, token rotation, two-phase prune, typed-confirm delete. Reads/writes go through a server-only `$lib/server/adminApi.ts` client and SvelteKit form actions so `ADMIN_TOKEN` never reaches the browser; gated by the existing `DASHBOARD_PASSWORD` Basic Auth. No new API endpoints — 4b (rule engine) is a separate follow-up | P2 | M | 052 (soft; independent surface, same admin API) | OPEN (PR pending) |
 | 054 | Roadmap #4b: quarantine rule engine — ordered per-project `quarantine_rules` (glob selectors on branch/file/tag; `flake_rate` or `consecutive` condition; `quarantine`/`exempt` action, first-match-wins), pure evaluation engine (`services/rules.ts`), `reconcileQuarantine` integration (rule-driven promote upserts `flaky_tests`, `rule_id` audit provenance via `quarantine_events`, manual mutes immune, no-match falls back to the legacy project threshold), admin CRUD + reorder API. Rules console UI is the sanctioned fast-follow | P2 | M | 051 (hard; extends its `reconcileQuarantine` promote phase) | OPEN (PR pending) |
 | 055 | Roadmap #4b fast-follow: rules console UI — `/admin/[projectId]/rules` dashboard screen (list, create, edit, delete, reorder, enable-toggle) over plan 054's admin rules API. Server-only `adminApi.ts` + form actions (no `ADMIN_TOKEN` in the browser); pure `$lib` helpers `rule-summary.ts` + `rules-validation.ts`; reorder re-fetches the authoritative order server-side; delete is a two-step client confirm. **Also hardens the admin rate limiter** to exempt valid-`ADMIN_TOKEN` requests (throttle only missing/invalid tokens), fixing the per-IP `5/60s` limit that made a server-mediated admin console — whose calls all share one IP — unusable | P2 | S | 054 (hard; consumes its admin rules API) | OPEN (this branch; implemented + reviewed, awaiting merge) |
-| 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | TODO |
-| 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | OPEN (this branch; implemented + reviewed, awaiting merge) |
-| 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | TODO |
+| 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | DONE (merged via PR #119, squash `23a6e9a`) |
+| 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | DONE (merged via PR #120, squash `e65c3dc`) |
+| 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | DONE (merged via PR #129, squash `3d09576`) |
+| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain |
 
 **Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
 timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
@@ -818,6 +819,56 @@ rationale. Items 5–7 remain unplanned.
     candidate already accepted in #16 above. Acceptable at operator scale (tens of rules/
     candidates per project today); the design doc explicitly notes a batched-query optimization
     as a deliberately deferred follow-up rather than built speculatively ahead of real volume.
+19. **[OPEN — deferred from plan 058's final whole-branch review; the one with teeth] `uuidSchema`
+    is duplicated, and `resolveAccess` skips the scope check on a parse failure.**
+    `middleware/access.ts` and `routes/projects.ts` each declare their own `uuidSchema`, and
+    `resolveAccess` **skips the scope check entirely** for any id that fails *its* parse — so
+    safety rests on the handler rejecting exactly the same set of ids. Identical today. If
+    `projects.ts` ever loosens its schema, `resolveAccess` silently stops guarding those ids
+    while the handler still serves them: a **silent fail-open with no test between the two**.
+    Fix is cheap — export one schema and import it in both. Note this compounds with the
+    designed-in seam that `canReadProject` returns `true` for `anonymous`: on the read side a
+    missing scope check degrades to "everyone can read", not "nobody can".
+20. **[OPEN — deferred from plan 058's final review] Two one-line `access.test.ts` additions
+    would take it 95.4% → ~97.7%.** Of `access.ts`'s four surviving mutants, two are genuine
+    coverage gaps and two are verified-equivalent. The gaps: (a) `scopesProjectList`'s
+    `|| access.kind === 'admin-token'` survives because the test uses a fixture carrying
+    `isGlobalAdmin: true`, which returns at the first guard — the file already has an
+    `adminTokenKindOnly` "belt" fixture for the other three predicates and just forgets it
+    here; (b) `anonymousAccess`'s `projectId: null` is never asserted, and that field is
+    spread into every non-user `Access` in `resolveAccessValue`. Not urgent (floor is 90), but
+    it is two lines.
+21. **[OPEN — deferred from plan 058's review, Minors #5/#8] Security properties proven only at
+    unit level, plus an unwritten fail-open comment.** The global-admin *user* mute path is
+    covered in `access.test.ts` but has no HTTP case (six of seven `AccessKind`s do). And
+    `resolveAccess`'s asymmetry deserves three lines at `tests.ts:299`: if it is ever unmounted
+    from `GET /flaky/:id` the handler waves everyone through (`getAccess` falls back to
+    `anonymousAccess()`), whereas `PATCH` fails **closed** under the same mutation via its early
+    401. `sessionUser` is untyped in Hono's `Variables` map, so tsc will never say it. Both the
+    static guard and a behavioural test now red on that mutation, so this is belt-and-braces.
+22. **[OPEN — deferred from plan 058's review, Minors #6/#9 + M5] Three small admin-surface
+    decisions.** (a) `hasAdminStanding` exempts *any* session from `adminRateLimit`, not just
+    admin ones — an authenticated plain member can hammer `/api/v1/admin/*` unthrottled, each
+    request costing a sessions join plus a memberships query, for a guaranteed 403. Inside the
+    letter of the rate-limit ruling, but it is cheap authenticated amplification. (b)
+    `adminAuth()` now has **no production call site** — delete it, or keep it as a documented
+    break-glass primitive? A future author who mounts it on a new admin route silently gets
+    ADMIN_TOKEN-only (no sessions) *and* a 500 when `ADMIN_TOKEN` is unset. (c) `adminRouter`'s
+    `use('*', adminRateLimit)` also matches `/api/v1/admin/users/*` and `/teams/*`, which mount
+    their own copy of the same module-singleton limiter; on a path matching **no** handler both
+    run and one request burns two of five slots. Pre-existing since plan 057.
+23. **[OPEN — found 2026-08-14 while investigating CI] `dependabot.yml` listing `/apps/api`
+    breaks security updates, but `dependabot-coverage.test.ts` requires it.** Dependabot's
+    security-update path fans out per directory; the `/` entry succeeds, `/apps/api` fails with
+    pnpm `misconfigured_tooling` — *"Updating workspaces from inside a workspace subdirectory is
+    not supported"* (observed on run `31401883599`, the `@hono/node-server`/`hono` advisory).
+    Removing the entry fixes the security fan-out and **breaks plan 038's coverage guard**,
+    which asserts every workspace dir appears verbatim in `dependabot.yml`. The two are in
+    direct tension and resolving it is a deliberate decision, not a cleanup: it likely means
+    collapsing to a single root `/` entry (Dependabot's recommended pnpm shape, which also
+    dissolves follow-up #6) and rewriting the guard — the alternative already recorded as
+    deferred in plan 040, blocked on a Dependabot dry-run to de-risk `dependabot-core`
+    #11135/#10203.
 
 ## Findings considered and rejected
 

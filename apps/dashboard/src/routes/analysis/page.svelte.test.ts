@@ -7,7 +7,7 @@ import Page from './+page.svelte';
 // page load union `{ analysis: null, currentProject: null, days, threshold }` |
 // `{ analysis: AnalysisResponse, currentProject: Project, days, threshold }`. `selectedProject`
 // is a NON-NULL Project (see plan point 7); `currentProject` pairs with `analysis`.
-const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const base = { projects: [], selectedProject: project, apiError: null, days: 14, threshold: 0.05 };
 
 describe('analysis/+page', () => {

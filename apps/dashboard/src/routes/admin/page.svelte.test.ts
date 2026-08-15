@@ -20,6 +20,7 @@ const proj = (over: Partial<AdminProject> = {}): AdminProject => ({
   quarantineThreshold: null,
   quarantineMinRuns: null,
   quarantineTtlDays: null,
+  teamId: null,
   stats: { totalRuns: 7, totalTests: 42, activeFlakyTests: 2 },
   ...over,
 });
@@ -28,7 +29,7 @@ const proj = (over: Partial<AdminProject> = {}): AdminProject => ({
 // layout load's { projects, selectedProject, apiError } with the page-load keys.
 const layout = {
   projects: [],
-  selectedProject: { id: 'p1', name: 'Project One', createdAt: '2026-01-01T00:00:00Z' },
+  selectedProject: { id: 'p1', name: 'Project One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
 };
 

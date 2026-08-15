@@ -4,7 +4,7 @@ import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
-const project = { id: 'p1', name: 'Test Project', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Test Project', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const base = { currentProject: null, projects: [], selectedProject: project, apiError: null };
 
 describe('runs/+page', () => {

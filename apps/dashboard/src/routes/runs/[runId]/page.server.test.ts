@@ -9,7 +9,7 @@ vi.mock('$lib/server/api', () => ({
 import { getRunDetail } from '$lib/server/api';
 import { load } from './+page.server';
 
-const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01' };
+const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01', teamId: null };
 
 const runDetail: RunDetail = {
   run: {

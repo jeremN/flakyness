@@ -10,7 +10,7 @@ import Page from './+page.svelte';
 // PageData for /tests/[testName] = layout `{ projects, selectedProject, apiError }` (selectedProject
 // NON-NULL — plan point 7) merged with the page load `{ testHistory, testTrend, trendFailed, projectId }`.
 // TestTrend needs `testName` + `projectId` too (not just days/direction/trend).
-const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const base = { projects: [], selectedProject: project, apiError: null };
 const history = (over = {}) => ({ testName: 'my-test', flakyInfo: null,
   stats: { totalRuns: 5, passed: 3, failed: 1, flaky: 1, skipped: 0, avgDuration: 1200 },

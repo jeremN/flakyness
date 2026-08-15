@@ -9,7 +9,7 @@ import type { FlakyTest } from '../../app.d';
 // load union; every fixture below sets `currentProject: project` (non-null Project) so it matches
 // the `{ flakyTests: FlakyTest[], currentProject: Project, status, canMute }` branch uniformly.
 // `row()` is annotated `: FlakyTest` so `status` stays the literal union, not widened `string`.
-const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const row = (over: Partial<FlakyTest> = {}): FlakyTest => ({ id: '1', testName: 't', testFile: 'f.spec.ts',
   flakeRate: '0.2', totalRuns: 10, flakeCount: 2, firstDetected: '2026-03-01T00:00:00Z',
   lastSeen: '2026-03-15T10:00:00Z', status: 'active', ...over });

@@ -8,7 +8,7 @@ vi.mock('$lib/server/api', () => ({
 import { getAnalysis } from '$lib/server/api';
 import { load } from './+page.server';
 
-const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01' };
+const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };
 
 const analysis: AnalysisResponse = {
   windowDays: 30,

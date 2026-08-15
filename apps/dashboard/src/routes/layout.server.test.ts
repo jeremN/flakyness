@@ -8,8 +8,8 @@ vi.mock('$lib/server/api', () => ({
 import { getProjects } from '$lib/server/api';
 import { load } from './+layout.server';
 
-const projectA: Project = { id: 'a', name: 'Project A', createdAt: '2024-01-01' };
-const projectB: Project = { id: 'b', name: 'Project B', createdAt: '2024-01-02' };
+const projectA: Project = { id: 'a', name: 'Project A', createdAt: '2024-01-01', teamId: null };
+const projectB: Project = { id: 'b', name: 'Project B', createdAt: '2024-01-02', teamId: null };
 
 const mockedGetProjects = vi.mocked(getProjects);
 

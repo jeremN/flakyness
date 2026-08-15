@@ -21,6 +21,7 @@ const project = (over: Partial<AdminProject> = {}): AdminProject => ({
   quarantineThreshold: null,
   quarantineMinRuns: null,
   quarantineTtlDays: null,
+  teamId: null,
   stats: { totalRuns: 3, totalTests: 9, activeFlakyTests: 1 },
   ...over,
 });
@@ -29,7 +30,7 @@ const project = (over: Partial<AdminProject> = {}): AdminProject => ({
 // { projects, selectedProject, apiError } ∪ { project }.
 const layout = {
   projects: [],
-  selectedProject: { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z' },
+  selectedProject: { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
 };
 

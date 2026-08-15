@@ -11,7 +11,7 @@ import Page from './+page.svelte';
 // the layout half. RunDetail is `{ run: TestRun, results: RunResult[], truncated }` — NOT id/branch at the
 // top level. RunResult needs `testFile`; failureDetail's stdout/stderr/snippet/stack are optional STRINGS
 // (omit them, don't set null).
-const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const base = { projects: [], selectedProject: project, apiError: null };
 const run = { id: 'r1', branch: 'main', commitSha: 'abcdef1234567', pipelineId: null,
   startedAt: null, finishedAt: null, totalTests: 1, passed: 0, failed: 1, skipped: 0, flaky: 0,

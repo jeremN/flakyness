@@ -12,7 +12,7 @@ import type { FlakyTest } from '../app.d';
 // (selectedProject NON-NULL — plan point 7) merged with the page load `{ stats, flakyTests,
 // recentRuns, trendData, partialFailure }`. The `Array.from` callback is annotated `: FlakyTest`
 // so `status` stays the literal union (a bare object literal widens it to `string`).
-const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const base = { projects: [], selectedProject: project, apiError: null };
 const stats = { project: { id: 'p1', name: 'Proj' }, activeFlakyTests: 2, resolvedThisWeek: 1, totalRuns: 10, totalTests: 5 };
 const flaky = (n: number): FlakyTest[] => Array.from({ length: n }, (_, i): FlakyTest => ({

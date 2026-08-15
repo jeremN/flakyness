@@ -10,7 +10,7 @@ const project = { id: 'p1', name: 'Proj', stats: { totalRuns: 0, activeFlakyTest
 // `data` for this route = { projects, selectedProject, apiError } ∪ { project, rules }.
 const layout = {
   projects: [],
-  selectedProject: { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z' },
+  selectedProject: { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
 };
 

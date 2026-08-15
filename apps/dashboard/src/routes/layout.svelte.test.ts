@@ -11,7 +11,7 @@ import Layout from './+layout.svelte';
 // `|| null` narrowing as PageData, plan point 7), apiError: string | null }. `children` is a
 // REQUIRED Snippet prop, so every render passes a no-op snippet; the tested UI (switcher, banner,
 // nav) all renders outside `{@render children()}`.
-const project = { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z' };
+const project = { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z', teamId: null };
 const children = createRawSnippet(() => ({ render: () => '<span></span>' }));
 const data = (over = {}) => ({ projects: [], selectedProject: project, apiError: null, ...over });
 

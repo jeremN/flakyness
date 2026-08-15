@@ -1684,7 +1684,15 @@ export async function load({ locals }: ServerLoadEvent) {
 function toFail(e: unknown) {
   if (e instanceof AdminApiError) return fail(e.statusCode, { error: e.message });
   if (e instanceof NotAuthenticatedError) return fail(403, { error: 'Not signed in.' });
-  throw e;
+  // CORRECTED 2026-08-15 during execution — this line originally read `throw e`.
+  // `adminFetch` ($lib/server/adminApi.ts) calls bare `fetch()` with no
+  // try/catch, so an UNREACHABLE API propagates a raw TypeError, which is
+  // neither type above. In a SvelteKit form action a rethrow renders a 500
+  // error page instead of an inline fail() — so the console would blank out
+  // exactly when the API goes down. Every other dashboard surface handles this
+  // deliberately (the rules console's `actionError`, `api.ts:80`, the login and
+  // change-password actions). Match them.
+  return fail(502, { error: 'Cannot reach the Flackyness API. Is it running?' });
 }
 
 export const actions: Actions = {

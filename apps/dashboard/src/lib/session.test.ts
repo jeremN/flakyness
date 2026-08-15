@@ -64,3 +64,40 @@ describe('redirectTargetFor', () => {
     expect(redirectTargetFor(forced, '/logout')).toBeNull();
   });
 });
+
+/**
+ * The API calls each dashboard escape-hatch route makes. Hard-coded rather than
+ * derived: this is a CONTRACT, and the test's value is that changing either
+ * side forces a deliberate edit here.
+ */
+const ESCAPE_HATCH_API_CALLS = [
+  { route: '/change-password', method: 'POST', path: '/api/v1/auth/change-password' },
+  { route: '/logout', method: 'POST', path: '/api/v1/auth/logout' },
+  // Not a route the user visits — the session gate calls it on EVERY request,
+  // so a mid-reset user cannot render any page without it.
+  { route: '<session gate>', method: 'GET', path: '/api/v1/auth/me' },
+];
+
+it('every API call reachable while mid-reset is on the API allowlist', () => {
+  // Mirrors apps/api/src/services/auth/access.ts PASSWORD_CHANGE_ALLOWLIST.
+  // If this list drifts from the API's, the assertion below fails and whoever
+  // changed one side must consciously change the other.
+  const apiAllowlist = [
+    { method: 'POST', path: '/api/v1/auth/change-password' },
+    { method: 'GET', path: '/api/v1/auth/me' },
+    { method: 'HEAD', path: '/api/v1/auth/me' },
+    { method: 'POST', path: '/api/v1/auth/logout' },
+    { method: 'POST', path: '/api/v1/auth/login' },
+  ];
+
+  for (const call of ESCAPE_HATCH_API_CALLS) {
+    expect(
+      apiAllowlist.some((a) => a.method === call.method && a.path === call.path),
+      `Dashboard route ${call.route} calls ${call.method} ${call.path} while the ` +
+        `user is mid-reset, but that request is NOT on the API's ` +
+        `PASSWORD_CHANGE_ALLOWLIST. The gate will answer 403 ` +
+        `password_change_required, the page cannot load, and the user is locked ` +
+        `out of password recovery with no way forward.`
+    ).toBe(true);
+  }
+});

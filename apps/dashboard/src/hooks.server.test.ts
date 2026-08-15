@@ -1,97 +1,154 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { Handle } from '@sveltejs/kit';
+import { isRedirect, type Handle, type Redirect } from '@sveltejs/kit';
+import { SESSION_COOKIE } from '$lib/session';
+import type { SessionUser, TeamSummary } from './app.d';
 
-// hooks.server.ts reads DASHBOARD_PASSWORD/ADMIN_TOKEN from $env/dynamic/private
-// once, at module-evaluation time (see the file's own comment on why: it's a
-// one-time startup warning, not a per-request check). To exercise every
-// combination we need a *fresh* module instance per test, with the env stub
-// populated before that module is evaluated — hence vi.resetModules() +
-// dynamic import in each case, rather than a single top-level import.
-async function loadHooks(envOverrides: Record<string, string | undefined>): Promise<{ handle: Handle }> {
-  vi.resetModules();
-  const { env } = await import('./tests/env-private-stub');
-  for (const key of Object.keys(env)) delete env[key];
-  Object.assign(env, envOverrides);
-  return import('./hooks.server');
-}
+vi.mock('$lib/server/session', () => ({
+  fetchMe: vi.fn(),
+}));
 
-function makeEvent(headers: Record<string, string> = {}) {
+import { fetchMe } from '$lib/server/session';
+import { handle } from './hooks.server';
+
+const user: SessionUser = {
+  id: 'u1',
+  email: 'a@b.c',
+  displayName: null,
+  isGlobalAdmin: false,
+  mustChangePassword: false,
+};
+
+const teams: TeamSummary[] = [{ id: 't1', name: 'Team A', role: 'member' }];
+
+function makeEvent(pathname: string, cookie: string | null) {
+  const store = new Map<string, string>();
+  if (cookie) store.set(SESSION_COOKIE, cookie);
+
+  const cookies = {
+    get: vi.fn((name: string) => store.get(name)),
+    delete: vi.fn((name: string) => store.delete(name)),
+  };
+
   return {
-    request: new Request('http://localhost/flaky', { headers }),
-  } as Parameters<Handle>[0]['event'];
+    event: {
+      cookies,
+      getClientAddress: vi.fn(() => '203.0.113.7'),
+      url: new URL(`http://localhost${pathname}`),
+      locals: {} as App.Locals,
+    } as unknown as Parameters<Handle>[0]['event'],
+    cookies,
+  };
 }
 
-function basicHeader(userPass: string): string {
-  return `Basic ${Buffer.from(userPass).toString('base64')}`;
-}
+beforeEach(() => {
+  vi.mocked(fetchMe).mockReset();
+});
 
-describe('hooks.server handle (Basic Auth gate)', () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
+describe('hooks.server handle (session gate)', () => {
+  it('redirects an anonymous request to /login', async () => {
+    const { event } = makeEvent('/flaky', null);
+    const resolve = vi.fn();
+
+    let caught: unknown;
+    try {
+      await handle({ event, resolve });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(isRedirect(caught)).toBe(true);
+    expect((caught as Redirect).status).toBe(303);
+    expect((caught as Redirect).location).toBe('/login');
+    expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('resolves unchanged when DASHBOARD_PASSWORD is unset (no regression)', async () => {
-    const { handle } = await loadHooks({ DASHBOARD_PASSWORD: undefined, ADMIN_TOKEN: undefined });
-    const resolve = vi.fn().mockResolvedValue(new Response('ok'));
-    const response = await handle({ event: makeEvent(), resolve });
+  it('does not redirect the /login page itself (no loop)', async () => {
+    const { event } = makeEvent('/login', null);
+    const resolve = vi.fn().mockResolvedValue(new Response('login page'));
+
+    const response = await handle({ event, resolve });
 
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(response.status).toBe(200);
   });
 
-  it('returns 401 with a WWW-Authenticate challenge when no credentials are presented', async () => {
-    const { handle } = await loadHooks({ DASHBOARD_PASSWORD: 'hunter2', ADMIN_TOKEN: undefined });
+  it('clears a cookie the API rejects, so a stale session does not retry forever', async () => {
+    vi.mocked(fetchMe).mockResolvedValue(null);
+    const { event, cookies } = makeEvent('/flaky', 'stale-token');
     const resolve = vi.fn();
-    const response = await handle({ event: makeEvent(), resolve });
 
-    expect(resolve).not.toHaveBeenCalled();
-    expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBe('Basic realm="Flackyness"');
+    try {
+      await handle({ event, resolve });
+    } catch {
+      // Expected: a token the API rejects redirects to /login (asserted
+      // separately). This test only cares that the stale cookie was cleared.
+    }
+
+    expect(cookies.delete).toHaveBeenCalledWith(SESSION_COOKIE, { path: '/' });
   });
 
-  it('returns 401 for wrong credentials, without calling resolve', async () => {
-    const { handle } = await loadHooks({ DASHBOARD_PASSWORD: 'hunter2', ADMIN_TOKEN: undefined });
-    const resolve = vi.fn();
-    const response = await handle({
-      event: makeEvent({ authorization: basicHeader('admin:wrong') }),
-      resolve,
-    });
-
-    expect(resolve).not.toHaveBeenCalled();
-    expect(response.status).toBe(401);
-  });
-
-  it('resolves when correct Basic credentials are presented', async () => {
-    const { handle } = await loadHooks({ DASHBOARD_PASSWORD: 'hunter2', ADMIN_TOKEN: undefined });
+  it('populates locals.user for a valid session', async () => {
+    vi.mocked(fetchMe).mockResolvedValue({ user, teams });
+    const { event } = makeEvent('/flaky', 'good-token');
     const resolve = vi.fn().mockResolvedValue(new Response('ok'));
-    const response = await handle({
-      event: makeEvent({ authorization: basicHeader('admin:hunter2') }),
-      resolve,
-    });
 
-    expect(resolve).toHaveBeenCalledTimes(1);
-    expect(response.status).toBe(200);
+    await handle({ event, resolve });
+
+    expect(event.locals.user).toEqual(user);
+    expect(event.locals.teams).toEqual(teams);
+    expect(event.locals.sessionToken).toBe('good-token');
+    expect(event.locals.clientIp).toBe('203.0.113.7');
   });
 
-  it('warns once at startup when ADMIN_TOKEN is set but DASHBOARD_PASSWORD is not', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await loadHooks({ DASHBOARD_PASSWORD: undefined, ADMIN_TOKEN: 'admin-token' });
+  it('redirects a must_change_password user to /change-password', async () => {
+    const forced = { ...user, mustChangePassword: true };
+    vi.mocked(fetchMe).mockResolvedValue({ user: forced, teams });
+    const { event } = makeEvent('/flaky', 'good-token');
+    const resolve = vi.fn();
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toMatch(/DASHBOARD_PASSWORD/);
+    let caught: unknown;
+    try {
+      await handle({ event, resolve });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(isRedirect(caught)).toBe(true);
+    expect((caught as Redirect).status).toBe(303);
+    expect((caught as Redirect).location).toBe('/change-password');
+    expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('does not warn when DASHBOARD_PASSWORD is set', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await loadHooks({ DASHBOARD_PASSWORD: 'hunter2', ADMIN_TOKEN: 'admin-token' });
+  it('lets that user reach /change-password and /logout', async () => {
+    const forced = { ...user, mustChangePassword: true };
+    vi.mocked(fetchMe).mockResolvedValue({ user: forced, teams });
 
-    expect(warnSpy).not.toHaveBeenCalled();
+    for (const pathname of ['/change-password', '/logout']) {
+      const { event } = makeEvent(pathname, 'good-token');
+      const resolve = vi.fn().mockResolvedValue(new Response('ok'));
+
+      const response = await handle({ event, resolve });
+
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(200);
+    }
   });
 
-  it('does not warn when neither ADMIN_TOKEN nor DASHBOARD_PASSWORD is set', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    await loadHooks({ DASHBOARD_PASSWORD: undefined, ADMIN_TOKEN: undefined });
+  it('fails CLOSED when the API is unreachable (redirects to /login, never renders)', async () => {
+    vi.mocked(fetchMe).mockResolvedValue(null);
+    const { event } = makeEvent('/flaky', 'good-token');
+    const resolve = vi.fn().mockResolvedValue(new Response('secret page'));
 
-    expect(warnSpy).not.toHaveBeenCalled();
+    let caught: unknown;
+    try {
+      await handle({ event, resolve });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(isRedirect(caught)).toBe(true);
+    expect((caught as Redirect).status).toBe(303);
+    expect((caught as Redirect).location).toBe('/login');
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

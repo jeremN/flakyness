@@ -1,44 +1,45 @@
-import type { Handle } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { checkBasicAuth } from '$lib/server/basicAuth';
+import { redirect, type Handle } from '@sveltejs/kit';
+import { SESSION_COOKIE, redirectTargetFor } from '$lib/session';
+import { fetchMe } from '$lib/server/session';
 
-// See plan 031: the dashboard holds ADMIN_TOKEN and spends it on behalf of
-// whoever submits the `flaky` page's mute/unmute form action. Without a gate
-// here, `if (!env.ADMIN_TOKEN)` in that route only proves the *server* has a
-// token — not that the *requester* presented one — so anyone who can load
-// the dashboard can mute a test, and muted tests feed the CI quarantine
-// skip-list (plan 020). This hook is the entire fix: it runs in front of
-// EVERY route by construction, so no per-route check is needed or wanted.
-const DASHBOARD_PASSWORD = env.DASHBOARD_PASSWORD;
-
-// Fires once, at server start (this module is evaluated once per server
-// process), not per-request — loud enough that an operator can't miss it in
-// the boot log, but doesn't spam every request. A missing DASHBOARD_PASSWORD
-// is still a valid choice for a genuinely single-operator, network-isolated
-// deployment (see design decision 2 in plan 031) — this warns without
-// hard-failing.
-if (!DASHBOARD_PASSWORD && env.ADMIN_TOKEN) {
-  console.warn(
-    '[flackyness] SECURITY WARNING: ADMIN_TOKEN is set but DASHBOARD_PASSWORD is not. ' +
-      'This dashboard exposes an unauthenticated privileged write path (mute/unmute a ' +
-      'flaky test, which feeds the CI quarantine skip-list) to anyone who can reach it. ' +
-      'Set DASHBOARD_PASSWORD to require HTTP Basic Auth on every dashboard route, or ' +
-      'confirm this deployment is genuinely network-isolated. See docs/GETTING_STARTED.md.'
-  );
-}
-
+/**
+ * The single authentication gate for the dashboard (plan 059).
+ *
+ * Replaces the shared DASHBOARD_PASSWORD Basic Auth from plan 031. That hook
+ * existed to close a confused deputy — an anonymous POST could mute a test,
+ * and a muted test feeds the CI quarantine skip-list. The same property holds
+ * here and is now stronger: the API itself authorizes per user (plan 058), so
+ * the dashboard is no longer the only thing standing in the way.
+ *
+ * Runs in front of EVERY route by construction, so no per-route check is
+ * needed or wanted.
+ */
 export const handle: Handle = async ({ event, resolve }) => {
-  // Unset DASHBOARD_PASSWORD means "no gate" — unchanged behavior from
-  // before this plan (see design decision 1 in plan 031).
-  if (!DASHBOARD_PASSWORD) return resolve(event);
+  const token = event.cookies.get(SESSION_COOKIE) ?? null;
 
-  const authHeader = event.request.headers.get('authorization');
-  if (!checkBasicAuth(authHeader, DASHBOARD_PASSWORD)) {
-    return new Response('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Flackyness"' },
-    });
+  // Delta §D1.2. Read once here and thread it through locals: this is the only
+  // place the browser's address is available. adapter-node derives it from
+  // ADDRESS_HEADER/XFF_DEPTH when the dashboard is itself behind a proxy —
+  // those are the operator's existing knobs and this does not change them.
+  const clientIp = event.getClientAddress();
+
+  const me = token ? await fetchMe(token, clientIp) : null;
+
+  if (token && !me) {
+    // The API rejected it (expired, revoked) or was unreachable. Drop the
+    // cookie so the browser stops presenting a dead credential on every
+    // request — otherwise a revoked session costs an API round-trip per page
+    // view, forever.
+    event.cookies.delete(SESSION_COOKIE, { path: '/' });
   }
+
+  event.locals.user = me?.user ?? null;
+  event.locals.teams = me?.teams ?? [];
+  event.locals.sessionToken = me ? token : null;
+  event.locals.clientIp = clientIp;
+
+  const target = redirectTargetFor(event.locals.user, event.url.pathname);
+  if (target) throw redirect(303, target);
 
   return resolve(event);
 };

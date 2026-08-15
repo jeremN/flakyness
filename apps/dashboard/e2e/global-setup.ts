@@ -1,8 +1,28 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromium } from '@playwright/test';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Mirrors playwright.config.ts's own BASE_URL computation (that file defines
+// it independently too, for the same reason: the config's webServer plugin
+// task runs BEFORE this global setup — see Playwright's
+// createGlobalSetupTasks — so by the time this file runs, the built
+// dashboard is already up and reachable here).
+const DASHBOARD_PORT = process.env.E2E_DASHBOARD_PORT ?? '4173';
+const BASE_URL = `http://127.0.0.1:${DASHBOARD_PORT}`;
+
+// Where the shared, already-signed-in storageState is written — wired into
+// playwright.config.ts's `use.storageState` as 'e2e/.auth/user.json'
+// (relative to this same directory). Gitignored: see .gitignore.
+export const AUTH_STORAGE_STATE_PATH = resolve(__dirname, '.auth/user.json');
+
+// Not a real secret: this account only ever exists inside a throwaway E2E
+// database, recreated fresh on every run. Only needs to satisfy the API's
+// MIN_PASSWORD_LENGTH (12) and differ from whatever temporary password the
+// admin-users endpoint issues.
+const NEW_PASSWORD = 'e2e-suite-storage-state-password';
 
 // The real reporter output the API's own parser is built against — using a
 // hand-written fixture would only prove the parser handles what we imagined,
@@ -82,6 +102,70 @@ async function waitForActiveFlakyTest(projectId: string, timeoutMs: number): Pro
   );
 }
 
+/**
+ * Provision one global-admin user and sign in through the REAL dashboard
+ * `/login` + forced `/change-password` flow — not a raw API call — so the
+ * resulting storageState carries the dashboard's own `fk_session` cookie on
+ * the dashboard's own origin. The API's `Set-Cookie` from a direct API login
+ * would be useless here: it's consumed server-side by
+ * `$lib/server/session.ts`'s `fetchMe` and never reaches a browser. A real
+ * Chromium page (rather than a raw fetch) also sidesteps having to hand-craft
+ * an `Origin` header for SvelteKit's CSRF check — the browser sets it exactly
+ * the way a real sign-in would.
+ *
+ * Every spec written before plan 059 reuses the resulting storageState via
+ * playwright.config.ts's `use.storageState`, so it never sees /login.
+ */
+async function seedAuthenticatedUser(adminToken: string): Promise<void> {
+  const email = `e2e-dogfood-admin-${Date.now()}@example.test`;
+
+  const createRes = await fetch(`${API_URL}/api/v1/admin/users`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${adminToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, displayName: 'E2E Admin', isGlobalAdmin: true }),
+  });
+  if (createRes.status !== 201) {
+    throw new Error(
+      `Failed to create the E2E global-admin user (${createRes.status}): ${await readBodyForError(createRes)}`
+    );
+  }
+  const { temporaryPassword }: { temporaryPassword: string } = await createRes.json();
+
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext({ baseURL: BASE_URL });
+    const page = await context.newPage();
+
+    await page.goto('/login');
+    await page.getByLabel('Email', { exact: true }).fill(email);
+    await page.getByLabel('Password', { exact: true }).fill(temporaryPassword);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+
+    // A freshly provisioned user is ALWAYS forced here (see
+    // $lib/session.ts's redirectTargetFor) — never straight to '/'. Waiting
+    // for the exact path surfaces a broken forced-reset redirect here, with a
+    // clear error, instead of timing out generically on the next step.
+    await page.waitForURL((url) => url.pathname === '/change-password');
+    await page.getByLabel('Current password', { exact: true }).fill(temporaryPassword);
+    await page.getByLabel('New password', { exact: true }).fill(NEW_PASSWORD);
+    await page.getByLabel('Confirm new password', { exact: true }).fill(NEW_PASSWORD);
+    await page.getByRole('button', { name: 'Change password' }).click();
+
+    // The re-issued-cookie property from Task 5: a broken re-issue would
+    // strand this on /change-password (or bounce back to /login) instead of
+    // landing on '/'.
+    await page.waitForURL((url) => url.pathname === '/');
+
+    mkdirSync(dirname(AUTH_STORAGE_STATE_PATH), { recursive: true });
+    await context.storageState({ path: AUTH_STORAGE_STATE_PATH });
+  } finally {
+    await browser.close();
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   if (!ADMIN_TOKEN) {
     throw new Error(
@@ -133,4 +217,8 @@ export default async function globalSetup(): Promise<void> {
     SEED_PATH,
     JSON.stringify({ projectId: project.id, projectName }, null, 2)
   );
+
+  // Independent of the project/report seeding above — see seedAuthenticatedUser's
+  // own doc comment for why this needs a real browser flow, not a fetch.
+  await seedAuthenticatedUser(ADMIN_TOKEN);
 }

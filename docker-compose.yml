@@ -87,12 +87,18 @@ services:
       # front, that is the proxy's https URL, not this container's own
       # http port).
       ORIGIN: ${ORIGIN:-http://localhost:3000}
-      # Optional — gates every dashboard route behind HTTP Basic Auth
-      # (apps/dashboard/src/hooks.server.ts). Unset by default here so a
-      # fresh `docker compose up` doesn't lock anyone out; set it in `.env`
-      # before exposing this dashboard beyond a trusted network. See
-      # docs/GETTING_STARTED.md.
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      # Marks the dashboard's own session cookie (set at /login) `Secure`.
+      # From plan 059 on this is the ONLY session cookie a browser ever
+      # holds — the API's own Set-Cookie is consumed server-side and never
+      # reaches the browser (see apps/dashboard/src/lib/server/session.ts).
+      # Deliberately two-way (unset -> false), NOT a mirror of the API's own
+      # three-way isCookieSecure(): this compose file sets NODE_ENV=production
+      # with a plain-http ORIGIN by default, and falling back to
+      # NODE_ENV==='production' here would mark the cookie Secure over http —
+      # the browser would silently drop it and sign-in would break. Set to
+      # `true` once the dashboard is actually served over https (e.g. behind
+      # a TLS-terminating reverse proxy).
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # Presented as a Bearer credential on every SSR call to the API (see
       # apps/dashboard/src/lib/server/api.ts). Must match the API's
       # READ_TOKEN above — set both or neither. If the API's is set and this

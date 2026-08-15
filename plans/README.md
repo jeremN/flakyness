@@ -303,7 +303,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | DONE (merged via PR #120, squash `e65c3dc`) |
 | 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | DONE (merged via PR #129, squash `3d09576`) |
 | 058b | `mustChangePassword` enforcement: `Access.mustChangePassword` + four predicate short-circuits (layer 1), `passwordChangeGate()` mounted per-router after each rate limiter with a four-path recovery allowlist (layer 2), uniform `403 password_change_required`. Settles the decision plan 058 deferred | P2 | S–M | **058 (hard)** | DONE (merged via PR #133, squash `e689af0`) |
-| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain; the mustChangePassword contract it consumes is settled by 058b |
+| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — `/login`, session gate in `hooks.server.ts`, forced first-login reset, team switcher, global-admin teams/users console, project team assignment. **Breaking: `DASHBOARD_PASSWORD` removed** (operators must create a user first); the dashboard also stops holding `ADMIN_TOKEN` and acts as the signed-in user | P2 | M–L | **058 (hard)** | TODO |
 
 **Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
 timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
@@ -338,6 +338,61 @@ out; a strictly-cheaper partial improvement is to **swap the order** so sessions
 revoked before the password `UPDATE` commits — a failure then logs everyone out with the
 password intact, which is recoverable, rather than leaving the password changed while the
 caller is told it failed.
+
+**Follow-up noticed during 059 (no plan yet): four new `$lib` modules have no
+`scripts/mutation-gate.mjs` floor.** `permissions.ts` (Task 2b),
+`password-form.ts` (Task 5), `project-groups.ts` (Task 6), and
+`team-members.ts` (Task 7a) are pure, mutation-testable helpers exactly like
+the existing hardened set (`format.ts`, `status.ts`, `error-page.ts`,
+`href.ts`) but were not added to it. A floor has to be calibrated against a
+real CI Stryker baseline, not guessed at plan-write time — run the dashboard's
+`$lib`-scoped nightly Stryker job once these modules exist on `main`, read
+the actual mutation score each one lands at, and set the floor from that.
+
+**Follow-up noticed during 059 (no plan yet): should `vitest.browser.config.ts`
+register `tailwindcss()`?** Browser-mode component tests currently render with
+**no Tailwind CSS at all** — `vitest.browser.config.ts` registers only
+`sveltekit()`, not the `tailwindcss()` plugin `vite.config.ts` also registers
+(measured: `class="flex"` computes `display: block`, `sticky` computes
+`position: static`; 36 CSS rules present versus Tailwind's thousands) — so no
+browser-mode test can honestly assert a computed style, which is exactly why
+the codebase's `toHaveClass` convention exists. Registering `tailwindcss()`
+would fix that, but it is **not a trivial flip**: with real CSS applied, some
+elements currently treated as present-and-inert could become
+`display: none`/zero-size, and `vitest-browser-svelte`'s locators check
+visibility before matching — so today's green assertions could start failing
+for a reason unrelated to the component under test. Wants its own pass:
+register the plugin, run the full browser suite, and triage every new
+failure individually rather than assuming they're all Tailwind-CSS-shaped.
+
+**Follow-up noticed during 059 Task 8 (no plan yet): the E2E suite's own
+traffic now exceeds the API's `apiRateLimit` (100 req/fixed-60s-window),
+intermittently.** `hooks.server.ts`'s session gate (Task 3) calls
+`GET /api/v1/auth/me` on every server-rendered page view; combined with each
+page's own parallel data fetches, a single project page view now costs
+several requests where it cost zero before this plan (no per-view API call
+existed under `DASHBOARD_PASSWORD`). The whole E2E run (15 specs) makes
+~130-150 total API requests and, per Task 8's measurements (five separate
+runs, at `workers: 1`, `2`, and Playwright's own CPU-based default), 3-5 of
+them intermittently 429 on `GET /api/v1/auth/me` — which `hooks.server.ts`
+fail-closes by deleting the session cookie and redirecting to `/login`,
+spuriously "signing out" mid-test whichever spec's request lost the race.
+**Neither more nor fewer Playwright workers reliably fixes it**: the window
+is fixed, not sliding, so lowering concurrency only spreads the *same* total
+volume across more wall-clock time without lowering the peak inside any
+given 60s slice, and raising concurrency compresses that same volume into a
+shorter window, which measured *worse* (more specs caught). `workers: 2`
+(the current setting) is the least-bad of what was tried, not a fix. There is
+no lever inside Task 8's authorized files (`apps/dashboard/e2e/**`,
+`playwright.config.ts`) that fixes this — `TRUSTED_PROXY_IPS` doesn't help
+either, since every request in this harness genuinely does originate from one
+real address (see `playwright.config.ts`'s own comment). The real fix is
+application-level and needs its own task: either raise `apiRateLimit`'s
+ceiling (`apps/api/src/middleware/rate-limit.ts`) to account for the
+now-heavier per-view cost, or stop paying a `GET /auth/me` round trip on
+every single navigation (e.g. cache the session check for the lifetime of one
+SSR request, or a short TTL) in `hooks.server.ts`. See the Task 8 report for
+the full reproduction data (per-run request counts and 429 timestamps).
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 

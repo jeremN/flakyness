@@ -17,6 +17,38 @@ export default defineConfig({
   // any spec runs; see e2e/global-setup.ts.
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: true,
+  // Plan 059, found while writing auth.spec.ts: hooks.server.ts now calls
+  // GET /api/v1/auth/me on EVERY server-rendered page view (the session
+  // gate), and this suite runs with no TRUSTED_PROXY_IPS configured for the
+  // API — there is only one real machine originating all of this traffic (in
+  // CI and locally alike), so every request the whole run makes shares ONE
+  // apiRateLimit bucket (100/fixed-60s-window). The whole suite's total
+  // volume (~130-150 requests across 15 specs) exceeds that ceiling on its
+  // own, so GET /api/v1/auth/me 429s intermittently regardless of pacing —
+  // hooks.server.ts fail-closes a failed /auth/me by deleting the cookie and
+  // redirecting to /login, spuriously "signing out" whichever request lost
+  // the race, in specs that never touched auth.spec.ts at all (measured
+  // hitting admin.spec.ts, overview.spec.ts, run-detail.spec.ts,
+  // runs.spec.ts, and auth.spec.ts's own tests, varying by run — see the
+  // Task 8 report for per-run counts). This is the test harness generating
+  // enough legitimate traffic to trip a real, correctly-functioning
+  // anti-abuse control — exactly the scenario TRUSTED_PROXY_IPS exists to
+  // separate for real deployments (see docs/GETTING_STARTED.md) — but E2E
+  // has no equivalent knob, since every request genuinely does originate
+  // from one address here.
+  //
+  // `workers: 2` is the least-bad of what was tried (2, 1, and Playwright's
+  // own CPU-based default were all measured on this machine): because the
+  // window is FIXED, not sliding, cutting workers to 1 only makes the run
+  // take longer without reliably lowering peak in-window volume, and raising
+  // concurrency compresses the same total into a shorter window, which
+  // measured WORSE (more specs caught). None of the three eliminates the
+  // risk; this only reduces how often it bites. The real fix is
+  // application-level (raise apiRateLimit's ceiling, or stop paying a GET
+  // /auth/me on every single page view) and is out of Task 8's authorized
+  // scope (apps/dashboard/e2e/** and this file only) — see the follow-up in
+  // plans/README.md and the Task 8 report.
+  workers: 2,
   // A test.only left in by accident must fail CI, not silently narrow the run.
   forbidOnly: !!process.env.CI,
   // Non-negotiable: this is a flaky-test tracker. A retry here would hide the
@@ -34,6 +66,15 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: 'retain-on-failure',
+    // Plan 059: every route now sits behind the session gate
+    // (hooks.server.ts), so a spec written before this plan would otherwise
+    // redirect to /login on its first navigation. global-setup.ts signs in
+    // once, through the real dashboard login + forced change-password flow,
+    // and persists the resulting cookie here — every spec starts already
+    // authenticated as that global admin. Specs that need to exercise the
+    // login flow itself (auth.spec.ts) override this per-test with
+    // `test.use({ storageState: { cookies: [], origins: [] } })`.
+    storageState: 'e2e/.auth/user.json',
   },
   // Chromium only — no cross-browser matrix, no sharding. Deferred until the
   // suite has been green for a while (see plan 026 maintenance notes).

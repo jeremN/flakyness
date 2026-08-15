@@ -223,6 +223,61 @@ describe('rate limiter enforcement', () => {
     }
   });
 
+  it('authRateLimit keys by client IP, so two users behind one proxy get separate buckets', async () => {
+    // Delta §D1.2 / plan 059 Task 0. Every earlier authRateLimit test above
+    // sends requests with no socket at all, so getClientIp falls back to the
+    // constant 'unknown' bucket for all of them — that proves the LIMIT, not
+    // the KEY. This test drives it through TWO distinct client IPs behind the
+    // SAME trusted proxy (the real dashboard-container shape) and proves each
+    // gets its own full allowance. A test that only sends one request per IP
+    // would pass against the very shared-bucket bug this work exists to
+    // eliminate (see the DoD's own warning) — so B's request below runs only
+    // AFTER A's bucket is already exhausted.
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevTrusted = process.env.TRUSTED_PROXY_IPS;
+    // getClientIp only honours X-Forwarded-For when the SOCKET ip is itself
+    // trusted (see 'honours X-Forwarded-For when the socket IP is a trusted
+    // proxy' above) — mirror that setup so this test proves the key
+    // generator, not a misconfigured trust boundary.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // app.request()'s third argument becomes c.env — the same shape
+      // getClientIp reads via c.env.incoming.socket.remoteAddress (see the
+      // fakeCtx() helper at the top of this file). Both A and B connect from
+      // the SAME trusted-proxy socket and are distinguished only by their own
+      // X-Forwarded-For — exactly what a server-mediated dashboard behind one
+      // reverse-proxy IP looks like on the wire.
+      const trustedProxySocket = { incoming: { socket: { remoteAddress: '172.28.0.10' } } };
+
+      const codesA: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 1; i++) {
+        const res = await app.request('/x', { headers: { 'x-forwarded-for': '10.0.0.1' } }, trustedProxySocket);
+        codesA.push(res.status);
+      }
+      // A's own bucket behaves exactly like the single-bucket test above:
+      // the 10th request (index 9) passes, the 11th (index 10) is throttled.
+      expect(codesA[AUTH_RATE_LIMIT.limit - 1]).toBe(200);
+      expect(codesA[AUTH_RATE_LIMIT.limit]).toBe(429);
+
+      // B is a DIFFERENT client IP behind the same trusted proxy. Sent AFTER
+      // A's bucket is already exhausted: if the key generator collapsed both
+      // onto one bucket (the bug this work fixes), this would be a 429 too.
+      const resB = await app.request('/x', { headers: { 'x-forwarded-for': '10.0.0.2' } }, trustedProxySocket);
+      expect(resB.status).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevTrusted === undefined) delete process.env.TRUSTED_PROXY_IPS;
+      else process.env.TRUSTED_PROXY_IPS = prevTrusted;
+    }
+  });
+
   it('reportRateLimit keys by the project id (separate buckets) and 429s with its own message', async () => {
     const { Hono } = await import('hono');
     const { reportRateLimit, REPORT_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');

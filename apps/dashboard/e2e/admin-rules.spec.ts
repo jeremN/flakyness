@@ -31,18 +31,28 @@ test.describe('quarantine rules console', () => {
     await expect(page.getByText('exempt · release/*')).toBeVisible();
 
     // Reorder: move the exempt rule (row 2) up; it should become row 1.
-    const items = page.getByRole('listitem');
-    await items.nth(1).getByRole('button', { name: 'Move up' }).click();
-    await expect(page.getByRole('listitem').first()).toContainText('exempt · release/*');
+    //
+    // Scoped to the rules list's own <section> rather than page-global
+    // getByRole('listitem'). Plan 059 added a project-list sidebar to the
+    // root layout (+layout.svelte) that renders its own <ul><li> nav items
+    // on EVERY authenticated page, including this one — an unscoped
+    // getByRole('listitem') matches those sidebar entries too, throwing off
+    // .nth()/.first() indexing. Reproduced deterministically running this
+    // spec alone (no contention with other specs, no rate-limit 429s in the
+    // API log) — a genuine locator-fragility bug in this pre-059 spec, not a
+    // rate-limit or timing issue. See Task 8 report.
+    const rulesSection = page.locator('section').filter({ has: page.getByRole('heading', { name: /^Rules \(/ }) });
+    await rulesSection.getByRole('listitem').nth(1).getByRole('button', { name: 'Move up' }).click();
+    await expect(rulesSection.getByRole('listitem').first()).toContainText('exempt · release/*');
 
     // Edit the flake_rate rule's threshold.
-    await page.getByRole('listitem').filter({ hasText: 'flake ≥' }).getByRole('button', { name: 'Edit' }).click();
+    await rulesSection.getByRole('listitem').filter({ hasText: 'flake ≥' }).getByRole('button', { name: 'Edit' }).click();
     await page.getByLabel('Threshold (0–1)').fill('0.5');
     await page.getByRole('button', { name: 'Save rule' }).click();
     await expect(page.getByText(/flake ≥ 0.50/)).toBeVisible();
 
     // Delete the exempt rule via the two-step confirm.
-    const exemptRow = page.getByRole('listitem').filter({ hasText: 'exempt · release/*' });
+    const exemptRow = rulesSection.getByRole('listitem').filter({ hasText: 'exempt · release/*' });
     await exemptRow.getByRole('button', { name: 'Delete' }).click();
     await exemptRow.getByRole('button', { name: 'Yes' }).click();
     await expect(page.getByText('exempt · release/*')).not.toBeVisible();

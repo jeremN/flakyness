@@ -1082,11 +1082,13 @@ delegated per team.
 
 > **Dashboard console:** the SvelteKit dashboard ships a `/admin` web console
 > (plan 053) that drives these same endpoints — list, create, edit settings,
-> rotate token, prune, delete. It is gated by the dashboard's own
-> `DASHBOARD_PASSWORD` Basic Auth (`hooks.server.ts`), and spends `ADMIN_TOKEN`
-> server-side only (`$lib/server/adminApi.ts`) — the token never reaches the
-> browser. No endpoint contract changes; the console is a thin client of the
-> API below.
+> rotate token, prune, delete, plus teams/users management. As of plan 059
+> it is gated by real user accounts (`hooks.server.ts` redirects an
+> anonymous visitor to `/login`; the Teams/Users screens additionally require
+> `isGlobalAdmin`), and forwards the signed-in user's own session to the API
+> (`$lib/server/adminApi.ts`) rather than spending a shared `ADMIN_TOKEN` on
+> their behalf — the dashboard no longer holds that token at all. No
+> endpoint contract changes; the console is a thin client of the API below.
 
 ### List All Projects
 

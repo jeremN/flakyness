@@ -773,6 +773,315 @@ git commit -m "refactor(dashboard): carry the caller's session through the API c
 
 ---
 
+### Task 2b: take the flaky-test mute action off `ADMIN_TOKEN`
+
+**Added 2026-08-15, during execution.** Task 2's implementer found the one
+`ADMIN_TOKEN` consumer no compiler could name: `routes/flaky/+page.server.ts`
+never imported `adminApi.ts` at all — its `setStatus` action reads
+`$env/dynamic/private` and does its own raw `fetch` with
+`Authorization: Bearer ${env.ADMIN_TOKEN}`. Task 2 converted only its
+`getFlakyTests` read, because the factory conversion cannot reach code that was
+never a caller. No existing task owned it, yet Task 8's Definition of done
+requires `grep -rn "ADMIN_TOKEN" apps/dashboard/src` to return nothing. This
+task closes that gap.
+
+It is also the one place in the dashboard that must decide **whether to offer**
+a privileged action, which is why it introduces the permission helper rather
+than Task 6 inventing one later.
+
+**Files:**
+- Create: `apps/dashboard/src/lib/permissions.ts`, `apps/dashboard/src/lib/permissions.test.ts`
+- Modify: `apps/dashboard/src/lib/server/api.ts` (+ `api.test.ts`)
+- Modify: `apps/dashboard/src/routes/flaky/+page.server.ts`, `apps/dashboard/src/routes/flaky/page.svelte.test.ts`
+
+**Interfaces:**
+- Consumes: `createApi` (Task 2), `SessionUser`/`TeamSummary` (Task 1).
+- Produces:
+  - `canMuteTests(user: SessionUser | null, teams: TeamSummary[], project: { teamId: string | null } | null): boolean`
+  - `createApi(...).setFlakyStatus(id: string, status: 'ignored' | 'active'): Promise<void>`
+
+- [ ] **Step 1: Write the failing permission tests**
+
+Create `apps/dashboard/src/lib/permissions.test.ts`. These mirror the API's
+`canWriteProject` for the `user` access kind
+(`apps/api/src/services/auth/access.ts:161-176`) plus the route's own extra
+narrowing — muting is a management action, so a project token never qualifies
+(`apps/api/src/routes/tests.ts:375-381`); the dashboard has no project token, so
+that case cannot arise here.
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { canMuteTests } from './permissions';
+import type { SessionUser, TeamSummary } from '../app.d';
+
+const user = (over: Partial<SessionUser> = {}): SessionUser => ({
+  id: 'u1',
+  email: 'a@b.c',
+  displayName: null,
+  isGlobalAdmin: false,
+  mustChangePassword: false,
+  ...over,
+});
+
+const TEAMS: TeamSummary[] = [
+  { id: 't-admin', name: 'Owned', role: 'team_admin' },
+  { id: 't-member', name: 'Joined', role: 'member' },
+];
+
+describe('canMuteTests', () => {
+  it('lets a team_admin mute tests in that team\'s project', () => {
+    expect(canMuteTests(user(), TEAMS, { teamId: 't-admin' })).toBe(true);
+  });
+
+  it('refuses a plain member of the owning team', () => {
+    expect(canMuteTests(user(), TEAMS, { teamId: 't-member' })).toBe(false);
+  });
+
+  it('refuses a team_admin of a DIFFERENT team', () => {
+    expect(canMuteTests(user(), TEAMS, { teamId: 't-other' })).toBe(false);
+  });
+
+  it('lets a global admin mute regardless of membership', () => {
+    expect(canMuteTests(user({ isGlobalAdmin: true }), [], { teamId: 't-other' })).toBe(true);
+  });
+
+  it('refuses an unassigned project even for a team_admin', () => {
+    // Mirrors canWriteProject: `project.teamId !== null` is a precondition, so
+    // a team_admin has no path to a project that belongs to no team.
+    expect(canMuteTests(user(), TEAMS, { teamId: null })).toBe(false);
+  });
+
+  it('lets a global admin mute an unassigned project', () => {
+    expect(canMuteTests(user({ isGlobalAdmin: true }), [], { teamId: null })).toBe(true);
+  });
+
+  it('refuses an anonymous caller', () => {
+    expect(canMuteTests(null, TEAMS, { teamId: 't-admin' })).toBe(false);
+  });
+
+  it('refuses when there is no selected project', () => {
+    expect(canMuteTests(user({ isGlobalAdmin: true }), TEAMS, null)).toBe(false);
+  });
+
+  it('refuses a mid-reset user even when they are a global admin', () => {
+    // Mirrors requiresPasswordChange()'s short-circuit, which is the FIRST
+    // check in every API predicate (plan 058b). Without this the console would
+    // offer a button the API answers with 403 password_change_required.
+    expect(
+      canMuteTests(user({ isGlobalAdmin: true, mustChangePassword: true }), TEAMS, {
+        teamId: 't-admin',
+      })
+    ).toBe(false);
+  });
+
+  it('refuses a mid-reset team_admin', () => {
+    expect(
+      canMuteTests(user({ mustChangePassword: true }), TEAMS, { teamId: 't-admin' })
+    ).toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `pnpm --filter dashboard exec vitest run src/lib/permissions.test.ts`
+Expected: FAIL — `Cannot find module './permissions'`.
+
+- [ ] **Step 3: Write the permission helper**
+
+Create `apps/dashboard/src/lib/permissions.ts`:
+
+```ts
+import type { SessionUser, TeamSummary } from '../app.d';
+
+/**
+ * May this user mute/unmute flaky tests in this project?
+ *
+ * This is a UI affordance, NOT the security boundary. The API decides, in
+ * `canWriteProject` plus PATCH /tests/flaky/:id's own narrowing; this function
+ * only decides whether to render a button the API would honour. Keep the two in
+ * agreement: a mismatch shows a control that always fails (annoying) or hides
+ * one the user is entitled to (worse — it looks like a permissions bug).
+ *
+ * Deliberately mirrors the API's ordering, including the mustChangePassword
+ * short-circuit first (plan 058b), so the shapes stay comparable when either
+ * side changes.
+ */
+export function canMuteTests(
+  user: SessionUser | null,
+  teams: TeamSummary[],
+  project: { teamId: string | null } | null
+): boolean {
+  if (!user) return false;
+  if (user.mustChangePassword) return false;
+  if (user.isGlobalAdmin) return project !== null;
+  if (!project || project.teamId === null) return false;
+  return teams.some((t) => t.id === project.teamId && t.role === 'team_admin');
+}
+```
+
+- [ ] **Step 4: Write the failing client test**
+
+Add to `apps/dashboard/src/lib/server/api.test.ts`:
+
+```ts
+  it('sends the mute as a PATCH carrying the session cookie, never an ADMIN_TOKEN', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await createApi('sess-abc', '203.0.113.7').setFlakyStatus('ft-1', 'ignored');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/tests/flaky/ft-1');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ status: 'ignored' }));
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  it('surfaces a mute rejection as an APIError carrying the status', async () => {
+    // The action maps this to fail(); it must NOT become a thrown error page,
+    // which would replace the form with a 500 screen instead of an inline message.
+    fetchMock.mockResolvedValue(new Response('{}', { status: 403 }));
+    await expect(createApi('s', null).setFlakyStatus('ft-1', 'ignored')).rejects.toMatchObject({
+      name: 'APIError',
+      statusCode: 403,
+    });
+  });
+```
+
+- [ ] **Step 5: Add `setFlakyStatus` to the factory**
+
+In `apps/dashboard/src/lib/server/api.ts`, first extract the header
+construction so `fetchJson` and the new method share one copy — duplicating the
+`if (clientIp)` line is precisely how the empty-`X-Forwarded-For` bug returns:
+
+```ts
+  function buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (sessionToken) {
+      headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
+    } else if (privateEnv.READ_TOKEN) {
+      headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
+    }
+    // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
+    // every such request into one bucket instead of falling back to the
+    // socket address, which is the opposite of the intent.
+    if (clientIp) headers['X-Forwarded-For'] = clientIp;
+    return headers;
+  }
+```
+
+Have `fetchJson` call it, keeping its existing comment block and its 401/503
+handling verbatim. Then add to the returned object:
+
+```ts
+    /**
+     * Mute or unmute a flaky test.
+     *
+     * Throws APIError rather than SvelteKit's error() — unlike every read above,
+     * this is called from a form action, which must answer with fail() so the
+     * message renders beside the form instead of replacing the page.
+     */
+    async setFlakyStatus(id: string, status: 'ignored' | 'active'): Promise<void> {
+      const path = `/api/v1/tests/flaky/${id}`;
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}${path}`, {
+          method: 'PATCH',
+          headers: { ...buildHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status }),
+        });
+      } catch {
+        throw new APIError(503, `Cannot reach the Flackyness API (${API_URL}).`, path);
+      }
+      if (!response.ok) {
+        throw new APIError(response.status, `Failed to update status`, path);
+      }
+    },
+```
+
+- [ ] **Step 6: Rewrite the route**
+
+Replace `apps/dashboard/src/routes/flaky/+page.server.ts`'s `ADMIN_TOKEN` uses.
+`canMute` becomes a function of the signed-in user, and the action acts as them:
+
+```ts
+import type { Actions, PageServerLoad } from './$types';
+import { fail } from '@sveltejs/kit';
+import { createApi, APIError } from '$lib/server/api';
+import { canMuteTests } from '$lib/permissions';
+
+export const load: PageServerLoad = async ({ url, parent, locals }) => {
+  const { selectedProject } = await parent();
+
+  if (!selectedProject) {
+    return { flakyTests: [], currentProject: null, status: 'active', canMute: false };
+  }
+
+  const status = url.searchParams.get('status') || 'active';
+  const api = createApi(locals.sessionToken, locals.clientIp);
+  const flakyTests = await api.getFlakyTests(selectedProject.id, status);
+
+  return {
+    flakyTests,
+    currentProject: selectedProject,
+    status,
+    canMute: canMuteTests(locals.user, locals.teams, selectedProject),
+  };
+};
+
+export const actions = {
+  setStatus: async ({ request, locals }) => {
+    const form = await request.formData();
+    const id = String(form.get('id') ?? '');
+    const status = String(form.get('status') ?? '');
+    if (!id || (status !== 'ignored' && status !== 'active')) {
+      return fail(400, { message: 'Invalid request' });
+    }
+    // No canMuteTests() check here on purpose: the API is the boundary and it
+    // re-decides on every request. Re-deciding here too would mean two copies
+    // of one rule that can drift, and the copy that drifts is the one nobody
+    // tests against a real session.
+    try {
+      await createApi(locals.sessionToken, locals.clientIp).setFlakyStatus(id, status);
+    } catch (err) {
+      if (err instanceof APIError) {
+        if (err.statusCode === 401 || err.statusCode === 403) {
+          return fail(403, { message: 'You do not have permission to mute tests in this project.' });
+        }
+        return fail(err.statusCode === 404 ? 404 : 502, { message: 'Failed to update status' });
+      }
+      return fail(502, { message: 'Failed to update status' });
+    }
+    return { success: true };
+  },
+} satisfies Actions;
+```
+
+`selectedProject` comes from the layout and is typed `Project`, which carries
+`teamId: string | null` (Task 1) — so it satisfies `canMuteTests`'s third
+parameter with no cast.
+
+- [ ] **Step 7: Run to verify everything passes**
+
+```bash
+pnpm --filter dashboard exec vitest run
+env -u ADMIN_TOKEN pnpm --filter dashboard check
+pnpm run lint
+grep -rn "ADMIN_TOKEN" apps/dashboard/src/routes apps/dashboard/src/lib
+```
+Expected: PASS, clean, and the grep returns **nothing** (`hooks.server.ts` still
+mentions it — Task 3 owns that file, and `adminApi.ts`'s doc comment names it
+only to explain what it replaced).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add apps/dashboard/src/lib apps/dashboard/src/routes/flaky
+git commit -m "refactor(dashboard): mute tests as the signed-in user, not ADMIN_TOKEN"
+```
+
+---
+
 ### Task 3: replace Basic Auth with the session gate
 
 **Files:**
@@ -1358,6 +1667,22 @@ Table of users (email, display name, global-admin flag, teams, last login), plus
 - `resetPassword` — show-once again, with copy warning that all the user's sessions are revoked.
 - `toggleGlobalAdmin`, `delete` — both must surface the API's `409` ("Cannot demote/delete the last global admin") as a readable inline error, not a generic failure.
 
+- [ ] **Step 3b: Fix the stale "admin disabled" copy**
+
+**Added 2026-08-15, found during Task 2.** `apps/dashboard/src/routes/admin/+page.svelte:25-32` still tells the operator to *"Set `ADMIN_TOKEN` in the dashboard's environment to manage projects from here."* Task 2 kept the `data.adminEnabled` flag but changed what it means: it no longer reports whether the *server* holds a token, it reports whether **this caller's session** is accepted by the admin API. The advice is now not just stale but actively misleading — setting `ADMIN_TOKEN` will not make the panel appear, and an operator who follows it will conclude the feature is broken.
+
+Replace the block's body with copy that names the real cause:
+
+```svelte
+    <h3 class="text-lg font-semibold text-gray-900 mb-2">Admin actions are unavailable</h3>
+    <p class="text-muted">
+      Your account does not have permission to manage projects. Ask a global
+      administrator for access.
+    </p>
+```
+
+Update the corresponding assertion in `apps/dashboard/src/routes/admin/page.svelte.test.ts:37` (*"shows the disabled notice when adminEnabled is false"*) to match the new text — it currently asserts on the old wording.
+
 - [ ] **Step 4: Add team assignment to the project settings screen**
 
 In `admin/[projectId]/+page.svelte`, add a team `<select>` (options from `listTeams`, plus an explicit "Unassigned") wired into the existing settings form action, which already PATCHes the project.
@@ -1479,7 +1804,15 @@ git commit -m "feat(dashboard): retire DASHBOARD_PASSWORD in favour of user acco
 - [ ] A provisioned user signs in with their temp password, is forced to `/change-password`, cannot navigate away, and **stays signed in** after changing it.
 - [ ] A member sees only their teams' projects; the team switcher appears only for multi-team users; the Teams/Users nav appears only for global admins.
 - [ ] `grep -rn "DASHBOARD_PASSWORD" --include='*.ts' --include='*.svelte' --include='*.yml' apps/ docker-compose.yml .env.example` returns **nothing** outside `plans/` and `docs/superpowers/specs/` (historical records).
-- [ ] `grep -rn "ADMIN_TOKEN" apps/dashboard/src` returns **nothing**.
+- [ ] `grep -rn "env.ADMIN_TOKEN\|ADMIN_TOKEN}" apps/dashboard/src` returns
+  **nothing** — no code path reads or spends the token. Amended 2026-08-15: the
+  original wording was "`grep -rn "ADMIN_TOKEN" apps/dashboard/src` returns
+  nothing", which is unsatisfiable and would have been discovered here, at the
+  end. Two brief-mandated *mentions* survive and should: `adminApi.ts`'s
+  `NotAuthenticatedError` doc comment, which names the token to explain what it
+  replaced, and `adminApi.test.ts`'s assertion *"forwards the caller's session
+  cookie, not an ADMIN_TOKEN"*, whose whole value is naming what must not be
+  sent. Deleting either to satisfy a grep would make the codebase worse.
 - [ ] `pnpm lint`, `pnpm --filter dashboard check`, the node suite, the browser suite, the E2E suite, and the mutation gate all pass.
 
 ## Follow-ups this plan deliberately does not do

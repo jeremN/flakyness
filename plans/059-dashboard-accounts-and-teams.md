@@ -1319,6 +1319,13 @@ export const actions: Actions = {
     const body = (await res.json()) as { mustChangePassword: boolean };
 
     cookies.set(SESSION_COOKIE, token, {
+      // Load-bearing, and must stay identical to the gate's
+      // `cookies.delete(SESSION_COOKIE, { path: '/' })` in hooks.server.ts.
+      // A cookie deletion only matches a cookie with the same path, so a
+      // mismatch here silently resurrects the stale-credential loop that
+      // delete exists to break: the API keeps rejecting the dead session and
+      // the browser keeps presenting it, one wasted round-trip per page view,
+      // forever. Noted 2026-08-15 by the Task 3 review.
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
@@ -1821,7 +1828,16 @@ git commit -m "feat(dashboard): retire DASHBOARD_PASSWORD in favour of user acco
 - [ ] An anonymous visit to any route redirects to `/login`; there is no redirect loop on `/login` itself.
 - [ ] A provisioned user signs in with their temp password, is forced to `/change-password`, cannot navigate away, and **stays signed in** after changing it.
 - [ ] A member sees only their teams' projects; the team switcher appears only for multi-team users; the Teams/Users nav appears only for global admins.
-- [ ] `grep -rn "DASHBOARD_PASSWORD" --include='*.ts' --include='*.svelte' --include='*.yml' apps/ docker-compose.yml .env.example` returns **nothing** outside `plans/` and `docs/superpowers/specs/` (historical records).
+- [ ] `grep -rn "DASHBOARD_PASSWORD" --include='*.ts' --include='*.svelte' --include='*.yml' apps/ docker-compose.yml .env.example` returns **no configuration or code reference** — no `env.DASHBOARD_PASSWORD` read, no compose/env entry, no `.env.example` line.
+
+  Amended 2026-08-15: the original wording demanded the grep return *nothing*
+  outside `plans/` and `docs/`, which can never hold. Two **comments**
+  legitimately name the variable to record what was removed and why —
+  `hooks.server.ts`'s gate docstring (which Task 3's brief mandates verbatim,
+  and which explains the confused-deputy problem the old gate solved) and
+  `apps/api/src/index.ts`'s cookie-security warning. Deleting a historical
+  explanation to satisfy a grep trades a real maintenance aid for a green
+  check. Verify the *absence of live reads*, not the absence of the string.
 - [ ] `grep -rn "env.ADMIN_TOKEN\|ADMIN_TOKEN}" apps/dashboard/src` returns
   **nothing** — no code path reads or spends the token. Amended 2026-08-15: the
   original wording was "`grep -rn "ADMIN_TOKEN" apps/dashboard/src` returns

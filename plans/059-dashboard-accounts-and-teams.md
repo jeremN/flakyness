@@ -1452,7 +1452,17 @@ export async function load({ url, locals }: ServerLoadEvent) {
   // the Flackyness API" on the one page the user must use to recover, while
   // the API is healthy and answering exactly as designed. There is also
   // nothing to show a user who cannot read projects yet, so skip the call.
-  if (!locals.user?.mustChangePassword) {
+  //
+  // The `locals.user &&` half is load-bearing and was ADDED 2026-08-15, during
+  // execution — `!locals.user?.mustChangePassword` alone is `true` for an
+  // ANONYMOUS caller, and this layout runs for /login too (Task 3's gate lets
+  // /login through by design, so the gate cannot be relied on to stop this).
+  // With no session, api.ts falls back to READ_TOKEN or an anonymous request,
+  // and anonymous API reads are UNSCOPED (AGENTS.md: "Anonymous callers stay
+  // unscoped" — true whether or not READ_TOKEN is set). The nav would
+  // therefore render every project name on the instance to a visitor sitting
+  // on the sign-in page. Skip the fetch unless somebody is actually signed in.
+  if (locals.user && !locals.user.mustChangePassword) {
     try {
       projects = await api.getProjects();
     } catch {
@@ -1481,10 +1491,18 @@ export async function load({ url, locals }: ServerLoadEvent) {
 }
 ```
 
-Add a load test for the skip (delta §D2): a mid-reset user's layout load
-performs **no** projects fetch and surfaces **no** `apiError`. Assert the fetch
-was not called, not merely that `apiError` is null — the latter passes if the
-call happens and happens to succeed.
+Add **two** load tests for the skip. In both, assert the fetch was **not
+called** — not merely that `apiError` is null, which passes if the call happens
+and happens to succeed:
+
+1. (delta §D2) a **mid-reset** user's layout load performs no projects fetch and
+   surfaces no `apiError`.
+2. (added 2026-08-15) an **anonymous** caller's layout load performs no projects
+   fetch. This is the one that guards the leak described in the comment above,
+   and it fails against the original `!locals.user?.mustChangePassword`
+   condition — which is exactly why it is worth writing. Assert on the fetch,
+   because `projects` is `[]` either way and asserting on the result would pass
+   against the leaking version whenever the API happened to return nothing.
 
 This relies on `teamId` being present on the `GET /api/v1/projects` response, which plan 058 (Task 3, Step 4) returns additively. If it is missing, stop and fix it in the API rather than inferring team membership client-side — a filter over a field the API does not send silently shows everything.
 

@@ -311,6 +311,43 @@ describeEnforcement('mustChangePassword enforcement', () => {
       expect((await after.json()).code).toBe('password_change_required');
 
     });
+
+    /**
+     * CORS PREFLIGHT IS A FIFTH ESCAPE REQUIREMENT, and it is invisible in the
+     * allowlist because it is not this layer's to grant.
+     *
+     * The allowlist deliberately carries no OPTIONS entry: `cors()` is mounted
+     * globally at index.ts, ahead of every router, and answers preflight itself
+     * with a 204 before the gate ever runs. That ordering is the ONLY reason
+     * omitting OPTIONS is safe — and nothing pinned it against the REAL app.
+     * middleware/password-change.test.ts builds its own bare Hono, so it cannot
+     * see a change to index.ts's mount order.
+     *
+     * If cors() were ever moved below the routers, a browser preflight from a
+     * mid-reset user would reach the gate, get a 403, and the change-password
+     * page could never POST — a total lockout for every browser client, with
+     * CI green. That is why this assertion runs against the real exported app.
+     */
+    it('preflight to a refused path is answered by cors(), not by the gate', async () => {
+      const u = await provisionMustChangeUser();
+      const cookie = await loginAs(u.email, u.password);
+
+      const res = await app.request('/api/v1/projects', {
+        method: 'OPTIONS',
+        headers: {
+          ...withCookie(cookie),
+          Origin: 'http://localhost:5173',
+          'Access-Control-Request-Method': 'POST',
+        },
+      });
+
+      expect(
+        res.status,
+        'preflight for a mid-reset session must NOT be refused by the gate — ' +
+          'cors() must still be mounted ahead of the routers in index.ts. A 403 ' +
+          'here means every browser client is locked out of password recovery.'
+      ).not.toBe(403);
+    });
   });
 
   /**

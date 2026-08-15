@@ -128,6 +128,29 @@ const format = (method: string, path: string) => `${method} ${path}`;
  * forgets its gate is detected by the absence of a covering mount — the
  * completeness check no list of expected mounts can perform.
  *
+ * ### What this does NOT catch — do not read it as total (follow-up #28)
+ *
+ * Coverage here is a question about path SHAPE, not about registration ORDER,
+ * and Hono dispatches by order. A router mounted UNDER an already-gated
+ * wildcard but registered BEFORE it never runs that wildcard's chain, yet
+ * matches the prefix and is reported covered. Concretely: a future
+ * `app.route('/api/v1/admin/billing', billing)` placed above `adminRouter`
+ * runs zero `ALL /api/v1/admin/*` middleware — measured, not theorised — while
+ * this function returns true for every one of its paths.
+ *
+ * That is not a hypothetical mounting mistake: `index.ts` deliberately mounts
+ * the more specific admin routers before `adminRouter`, so the pattern is the
+ * one the codebase teaches. No live gap exists today — `admin-users`,
+ * `admin-teams` and `admin` each mount their own gate — but a new sibling that
+ * forgot one would pass this assertion.
+ *
+ * Closing it means making coverage order-aware: require the covering gate at a
+ * LOWER `app.routes` index than the route it covers. Deliberately deferred to
+ * follow-up #28 rather than rushed in at merge time; recorded here because a
+ * guard that overstates its reach is worse than one whose limits are written
+ * down. (The previous version of this comment claimed a completeness it did
+ * not have, which is exactly the defect the final review caught twice.)
+ *
  * ### The vacuity trap — read before editing
  *
  * Wildcard mounts (`/api/v1/admin/*`) and exact-path gates (`/api/v1`) MUST be
@@ -190,7 +213,14 @@ const wildcardMountCount = gateMountPaths.filter((p) => p.endsWith('/*')).length
 const authRoutes = [
   ...new Set(
     app.routes
-      .filter((r) => r.path.startsWith('/api/v1/auth/'))
+      // `=== '/api/v1/auth'` as well as the `/` subtree: a route registered at
+      // the router ROOT (`authRouter.get('/', ...)`) surfaces as the bare
+      // `/api/v1/auth`. Filtering on the trailing-slash prefix alone let it
+      // escape the decision guard entirely — and if such a route were
+      // allowlisted, the allowlist entry would be misreported as `stale`, whose
+      // documented remedy is to DELETE it. Deleting a live recovery exemption
+      // is the lockout this whole file exists to prevent.
+      .filter((r) => r.path === '/api/v1/auth' || r.path.startsWith('/api/v1/auth/'))
       .filter((r) => !(r.method === 'ALL' && isKnownAuthMiddleware(r.handler)))
       .flatMap((r) => reachableMethods(r.method).map((m) => format(m, r.path)))
   ),

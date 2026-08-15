@@ -931,6 +931,23 @@ rationale. Items 5–7 remain unplanned.
     `password-change-coverage.test.ts`, which was deliberately left out of that list precisely
     because no limiter covers the path today.
 
+28. **[OPEN — found 2026-08-15 in the `mustChangePassword` fix-round re-review] The gate
+    coverage guard checks path SHAPE but not registration ORDER, and Hono dispatches by
+    order.** `buildGateCoverage()` in `password-change-coverage.test.ts` answers "is this path
+    under a gated wildcard mount?" — it cannot see that a router mounted UNDER an already-gated
+    prefix but registered BEFORE it never runs that prefix's middleware chain. Measured, not
+    theorised: a sub-router mounted at `/api/v1/admin/<x>` above `adminRouter` runs **zero**
+    `ALL /api/v1/admin/*` middleware, yet every one of its paths is reported covered; a real
+    write-only ungated router appended that way left the suite 30/30 green. This is not an
+    exotic mounting mistake — `index.ts` deliberately mounts the more specific admin routers
+    (`admin/users`, `admin/teams`) above `adminRouter`, so it is the pattern the codebase
+    teaches. **No live gap today**: all three admin routers mount their own gate. The exposure
+    is a future sibling that forgets one. Fix shape: make coverage order-aware — require the
+    covering gate's `app.routes` index to be LOWER than the covered route's, and extend
+    `buildGateCoverage`'s existing self-test suite with an out-of-order case. Deferred from the
+    merge deliberately rather than rushed; the guard's own comment now documents this limit
+    instead of claiming a completeness it does not have.
+
 ## Findings considered and rejected
 
 (Recorded so they aren't re-audited.)

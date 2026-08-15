@@ -486,8 +486,9 @@ normalisation of your own here — a second, differently-implemented pass is the
 only way to desynchronise them.
 
 Adding a route to `auth.ts` without listing it fails
-`password-change-coverage.test.ts`, which also asserts all seven gate mounts
-exist, in the correct order relative to each router's rate limiter. That guard
+`password-change-coverage.test.ts`, which also asserts all eight gate mounts
+exist (the seven routers plus the route-level one on `GET /api/v1`), with the
+seven router mounts in the correct order relative to each router's rate limiter. That guard
 compares against the **union** of the allowlist and an explicit
 `AUTH_ROUTES_DELIBERATELY_REFUSED` list, so "this new auth route is *not* part
 of recovery" is a one-line answer — the guard must never be greenable only by

@@ -901,6 +901,36 @@ rationale. Items 5–7 remain unplanned.
     plus a route test pinning the shape so the next bump fails loudly. Note this is a **breaking
     change** for any existing consumer already parsing the current shape.
 
+26. **[OPEN — found 2026-08-15 in the `mustChangePassword` final review] `reports.ts` mounts
+    `projectAuth()` BEFORE its rate limiter, so an unauthenticated flood costs a DB lookup per
+    request before anything throttles it.** `routes/reports.ts:63-65` is
+    `projectAuth()` → `reportRateLimit` → `passwordChangeGate()`. Every sibling router puts its
+    limiter first, and `rate-limit.test.ts` carries two regression guards ("admin router mounts
+    the limiter before auth", "mute route rate-limits before auth") for exactly this shape — the
+    ingest router was never covered by either. Two consequences: (a) an anonymous flood of
+    `POST /api/v1/reports` pays a project-token lookup per request before being throttled;
+    (b) the password-change contract on that one router is `401 Authorization header required`
+    rather than the uniform `403 password_change_required` (verified empirically 2026-08-15 —
+    `docs/API.md` now documents it as a known contract-shape divergence). **Not a security hole**:
+    `projectAuth` still demands a valid project token, so a mid-reset session can never ingest.
+    Pre-existing; the `mustChangePassword` branch did not introduce it and deliberately did not
+    fix it — reordering middleware on the highest-traffic route in the system is a behavioural
+    change that deserves its own change and its own testing. Fix shape: swap the two `use('*')`
+    lines, add the third "limiter before auth" regression test alongside the two that exist, and
+    re-check the ingest tests that currently assume a 401 arrives before any throttling.
+
+27. **[OPEN — found 2026-08-15 in the same review] `GET /api/v1` is outside every rate limiter.**
+    The version stub is mounted directly on the root app (`index.ts`), below `sessionAuth()` but
+    inside no router, so no `*RateLimit` covers it. It now carries `passwordChangeGate()` as
+    route-level middleware, but nothing throttles it. Impact is small — it returns two static
+    strings and touches neither the database nor any credential — but a request carrying an
+    `fk_session` cookie still pays `sessionAuth`'s sessions↔users SELECT, so it is an
+    unthrottled DB path in the same family as follow-up #26. Pre-existing. Fix shape: mount
+    `apiRateLimit` on that one route (`app.get('/api/v1', apiRateLimit, passwordChangeGate(),
+    handler)`) and add `['/api/v1', apiRateLimit]` to `EXPECTED_GATE_ORDER` in
+    `password-change-coverage.test.ts`, which was deliberately left out of that list precisely
+    because no limiter covers the path today.
+
 ## Findings considered and rejected
 
 (Recorded so they aren't re-audited.)

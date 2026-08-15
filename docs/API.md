@@ -2260,7 +2260,9 @@ a stability guarantee — see follow-up #25 in `plans/README.md`.)
 
 A session belonging to a user whose password was admin-provisioned or
 admin-reset, and not yet rotated, is refused on every `/api/v1` endpoint —
-including `GET /api/v1` itself — except the recovery pairs listed below:
+including `GET /api/v1` itself — except the recovery pairs listed below. On
+all but one router (see *Two places the response is not this exact 403*) the
+refusal is:
 
 ```
 403 { "error": "Password change required", "code": "password_change_required" }
@@ -2292,6 +2294,31 @@ both a mid-reset session cookie *and* a bearer token is refused: session
 resolution short-circuits before the `Authorization` header is even
 inspected, so the request is classified as the mid-reset user regardless of
 what token rides along with it.
+
+#### Two places the response is not this exact 403
+
+Neither is a way past the boundary — both still refuse — but a client keying
+strictly off `code` should know they exist.
+
+**`POST /api/v1/reports` answers `401`, not `403`.** That router applies
+`projectAuth()` before its rate limiter and before this check, so a mid-reset
+session with no project token gets:
+
+```
+401 { "error": "Authorization header required" }
+```
+
+Ingest is not reachable with a session in any case — it requires a valid
+project token, which never carries the flag — so a mid-reset caller can never
+ingest. The contract *shape* differs on that one router; the authorization
+outcome does not.
+
+**A trailing slash turns a `404` into this `403`.** `/api/v1/auth/me/` is not
+a route (the canonical path has no trailing slash), so it normally answers
+`404`. For a mid-reset caller the check runs before the router's 404 and
+answers `403 password_change_required` instead. Every canonical path behaves
+exactly as documented; only the non-existent trailing-slash spelling differs,
+and it differs in the safe direction.
 
 ---
 

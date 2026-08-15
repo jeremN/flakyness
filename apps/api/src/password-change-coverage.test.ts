@@ -4,19 +4,35 @@ import { PASSWORD_CHANGE_ALLOWLIST } from './services/auth/access';
 import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './middleware/rate-limit';
 
 /**
- * Fail-loud guard: every /api/v1 router mounts passwordChangeGate().
+ * Fail-loud guard: every /api/v1 route is covered by a passwordChangeGate()
+ * mount, and every mount sits after its router's rate limiter.
  *
- * Layer 2 is now SEVEN mounts rather than one global one (see the mount-point
- * comment in middleware/password-change.ts for why a global mount is wrong).
- * Seven places to forget is six more than one, so the forgetting is what gets
- * automated away here.
+ * Layer 2 is EIGHT mounts rather than one global one — seven routers plus a
+ * route-level mount on `GET /api/v1` (see the mount-point comment in
+ * middleware/password-change.ts for why a global mount is wrong). Eight places
+ * to forget is seven more than one, so the forgetting is what gets automated
+ * away here.
+ *
+ * This file holds two DIFFERENT kinds of assertion, and conflating them is how
+ * it went blind once already:
+ *
+ *   - Inventory assertions, keyed to the hard-coded EXPECTED_* lists below.
+ *     They catch a mount that was renamed, removed, or mis-ordered. They CANNOT
+ *     catch a new router that mounts no gate at all.
+ *   - The completeness assertion ('every /api/v1 route is covered by a gate
+ *     mount'), which derives both sides from app.routes. That one, and only
+ *     that one, catches a new ungated router — including a WRITE-ONLY one,
+ *     which routes-auth-coverage.test.ts also misses because it filters on
+ *     `method === 'GET'`.
  *
  * This is a RUNTIME scan of Hono's route table, not a source-text scan — so
  * unlike the plan-058 admin-scope guard it needs no `stryMutAct_` skip: Stryker
  * instruments the source, but app.routes still reports the same paths.
  *
  * Verified mechanism: a router's `use('*', mw)` registration surfaces in
- * app.routes as an `ALL /api/v1/<mount>/*` entry.
+ * app.routes as an `ALL /api/v1/<mount>/*` entry, and that entry really does
+ * run for the router's own root path (the bare `/api/v1/<mount>`) as well as
+ * its subtree.
  */
 
 // The complete set of gate mounts: the seven app.route('/api/v1/...') routers

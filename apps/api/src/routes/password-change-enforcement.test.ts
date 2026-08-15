@@ -410,6 +410,59 @@ describeEnforcement('mustChangePassword enforcement', () => {
   });
 
   /**
+   * The two places the response is NOT the uniform 403.
+   *
+   * Both are documented in docs/API.md under "Two places the response is not
+   * this exact 403". These tests exist so that documentation cannot quietly
+   * become false — not because either shape is desirable.
+   */
+  describe('documented contract-shape divergences', () => {
+    it('POST /api/v1/reports answers 401, not 403 — projectAuth runs first', async () => {
+      // reports.ts mounts projectAuth() BEFORE its limiter and the gate
+      // (routes/reports.ts:63-65), so a mid-reset session with no project
+      // token is rejected for missing credentials before the gate is reached.
+      //
+      // NOT a security hole: projectAuth still demands a valid project token,
+      // which never carries the flag, so a mid-reset session can never ingest.
+      // The authorization outcome is identical; only the contract shape
+      // differs, on this one router.
+      //
+      // Left unreordered deliberately — that is the highest-traffic route in
+      // the system and moving its middleware deserves its own change. Filed as
+      // follow-up #26 in plans/README.md. IF YOU FIX #26, this test must be
+      // updated to expect the uniform 403 — do not delete it, and do not
+      // "fix" it by reordering reports.ts as a drive-by.
+      const u = await provisionMustChangeUser();
+      const res = await app.request(`/api/v1/reports?branch=main&commit=${'a'.repeat(40)}`, {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify(minimalReport()),
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Authorization header required' });
+    });
+
+    it('a trailing slash yields 403 where everyone else gets 404', async () => {
+      // The gate runs before the router's 404, so a non-existent spelling of
+      // an otherwise-exempt path is refused rather than reported missing.
+      // Harmless — every canonical path behaves as documented, and this
+      // differs in the SAFE direction — but it is observable, so it is pinned
+      // and documented rather than left as a surprise.
+      const u = await provisionMustChangeUser();
+      const cookie = await loginAs(u.email, u.password);
+
+      const midReset = await app.request('/api/v1/auth/me/', { headers: withCookie(cookie) });
+      expect(midReset.status).toBe(403);
+      expect((await midReset.json()).code).toBe('password_change_required');
+
+      // The control: the same URL is a plain 404 for anyone else. Without it
+      // this would pass even if /api/v1/auth/me/ had become a real route.
+      const anonymous = await app.request('/api/v1/auth/me/');
+      expect(anonymous.status, 'the trailing-slash path is not a real route').toBe(404);
+    });
+  });
+
+  /**
    * The zero-behaviour-change promise. An install with no user accounts must
    * not notice this feature at all.
    */

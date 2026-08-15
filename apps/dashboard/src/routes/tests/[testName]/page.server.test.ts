@@ -106,4 +106,20 @@ describe('routes/tests/[testName]/+page.server load', () => {
     expect(mockedGetTestHistory).not.toHaveBeenCalled();
     expect(mockedGetTestTrend).not.toHaveBeenCalled();
   });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetTestHistory.mockResolvedValue(testHistory);
+    mockedGetTestTrend.mockResolvedValue(testTrend);
+
+    await load({
+      params: { testName: 'flaky test' },
+      url: new URL('http://x/tests/flaky%20test?project=p1'),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    } as any);
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });

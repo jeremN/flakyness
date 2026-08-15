@@ -130,4 +130,19 @@ describe('routes/analysis/+page.server load', () => {
     expect(result.threshold).toBe(0.1);
     expect(mockedGetAnalysis).not.toHaveBeenCalled();
   });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetAnalysis.mockResolvedValue(analysis);
+
+    await load({
+      url: new URL('http://x/analysis'),
+      parent: async () => ({ selectedProject: project }),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });

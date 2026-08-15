@@ -26,12 +26,12 @@ beforeEach(() => {
   mockedList.mockReset();
 });
 
-function event(sessionToken: string | null) {
-  return { locals: { sessionToken, clientIp: null } } as any;
+function event(sessionToken: string | null, clientIp: string | null = null) {
+  return { locals: { sessionToken, clientIp } } as any;
 }
 
 describe('routes/admin load', () => {
-  it('returns adminEnabled=false when there is no session, without surfacing an error', async () => {
+  it('maps NotAuthenticatedError to adminEnabled=false, without surfacing an error', async () => {
     mockedList.mockRejectedValue(new NotAuthenticatedError());
     const result = (await load(event(null))) as any;
     expect(result).toEqual({ adminProjects: [], adminEnabled: false });
@@ -42,7 +42,15 @@ describe('routes/admin load', () => {
     mockedList.mockResolvedValue({ projects });
     const result = (await load(event('sess-1'))) as any;
     expect(result).toEqual({ adminProjects: projects, adminEnabled: true });
-    expect(createAdminApi).toHaveBeenCalledWith('sess-1', null);
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedList.mockResolvedValue({ projects: [] });
+    await load(event('sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 
   it('surfaces an API failure as an HTTP error, preserving status and message', async () => {

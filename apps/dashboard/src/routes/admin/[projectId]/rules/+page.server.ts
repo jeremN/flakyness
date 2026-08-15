@@ -11,6 +11,21 @@ export const load: PageServerLoad = async ({ params, parent, locals }) => {
   // the admin console runs entirely from one server IP, so a gratuitous admin
   // call is exactly the per-IP pressure the rate-limit work addressed. Both
   // endpoints enumerate every project, so the id set is identical.
+  //
+  // Ordering note (Task 2 review, I1/M1): this runs — and can 404 on an
+  // unknown project id — *before* `adminApi.listRules` below gets a chance to
+  // reject with NotAuthenticatedError for a caller with no session. That
+  // means an unauthenticated request's status now depends on whether the
+  // project exists: 404 for an unknown id, 403 for a real one. Pre-Task-3
+  // that's an existence oracle, because `parent()`'s `getProjects()` is
+  // itself identity-less and returns the unscoped list to anyone. It
+  // converges to correct once Task 3 lands: `hooks.server.ts` redirects
+  // anonymous traffic before `load` ever runs, and `parent()`'s list becomes
+  // team-scoped, so 404-before-403 becomes the right existence-hiding answer
+  // — the same convention the API itself uses. Do not reorder this to check
+  // auth first; that would just move the guard back to a synchronous
+  // `locals.sessionToken` check this task deliberately avoided (see
+  // NotAuthenticatedError's docstring in adminApi.ts).
   const { projects, apiError } = await parent();
   // Distinguish "API unreachable" (empty list because the public fetch failed)
   // from a genuinely-missing project, so a down API doesn't masquerade as a 404.

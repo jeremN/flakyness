@@ -121,4 +121,21 @@ describe('routes/+page.server load', () => {
     });
     expect(mockedGetProjectStats).not.toHaveBeenCalled();
   });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetProjectStats.mockResolvedValue(stats);
+    mockedGetFlakyTests.mockResolvedValue(flakyTests);
+    mockedGetProjectRuns.mockResolvedValue(recentRuns);
+    mockedGetFlakeTrend.mockResolvedValue(trendData);
+
+    await load({
+      parent: async () => ({ selectedProject: project }),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });

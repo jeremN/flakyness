@@ -36,13 +36,18 @@ vi.mocked(createAdminApi).mockReturnValue({
 const project = { id: 'p1', name: 'Proj', stats: { totalRuns: 0, activeFlakyTests: 0 } } as any;
 const ruleRow = (id: string, position: number) => ({ id, position }) as any;
 
-function formEvent(fields: Record<string, string>, id = 'p1', sessionToken: string | null = 'sess-1') {
+function formEvent(
+  fields: Record<string, string>,
+  id = 'p1',
+  sessionToken: string | null = 'sess-1',
+  clientIp: string | null = null
+) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
   return {
     request: { formData: async () => fd },
     params: { projectId: id },
-    locals: { sessionToken, clientIp: null },
+    locals: { sessionToken, clientIp },
   } as any;
 }
 
@@ -51,8 +56,13 @@ function formEvent(fields: Record<string, string>, id = 'p1', sessionToken: stri
 const parentWith = (projects: unknown[], apiError: string | null = null) =>
   (async () => ({ projects, apiError })) as any;
 
-function loadEvent(projectId: string, parent: () => Promise<unknown>, sessionToken: string | null = 'sess-1') {
-  return { params: { projectId }, parent, locals: { sessionToken, clientIp: null } } as any;
+function loadEvent(
+  projectId: string,
+  parent: () => Promise<unknown>,
+  sessionToken: string | null = 'sess-1',
+  clientIp: string | null = null
+) {
+  return { params: { projectId }, parent, locals: { sessionToken, clientIp } } as any;
 }
 
 beforeEach(() => {
@@ -70,7 +80,7 @@ describe('rules load', () => {
     expect(result).toEqual({ project, rules: [ruleRow('r1', 0)] });
   });
 
-  it('403s when there is no session', async () => {
+  it('maps NotAuthenticatedError to a 403 fail', async () => {
     mockedListRules.mockRejectedValue(new NotAuthenticatedError());
     await expect(load(loadEvent('p1', parentWith([project]), null))).rejects.toMatchObject({ status: 403 });
   });
@@ -97,6 +107,15 @@ describe('rules load', () => {
       load(loadEvent('p1', parentWith([], 'Cannot reach the Flackyness API.')))
     ).rejects.toMatchObject({ status: 502 });
     expect(mockedListRules).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedListRules.mockResolvedValue({ rules: [] });
+    await load(loadEvent('p1', parentWith([project]), 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
 

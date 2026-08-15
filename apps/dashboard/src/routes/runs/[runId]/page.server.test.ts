@@ -116,4 +116,20 @@ describe('routes/runs/[runId]/+page.server load', () => {
     expect(result.runDetail).toBeNull();
     expect(result.loadFailed).toBe(true);
   });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetRunDetail.mockResolvedValue(runDetail);
+
+    await load({
+      parent: async () => ({ selectedProject: project }),
+      params: { runId: 'run-1' },
+      url: new URL('http://x/runs/run-1'),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });

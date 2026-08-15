@@ -52,18 +52,23 @@ const project = {
   stats: { totalRuns: 3, totalTests: 9, activeFlakyTests: 1 },
 } as any;
 
-function formEvent(fields: Record<string, string>, id = 'p1', sessionToken: string | null = 'sess-1') {
+function formEvent(
+  fields: Record<string, string>,
+  id = 'p1',
+  sessionToken: string | null = 'sess-1',
+  clientIp: string | null = null
+) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
   return {
     request: { formData: async () => fd },
     params: { projectId: id },
-    locals: { sessionToken, clientIp: null },
+    locals: { sessionToken, clientIp },
   } as any;
 }
 
-function loadEvent(projectId: string, sessionToken: string | null = 'sess-1') {
-  return { params: { projectId }, locals: { sessionToken, clientIp: null } } as any;
+function loadEvent(projectId: string, sessionToken: string | null = 'sess-1', clientIp: string | null = null) {
+  return { params: { projectId }, locals: { sessionToken, clientIp } } as any;
 }
 
 beforeEach(() => {
@@ -88,7 +93,7 @@ describe('admin/[projectId] load', () => {
     });
   });
 
-  it('403s when there is no session', async () => {
+  it('maps NotAuthenticatedError to a 403 fail', async () => {
     mockedList.mockRejectedValue(new NotAuthenticatedError());
     await expect(load(loadEvent('p1', null))).rejects.toMatchObject({ status: 403 });
   });
@@ -96,6 +101,15 @@ describe('admin/[projectId] load', () => {
   it('forwards an AdminApiError status when the list call fails', async () => {
     mockedList.mockRejectedValue(new AdminApiError(503, 'API down'));
     await expect(load(loadEvent('p1'))).rejects.toMatchObject({ status: 503 });
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedList.mockResolvedValue({ projects: [project] });
+    await load(loadEvent('p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
 
@@ -171,7 +185,7 @@ describe('admin/[projectId] prune actions', () => {
 });
 
 describe('admin/[projectId] delete action', () => {
-  it('rejects with 403 when there is no session', async () => {
+  it('maps NotAuthenticatedError to a 403 fail', async () => {
     mockedDelete.mockRejectedValue(new NotAuthenticatedError());
     const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }, 'p1', null))) as any;
     expect(result.status).toBe(403);

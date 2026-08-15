@@ -73,4 +73,18 @@ describe('fetchMe', () => {
 
     expect(result).toBeNull();
   });
+
+  // Pins the docstring's claim that a hung API can't hang every page load:
+  // deleting `signal: AbortSignal.timeout(5000)` would leave `init.signal`
+  // undefined and fail this. fetchMe runs on every request once Task 3
+  // lands, so this is the one call in the dashboard where a missing timeout
+  // matters most.
+  it('bounds the request with an abort signal so a hung API cannot hang the page load', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ user: {}, teams: [] }));
+
+    await fetchMe('sess-abc', null);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
 });

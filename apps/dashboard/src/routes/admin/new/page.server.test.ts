@@ -22,10 +22,14 @@ import { actions } from './+page.server';
 const mockedCreate = vi.fn();
 vi.mocked(createAdminApi).mockReturnValue({ createProject: mockedCreate } as unknown as ReturnType<typeof createAdminApi>);
 
-function formEvent(fields: Record<string, string>, sessionToken: string | null = 'sess-1') {
+function formEvent(
+  fields: Record<string, string>,
+  sessionToken: string | null = 'sess-1',
+  clientIp: string | null = null
+) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  return { request: { formData: async () => fd }, locals: { sessionToken, clientIp: null } } as any;
+  return { request: { formData: async () => fd }, locals: { sessionToken, clientIp } } as any;
 }
 
 // Braced body: mockReset() returns `this` (the mock itself, a function), and
@@ -81,13 +85,16 @@ describe('admin/new create action', () => {
     expect(result.data.message).toBe(err.message);
   });
 
-  it('builds the admin client from the request session', async () => {
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
     mockedCreate.mockResolvedValue({
       project: { id: 'p1', name: 'proj', gitlabProjectId: null, createdAt: 'x' },
       token: 't',
       warning: 'w',
     });
-    await actions.default(formEvent({ name: 'proj' }, 'sess-42'));
-    expect(createAdminApi).toHaveBeenCalledWith('sess-42', null);
+    await actions.default(formEvent({ name: 'proj' }, 'sess-42', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-42', '203.0.113.7');
   });
 });

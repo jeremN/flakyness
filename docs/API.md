@@ -342,7 +342,11 @@ so `401`s a session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts
 none — so a `team_admin` can mute a test they cannot read. Write-without-read
 is incoherent. The root cause — sessions do not satisfy `readAuth` at all —
 is systemic to plan 041 and predates per-team access control; only the
-asymmetry on this specific route pair is new. Tracked as scope for plan 059.
+asymmetry on this specific route pair is new. **Plan 059 did not fix it** —
+it made the dashboard forward the session cookie and `READ_TOKEN` together,
+so the dashboard itself no longer produces a session-only read, but any other
+session-only client still trips this. Tracked as a follow-up in
+`plans/README.md`, not as scope for a plan already merged.
 
 ---
 

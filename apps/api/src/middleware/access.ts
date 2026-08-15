@@ -15,7 +15,7 @@ import {
 import type { TeamRole } from '../services/auth/membership';
 
 /**
- * Tagged, for the same reason readAuth is (middleware/auth.ts:102-113): every
+ * Tagged, for the same reason readAuth is (middleware/auth.ts:155-166): every
  * call returns a fresh closure, so routes-auth-coverage.test.ts cannot
  * identify mounted scope-guards by reference. Removing `isResolveAccess`
  * makes that guard pass over an empty set — the exact failure mode it exists

@@ -320,6 +320,35 @@ describeEnforcement('mustChangePassword enforcement', () => {
       await cleanup(u);
     });
 
+    it('root: GET /api/v1 — mounted on the app itself, not on any router', async () => {
+      // The one /api/v1 endpoint that belongs to no router, and so was missed
+      // when the gate was mounted seven times. Only public version metadata,
+      // so the impact was low — but the documented contract is "every endpoint
+      // except the recovery pairs", and a stated boundary with an unstated
+      // hole in it is the thing that gets trusted and then quietly relied on.
+      //
+      // Gated with ROUTE-LEVEL middleware (app.get(path, gate, handler)), not
+      // app.use('/api/v1', gate): a path-scoped use() on the root app would
+      // also match everything below /api/v1 and run ahead of all seven
+      // per-router limiters, starving them — the hazard the enforcement test
+      // above pins from the other direction.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(REFUSED_403);
+      await cleanup(u);
+    });
+
+    it('GET /api/v1 still answers everyone else — the gate is not a blanket refusal', async () => {
+      // The paired positive. Without it, the assertion above would also pass
+      // against a route that had simply been broken.
+      const res = await app.request('/api/v1');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ name: 'Flackyness API', version: '0.0.1' });
+    });
+
     it('admin user CRUD: GET /api/v1/admin/users — a SEPARATE router mount', async () => {
       // adminUsersRouter is mounted independently of adminRouter and carries
       // its own use('*') stack, so the case above does not cover it.

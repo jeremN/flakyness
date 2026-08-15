@@ -19,9 +19,20 @@ import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './
  * app.routes as an `ALL /api/v1/<mount>/*` entry.
  */
 
-// The complete set of app.route('/api/v1/...') mounts in index.ts:143-152.
-// Adding a router without adding it here fails the count assertion below;
-// adding it here without mounting the gate fails the per-mount assertion.
+// The complete set of gate mounts: the seven app.route('/api/v1/...') routers
+// in index.ts, plus the one route-level mount on GET /api/v1 itself.
+//
+// This list is a NAMED INVENTORY, not the completeness check. Listing a mount
+// here without mounting the gate fails the per-mount assertion; mounting one
+// without listing it fails 'has no gate mount this list does not know about'.
+// Neither direction can see a router that mounts NO gate at all — such a
+// router contributes nothing to `gatePaths`, so both sides stay equal and
+// every assertion keyed to this list passes. That completeness job belongs
+// solely to 'every /api/v1 route is covered by a gate mount' below, which
+// derives the surface from app.routes instead of from this constant. (An
+// earlier revision of this header claimed a "count assertion" enforced it.
+// There was no count assertion; a reviewer appended a real ungated router to
+// the live app and every gate assertion here passed.)
 const EXPECTED_GATE_MOUNTS = [
   '/api/v1/reports/*',
   '/api/v1/projects/*',
@@ -30,6 +41,10 @@ const EXPECTED_GATE_MOUNTS = [
   '/api/v1/admin/teams/*',
   '/api/v1/admin/*',
   '/api/v1/auth/*',
+  // Route-level, not a router mount: index.ts's GET /api/v1 version endpoint.
+  // Deliberately NOT in EXPECTED_GATE_ORDER — no rate limiter covers this path
+  // (it sits outside every router), so there is no ordering to assert.
+  '/api/v1',
 ];
 
 function isGateHandler(handler: unknown): boolean {
@@ -89,6 +104,67 @@ function reachableMethods(method: string): readonly string[] {
 }
 
 const format = (method: string, path: string) => `${method} ${path}`;
+
+/**
+ * "Is this route path covered by one of the gate mounts we found?"
+ *
+ * Built from the mount paths rather than hard-coded, so a NEW router that
+ * forgets its gate is detected by the absence of a covering mount — the
+ * completeness check no list of expected mounts can perform.
+ *
+ * ### The vacuity trap — read before editing
+ *
+ * Wildcard mounts (`/api/v1/admin/*`) and exact-path gates (`/api/v1`) MUST be
+ * handled separately. Treating every gate path as a `startsWith` prefix looks
+ * tidier and destroys the guard: `'/api/v1'` is a prefix of literally every
+ * path under `/api/v1`, so `isGateCovered` would return true for everything
+ * and the assertion would pass forever, including for a completely ungated
+ * router. Exact paths therefore go in a Set and only `/*` mounts become
+ * prefixes. `buildGateCoverage`'s self-test below pins exactly this.
+ *
+ * ### A wildcard mount also covers its own root
+ *
+ * `<router>.use('*', ...)` mounted at `/api/v1/projects` surfaces in
+ * app.routes as `ALL /api/v1/projects/*`, and that registration DOES run for
+ * `/api/v1/projects` itself — the router's `get('/')` route, which app.routes
+ * reports as the bare `/api/v1/projects` with no trailing slash. Measured on
+ * Hono 4.12.33, and independently proven at runtime by
+ * routes/password-change-enforcement.test.ts, where a mid-reset caller gets
+ * 403 from exactly that URL. So a `/*` mount covers `base` AND `base/...`.
+ * Matching on the raw `base/` prefix alone would report every router's root
+ * route as ungated — a false alarm that would push a maintainer to "fix" a
+ * non-problem. Comparing against `base` bare, on the other hand, would wrongly
+ * cover a sibling like `/api/v1/administrate`; hence the two-part test.
+ *
+ * Taking the parameter instead of closing over `gatePaths` is what makes the
+ * self-test possible at all.
+ */
+function buildGateCoverage(gateMountPaths: readonly string[]): (path: string) => boolean {
+  const wildcardBases = gateMountPaths.filter((p) => p.endsWith('/*')).map((p) => p.slice(0, -2));
+  const exactGated = new Set(gateMountPaths.filter((p) => !p.endsWith('/*')));
+  return (path: string) =>
+    exactGated.has(path) ||
+    wildcardBases.some((base) => path === base || path.startsWith(`${base}/`));
+}
+
+/** Every `/api/v1` route registration no gate mount covers. */
+function uncoveredV1Routes(
+  routes: ReadonlyArray<{ method: string; path: string }>,
+  isCovered: (path: string) => boolean
+): string[] {
+  return [
+    ...new Set(
+      routes
+        .filter((r) => r.path === '/api/v1' || r.path.startsWith('/api/v1/'))
+        .filter((r) => !isCovered(r.path))
+        .map((r) => format(r.method, r.path))
+    ),
+  ].sort();
+}
+
+const gateMountPaths = [...gatePaths];
+const isGateCovered = buildGateCoverage(gateMountPaths);
+const wildcardMountCount = gateMountPaths.filter((p) => p.endsWith('/*')).length;
 
 // METHOD+PATH pairs, not bare paths. Deduping into a Set of PATHS — which this
 // did until final review — makes the guard blind to a new METHOD on an
@@ -176,6 +252,25 @@ describe('password-change gate coverage', () => {
           '— in which case this guard can no longer see any mount and must be fixed.'
       );
     }
+    // Anti-vacuity for the DERIVED completeness check specifically. It compares
+    // two things read out of app.routes; if a Hono refactor changed how either
+    // is exposed, both could empty out and 'every /api/v1 route is covered'
+    // would pass over nothing.
+    if (app.routes.filter((r) => r.path.startsWith('/api/v1')).length === 0) {
+      throw new Error(
+        'No /api/v1 routes visible in app.routes — the completeness check below ' +
+          'would iterate an empty surface and pass vacuously. Fix this test.'
+      );
+    }
+    if (wildcardMountCount !== 7) {
+      throw new Error(
+        `Expected 7 wildcard ('/*') gate mounts — one per /api/v1 router — but ` +
+          `found ${wildcardMountCount}. If a router was genuinely added or removed, ` +
+          `update this number AND EXPECTED_GATE_MOUNTS/EXPECTED_GATE_ORDER together. ` +
+          `If it dropped to 0, the mount paths are no longer being read correctly ` +
+          `and every coverage assertion below is vacuous.`
+      );
+    }
   });
 
   it.each(EXPECTED_GATE_MOUNTS)('mounts passwordChangeGate on %s', (path) => {
@@ -232,6 +327,117 @@ describe('password-change gate coverage', () => {
       ).toBeLessThan(gateIndex);
     }
   );
+
+  /**
+   * THE COMPLETENESS CHECK — the only assertion in this file that can see a
+   * router which mounts no gate at all.
+   *
+   * Every other assertion here is keyed to EXPECTED_GATE_MOUNTS, and a router
+   * with no gate contributes nothing to `gatePaths`, so both sides of those
+   * comparisons stay equal and they all pass. This one derives the surface
+   * from the live route table instead, so an ungated router shows up as an
+   * uncovered route with nowhere to hide.
+   *
+   * It also closes a second gap: routes-auth-coverage.test.ts filters on
+   * `method === 'GET'`, so a WRITE-ONLY router trips neither guard. This one
+   * is method-agnostic.
+   */
+  it('every /api/v1 route is covered by a gate mount', () => {
+    expect(
+      uncoveredV1Routes(app.routes, isGateCovered),
+      'These /api/v1 routes have no passwordChangeGate covering them. A session\n' +
+        'holding an unrotated temporary password keeps full authority on each one.\n\n' +
+        'For a new ROUTER: add\n' +
+        "  <router>.use('*', passwordChangeGate())\n" +
+        "immediately AFTER that router's rate limiter, then add its mount path to\n" +
+        'EXPECTED_GATE_MOUNTS and EXPECTED_GATE_ORDER above.\n\n' +
+        'For a route mounted directly on the root app: pass the gate as route-level\n' +
+        "middleware — app.get(path, passwordChangeGate(), handler) — NEVER\n" +
+        "app.use(path, ...), which runs ahead of every per-router limiter and starves\n" +
+        'them all.'
+    ).toEqual([]);
+  });
+
+  describe('buildGateCoverage — the guard\'s own logic, on synthetic input', () => {
+    // The assertion above passes because today's mounts really do cover
+    // today's routes. That proves nothing about whether it would CATCH an
+    // ungated router. These drive the same function with a fabricated route
+    // table, which is the only way to exercise the failing direction.
+    const NEW_ROUTER: ReadonlyArray<{ method: string; path: string }> = [
+      { method: 'GET', path: '/api/v1' },
+      { method: 'GET', path: '/api/v1/projects/' },
+      // A plausible next router, mounted and never gated. WRITE-only on
+      // purpose: routes-auth-coverage.test.ts only inspects GETs, so this is
+      // precisely the shape that trips neither guard if this one is broken.
+      { method: 'POST', path: '/api/v1/notifications/:channelId/test' },
+    ];
+
+    it('reports an ungated router as uncovered', () => {
+      const covered = buildGateCoverage(['/api/v1/projects/*', '/api/v1']);
+      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([
+        'POST /api/v1/notifications/:channelId/test',
+      ]);
+    });
+
+    it('reports nothing once that router mounts the gate', () => {
+      const covered = buildGateCoverage([
+        '/api/v1/projects/*',
+        '/api/v1/notifications/*',
+        '/api/v1',
+      ]);
+      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([]);
+    });
+
+    it('THE VACUITY TRAP: gating /api/v1 must NOT cover everything beneath it', () => {
+      // If exact-path gates were folded in as `startsWith` prefixes, '/api/v1'
+      // would match every path under /api/v1 and this whole guard would become
+      // a no-op that passes forever. This is the single assertion that stops
+      // that refactor from landing silently.
+      const covered = buildGateCoverage(['/api/v1']);
+      expect(covered('/api/v1'), 'the exact path is covered').toBe(true);
+      expect(
+        covered('/api/v1/notifications/:channelId/test'),
+        "gating '/api/v1' must not silently cover the entire API"
+      ).toBe(false);
+      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([
+        'GET /api/v1/projects/',
+        'POST /api/v1/notifications/:channelId/test',
+      ]);
+    });
+
+    it('a wildcard mount covers its subtree AND its own root, and nothing else', () => {
+      const covered = buildGateCoverage(['/api/v1/admin/*']);
+      expect(covered('/api/v1/admin/projects')).toBe(true);
+      expect(covered('/api/v1/admin/users/:id')).toBe(true);
+      // The router's own root route. app.routes reports `<router>.get('/')` as
+      // the bare mount path, and the `/*` middleware registration really does
+      // run for it (measured). Matching on the 'base/' prefix alone would
+      // report every router's index route as ungated — a false alarm on six
+      // real, correctly-gated routes.
+      expect(covered('/api/v1/admin')).toBe(true);
+      // But a SIBLING that merely shares a textual prefix must not be. This is
+      // why the base is compared exactly rather than as a bare prefix.
+      expect(covered('/api/v1/administrate')).toBe(false);
+      expect(covered('/api/v1/projects')).toBe(false);
+    });
+
+    it('ignores routes outside /api/v1 entirely', () => {
+      // /health and /metrics are mounted on the root app ABOVE sessionAuth and
+      // carry no credential; they are not this gate's business and must never
+      // be reported as drift.
+      const covered = buildGateCoverage([]);
+      expect(
+        uncoveredV1Routes(
+          [
+            { method: 'GET', path: '/health' },
+            { method: 'GET', path: '/metrics' },
+            { method: 'ALL', path: '*' },
+          ],
+          covered
+        )
+      ).toEqual([]);
+    });
+  });
 
   it('has no gate mount this list does not know about', () => {
     // The other direction: a new router that DID mount the gate but was never

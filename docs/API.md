@@ -2259,8 +2259,8 @@ a stability guarantee — see follow-up #25 in `plans/README.md`.)
 ### Password change required
 
 A session belonging to a user whose password was admin-provisioned or
-admin-reset, and not yet rotated, is refused on every endpoint except the four
-recovery paths below:
+admin-reset, and not yet rotated, is refused on every `/api/v1` endpoint —
+including `GET /api/v1` itself — except the recovery pairs listed below:
 
 ```
 403 { "error": "Password change required", "code": "password_change_required" }

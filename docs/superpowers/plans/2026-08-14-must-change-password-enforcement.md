@@ -575,8 +575,16 @@ import { PASSWORD_CHANGE_ALLOWLIST } from './services/auth/access';
  */
 
 // The complete set of app.route('/api/v1/...') mounts in index.ts:143-152.
-// Adding a router without adding it here fails the count assertion below;
-// adding it here without mounting the gate fails the per-mount assertion.
+// A NAMED INVENTORY, not the completeness check: listing a mount here without
+// mounting the gate fails the per-mount assertion, and mounting one without
+// listing it fails the "no gate mount this list does not know about"
+// assertion — but NEITHER direction can see a router that mounts no gate at
+// all, since such a router contributes nothing to `gatePaths` and both sides
+// stay equal. (An earlier revision of this comment claimed a "count assertion"
+// covered that. It does not exist; a reviewer appended a real ungated router
+// to the live app and every gate assertion passed. Completeness is enforced
+// separately, by deriving the /api/v1 surface from app.routes — see the
+// final-fix round, F2.)
 const EXPECTED_GATE_MOUNTS = [
   '/api/v1/reports/*',
   '/api/v1/projects/*',

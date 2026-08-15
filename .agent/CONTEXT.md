@@ -433,6 +433,11 @@ owns the uniform error contract. It is mounted `use('*')` inside **each of
 the seven** `/api/v1` routers — `reports`, `projects`, `tests`,
 `admin-users`, `admin-teams`, `admin`, `auth` — immediately **after** that
 router's rate limiter, never as one `app.use('*', ...)` on the root app.
+An **eighth** mount covers `GET /api/v1` itself (the version stub in
+`index.ts`, which belongs to no router): route-level middleware,
+`app.get('/api/v1', passwordChangeGate(), handler)` — deliberately NOT
+`app.use('/api/v1', ...)`, which on the root app would match the entire
+`/api/v1` subtree and run ahead of all seven per-router limiters.
 Mount position is load-bearing: a denial returns without calling `next()`,
 so a global mount ahead of the routers would run before every per-router
 limiter and starve it — a mid-reset session could then send unlimited
@@ -502,7 +507,29 @@ credential.
 Covered by `apps/api/src/password-change-coverage.test.ts` (mount presence
 and order, a runtime scan of Hono's route table rather than a source-text
 scan) and `apps/api/src/routes/password-change-enforcement.test.ts` (HTTP
-behaviour, including the 429-starvation regression). Follow-up #20 in
+behaviour, including the 429-starvation regression).
+
+**The assertion that catches a NEW ungated router is the derived one.**
+`password-change-coverage.test.ts` builds a coverage predicate from the mount
+paths it finds and demands that every `/api/v1` route in `app.routes` be
+covered by one. Its named-inventory assertions cannot do this job: a router
+that mounts no gate contributes nothing to the compared set, so both sides
+stay equal and every one of them passes — verified empirically by appending a
+real ungated router to the live app. `routes-auth-coverage.test.ts` cannot
+either, since it filters on `method === 'GET'` and a write-only router never
+appears. Two traps live in that predicate and both are pinned by self-tests
+against synthetic route tables:
+
+- Exact-path gates go in a `Set`; only `/*` mounts become prefixes. Folding
+  `'/api/v1'` in as a prefix would match every path under `/api/v1` and turn
+  the whole guard into a no-op that passes forever.
+- A `/*` mount covers its own root as well as its subtree.
+  `<router>.use('*', …)` mounted at `/api/v1/projects` surfaces as
+  `ALL /api/v1/projects/*` and really does run for the bare
+  `/api/v1/projects` (the router's `get('/')`). Matching the `base/` prefix
+  alone would report six correctly-gated index routes as ungated; matching
+  `base` as a bare prefix would wrongly cover a sibling like
+  `/api/v1/administrate`. Follow-up #20 in
 `plans/README.md` already noted `access.ts` had four surviving mutants
 against its floor of 90 (two genuine coverage gaps, two verified
 equivalents) before this landed; this work adds four new branches to that

@@ -328,14 +328,31 @@ every test would still pass.
    `code: 'password_change_required'`. This is the regression test for the defect
    above; it fails on today's code three different ways (404, 404, and a
    `code`-less 403), which is what makes it worth writing.
-6. **Coverage guards, two of them** — (a) `PASSWORD_CHANGE_ALLOWLIST` matches the
-   auth router's real route table, so a new `/api/v1/auth/*` route forces a
-   deliberate decision; (b) every `/api/v1` router mounts
-   `passwordChangeGate()`, since it is now N mounts rather than one global one.
-   Both mirror `EXPECTED_READ_ROUTE_COUNT` in `routes-auth-coverage.test.ts`.
+6. **Coverage guards, three of them** — (a) the auth router's real route table
+   matches the **union** of `PASSWORD_CHANGE_ALLOWLIST` and
+   `AUTH_ROUTES_DELIBERATELY_REFUSED`, so a new `/api/v1/auth/*` route forces a
+   deliberate decision *and* "refuse it" is a one-line answer — an
+   allowlist-only comparison could be made green only by widening the
+   allowlist, i.e. the insecure direction; (b) each named mount really carries
+   `passwordChangeGate()`, after its rate limiter; (c) — added in final review,
+   and the only one that can catch a NEW ungated router — every `/api/v1` route
+   in `app.routes` is covered by some gate mount, with the surface derived from
+   the route table rather than from a hard-coded list. (b) cannot do (c)'s job:
+   a router that mounts no gate contributes nothing to the compared set, so
+   both sides stay equal and it passes; verified empirically by appending a
+   real ungated router to the live app. `routes-auth-coverage.test.ts` cannot
+   either, because it filters on `method === 'GET'` and a write-only router
+   never appears.
+
    Note the plan-058 lesson: a source-text scan must tolerate Stryker
    instrumentation (`stryMutAct_`), and any `it.each` guard needs its own
-   anti-vacuity assertion — `it.each([])` runs zero assertions and passes.
+   anti-vacuity assertion — `it.each([])` runs zero assertions and passes. Two
+   further traps are specific to (c) and both are pinned by self-tests over
+   synthetic route tables: exact-path gates must stay in a `Set` rather than
+   becoming `startsWith` prefixes (`'/api/v1'` as a prefix matches the entire
+   API and makes the guard a permanent no-op), and a `/*` mount covers its own
+   root as well as its subtree (`ALL /api/v1/projects/*` really does run for
+   the bare `/api/v1/projects`).
 7. **Machine credentials with no session cookie unchanged** —
    `POST /api/v1/reports` with a project token, and `ADMIN_TOKEN`/`READ_TOKEN`
    routes, behave exactly as before. Plus the mixed-credential case asserted

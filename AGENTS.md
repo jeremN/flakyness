@@ -186,10 +186,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `next()`, so a global mount would run ahead of every per-router limiter and
   starve it: a mid-reset session could then hammer any non-allowlisted path
   unthrottled, each request still paying the session DB lookup that already
-  runs globally in `sessionAuth` (`middleware/session.ts:45,49`). Guarded by
-  `password-change-coverage.test.ts` (all seven mounts, in the right order,
-  plus the allowlist checked against the live `/api/v1/auth` route table) and
-  by a 429 regression test. The gate must `return c.json(...)`, **not**
+  runs globally in `sessionAuth` (`middleware/session.ts:45,49`). The one
+  `/api/v1` endpoint that belongs to no router — `GET /api/v1`, the version
+  stub in `index.ts` — takes the gate as **route-level** middleware
+  (`app.get('/api/v1', passwordChangeGate(), handler)`), never
+  `app.use('/api/v1', ...)`, which would match the whole subtree from the root
+  app and starve all seven limiters. Guarded by
+  `password-change-coverage.test.ts`: named mounts in the right order, the
+  auth-route decision list, and — the assertion that actually catches a NEW
+  ungated router — a completeness check that derives the `/api/v1` surface
+  from `app.routes` and demands every route be covered by some mount. The
+  named-inventory assertions cannot do that job: a router with no gate
+  contributes nothing to the set they compare, so both sides stay equal and
+  they pass. `routes-auth-coverage.test.ts` cannot either — it filters on
+  `method === 'GET'`, so a write-only router is invisible to it. A 429
+  regression test covers the mount-order hazard. The gate must `return c.json(...)`, **not**
   throw `HTTPException` — the global error handler (`index.ts:44-51`) renders
   exceptions as `c.json({ error: err.message }, err.status)`, which drops the
   `code` field entirely. Layer 1 (short-circuits in `services/auth/access.ts`'s

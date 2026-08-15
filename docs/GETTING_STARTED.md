@@ -101,25 +101,81 @@ it. If you lose it, `POST /api/v1/admin/users/:userId/reset-password` issues
 a new one.
 
 Sign in with it against the API (`POST /api/v1/auth/login`), which returns a
-session cookie. The account is flagged `mustChangePassword: true`, and
-`POST /api/v1/auth/change-password` clears the flag.
+session cookie. The account is flagged `mustChangePassword: true`.
 
-Note what does **not** exist yet, so you are not left looking for it: nothing
-currently *forces* the change — an un-reset session can call the API freely —
-and there is no dashboard sign-in screen. Both arrive with the dashboard
-accounts work (plan 059); until then this account is usable only against the
-API directly.
+**Change the password before doing anything else — the flag is enforced.**
+Until you do, that session is refused on every `/api/v1` endpoint with:
+
+```
+403 { "error": "Password change required", "code": "password_change_required" }
+```
+
+Only the requests that let you finish the change are allowed through:
+`POST /api/v1/auth/login`, `POST /api/v1/auth/change-password`,
+`GET`/`HEAD /api/v1/auth/me`, and `POST /api/v1/auth/logout`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/change-password \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"currentPassword":"<the temporary one>","newPassword":"<a new, longer one>"}'
+```
+
+The new password must be at least 12 characters **and must differ from the
+temporary one** — reusing it is refused with
+`400 { "code": "password_reused" }`, because a temporary secret that survives
+the "rotation" is not rotated at all. On success the flag clears, every
+session for that user is revoked, and a fresh cookie is issued to you.
+
+What does **not** exist yet, so you are not left looking for it: there is no
+dashboard sign-in screen. That arrives with the dashboard accounts work (plan
+059); until then this account is usable only against the API directly.
 
 `ADMIN_TOKEN` remains valid as a break-glass machine credential; user
-accounts do not replace it. As of this plan, `isGlobalAdmin` is not yet an
-authorization input anywhere in the API — every admin route is gated solely
-by `ADMIN_TOKEN`, regardless of any user's `isGlobalAdmin` flag. Whether
-`ADMIN_TOKEN` keeps its superuser status once `isGlobalAdmin` starts
-enforcing access is a decision for plan 058, not this one. Full endpoint
+accounts do not replace it. It carries no session, so it is never subject to
+the password-change refusal — which is what makes it the recovery path if
+every human account on an instance is somehow stuck. Full endpoint
 reference: [User
 Provisioning](API.md#user-provisioning), [Team &
 Membership](API.md#team--membership), and [Authentication (user
 accounts)](API.md#authentication-user-accounts) in the API docs.
+
+### Upgrading an existing instance — read this before deploying
+
+The `mustChangePassword` flag has existed since user accounts shipped, but
+nothing enforced it. **This release enforces it, and it applies immediately to
+rows that already exist.** No migration runs, no flag flips: the session
+middleware reads `users.must_change_password` live on every request, so any
+account still carrying `true` starts being refused the moment the new API
+starts. That includes accounts provisioned months ago whose owner signed in
+with the temporary password and never changed it.
+
+This is not a lockout — every affected user can still recover on their own —
+but it will look like one to anyone who is not expecting it.
+
+**Who is affected:**
+
+```sql
+SELECT id, email, created_at FROM users WHERE must_change_password = true;
+```
+
+**What they should do:** sign in as usual with the password they already have
+and call `POST /api/v1/auth/change-password` (see above). Login stays
+available while the flag is set — being unable to log in is not a symptom of
+this change.
+
+**If someone no longer knows their password**, issue a fresh temporary one
+with `ADMIN_TOKEN`:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/admin/users/<userId>/reset-password \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Break-glass:** `ADMIN_TOKEN` presents no session cookie, so it is never
+subject to this refusal. Every admin endpoint stays reachable with it even if
+every human account on the instance is mid-reset — including the reset-password
+call above. Keep it available during the upgrade.
 
 ---
 

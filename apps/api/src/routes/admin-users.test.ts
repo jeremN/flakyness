@@ -3,6 +3,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import postgres from 'postgres';
 import { db, users, sessions } from '../db';
 import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
+import { clearMustChangePassword } from '../test-support/onboard-provisioned-user';
 import { SESSION_COOKIE } from '../services/auth/session';
 import { GLOBAL_ADMIN_MUTEX } from './admin-users';
 
@@ -438,6 +439,12 @@ describeAdmin('concurrent global-admin demote/delete race (fix round 2, plan 058
     const ambientIds = ambientAdmins.map((a) => a.id);
     const { body: a } = await createUserViaApi({ isGlobalAdmin: true });
     const { body: b } = await createUserViaApi({ isGlobalAdmin: true });
+    // This describe block is about admin-race behaviour, not the password
+    // lifecycle, and either throwaway admin may end up logging in below (the
+    // self-demote test does) — onboard both past the forced first-time
+    // change. See clearMustChangePassword's doc comment.
+    await clearMustChangePassword(a.user.id);
+    await clearMustChangePassword(b.user.id);
 
     if (ambientIds.length > 0) {
       await db.update(users).set({ isGlobalAdmin: false }).where(inArray(users.id, ambientIds));

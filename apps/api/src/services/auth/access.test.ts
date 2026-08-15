@@ -6,6 +6,9 @@ import {
   canAdministerTeams,
   canEnterAdminApi,
   scopesProjectList,
+  requiresPasswordChange,
+  PASSWORD_CHANGE_ALLOWLIST,
+  isPasswordChangeExempt,
   type Access,
   type ScopedProject,
 } from './access';
@@ -24,6 +27,7 @@ const base: Access = {
   teamIds: [],
   roleByTeam: {},
   projectId: null,
+  mustChangePassword: false,
 };
 
 const member = (teams: Record<string, 'team_admin' | 'member'>): Access => ({
@@ -250,5 +254,188 @@ describe('scopesProjectList', () => {
     ['anonymous', anonymousAccess()],
   ])('does not scope %s', (_label, access) => {
     expect(scopesProjectList(access as Access)).toBe(false);
+  });
+});
+
+// A mid-reset variant of each fixture the file already uses. Spreading the
+// existing ones rather than rebuilding them is deliberate: if the Access shape
+// changes again, these follow automatically instead of silently going stale.
+const midResetMember = (teams: Record<string, 'team_admin' | 'member'>): Access => ({
+  ...member(teams),
+  mustChangePassword: true,
+});
+const midResetGlobalAdmin: Access = { ...globalAdminUser, mustChangePassword: true };
+
+describe('requiresPasswordChange', () => {
+  it('is true only for a user session carrying the flag', () => {
+    expect(requiresPasswordChange(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(requiresPasswordChange(member({ [TEAM_A]: 'team_admin' }))).toBe(false);
+  });
+
+  it('is false for every non-user kind, even if the flag is somehow set', () => {
+    // Defence against a future edit that spreads a user Access into a token
+    // one. Tokens are never mid-reset; the kind check is what guarantees it.
+    for (const kind of ['project-token', 'read-token', 'admin-token', 'anonymous'] as const) {
+      expect(
+        requiresPasswordChange({ ...base, kind, mustChangePassword: true }),
+        `${kind} must never be treated as mid-reset`
+      ).toBe(false);
+    }
+  });
+
+  it('anonymousAccess() never carries the flag', () => {
+    expect(anonymousAccess().mustChangePassword).toBe(false);
+  });
+});
+
+describe('the four predicates refuse a mid-reset user', () => {
+  // Every case is asserted BOTH ways. A bare `toBe(false)` would also pass if
+  // the predicate refused for an unrelated reason — wrong team, wrong role —
+  // so each refusal is paired with the permit it would otherwise have been.
+  it('canReadProject', () => {
+    expect(canReadProject(member({ [TEAM_A]: 'member' }), projectInA)).toBe(true);
+    expect(canReadProject(midResetMember({ [TEAM_A]: 'member' }), projectInA)).toBe(false);
+  });
+
+  it('canWriteProject', () => {
+    expect(canWriteProject(member({ [TEAM_A]: 'team_admin' }), projectInA)).toBe(true);
+    expect(canWriteProject(midResetMember({ [TEAM_A]: 'team_admin' }), projectInA)).toBe(false);
+  });
+
+  it('canAdministerTeams', () => {
+    expect(canAdministerTeams(globalAdminUser)).toBe(true);
+    expect(canAdministerTeams(midResetGlobalAdmin)).toBe(false);
+  });
+
+  it('canEnterAdminApi — both branches, not just the global-admin one', () => {
+    expect(canEnterAdminApi(globalAdminUser)).toBe(true);
+    expect(canEnterAdminApi(midResetGlobalAdmin)).toBe(false);
+    // canEnterAdminApi's second branch (a plain team_admin) does NOT go through
+    // canAdministerTeams. Guarding only that function is the obvious half-fix,
+    // and this pair is what catches it.
+    expect(canEnterAdminApi(member({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(canEnterAdminApi(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(false);
+  });
+
+  it('scopesProjectList — a mid-reset caller is FILTERED, including a global admin', () => {
+    // The odd one out, and the one a reviewer found unguarded. scopesProjectList
+    // does not decide access; it decides whether canReadProject is consulted at
+    // all. So `false` is the UNSAFE answer here — the inverse of every
+    // predicate above — and "its safe direction is already true" is wrong for
+    // exactly one caller: the global admin, who took the unfiltered branch and
+    // so never reached canReadProject's mid-reset guard at all.
+    //
+    // Each case is paired with its non-mid-reset counterpart, so a predicate
+    // that returned true unconditionally would fail on the second half.
+    expect(scopesProjectList(globalAdminUser)).toBe(false);
+    expect(
+      scopesProjectList(midResetGlobalAdmin),
+      'a mid-reset GLOBAL ADMIN must be filtered — otherwise the list route hands them every project'
+    ).toBe(true);
+
+    // The already-filtered kinds must stay filtered. These passed before the
+    // fix too, which is precisely why the existing coverage missed the hole.
+    expect(scopesProjectList(midResetMember({ [TEAM_A]: 'team_admin' }))).toBe(true);
+    expect(scopesProjectList(member({ [TEAM_A]: 'team_admin' }))).toBe(true);
+
+    // Token kinds are never mid-reset (requiresPasswordChange gates on
+    // kind === 'user'), so the new first line must not perturb them.
+    expect(scopesProjectList(adminToken)).toBe(false);
+    expect(scopesProjectList(readToken)).toBe(false);
+    expect(scopesProjectList(anonymousAccess())).toBe(false);
+    expect(scopesProjectList(projectToken('p-a'))).toBe(true);
+  });
+
+  it('a filtered mid-reset global admin sees NO project — the end-to-end layer-1 outcome on a list', () => {
+    // scopesProjectList and canReadProject compose into the actual behaviour
+    // the list routes get. Asserting the composition, not just each half,
+    // is what pins the outcome as "empty list" rather than "some filter ran".
+    // `orphan` is in the set on purpose: it is global-admin-only, so a leak
+    // through the isGlobalAdmin branch would show up here first.
+    const rows = [projectInA, projectInB, orphan];
+    const visible = scopesProjectList(midResetGlobalAdmin)
+      ? rows.filter((p) => canReadProject(midResetGlobalAdmin, p))
+      : rows;
+    expect(visible).toEqual([]);
+
+    // The control: the same admin, not mid-reset, still sees everything. Without
+    // this the assertion above would also pass against a predicate that hid
+    // every project from every global admin.
+    const healthy = scopesProjectList(globalAdminUser)
+      ? rows.filter((p) => canReadProject(globalAdminUser, p))
+      : rows;
+    expect(healthy).toEqual(rows);
+  });
+
+  it('the check is ordered BEFORE the isGlobalAdmin shortcut', () => {
+    // canReadProject and canWriteProject both open with
+    // `if (access.isGlobalAdmin) return true`. Putting the new check after it
+    // leaves global admins — the highest-value accounts — entirely unenforced.
+    // `orphan` (teamId: null) is readable by global admins ONLY, so a true here
+    // can come from nothing but the isGlobalAdmin branch having run first.
+    expect(canReadProject(globalAdminUser, orphan)).toBe(true);
+    expect(canReadProject(midResetGlobalAdmin, orphan)).toBe(false);
+    expect(canWriteProject(globalAdminUser, orphan)).toBe(true);
+    expect(canWriteProject(midResetGlobalAdmin, orphan)).toBe(false);
+  });
+});
+
+describe('PASSWORD_CHANGE_ALLOWLIST', () => {
+  it('is exactly the recovery METHOD+PATH pairs, spelled in full', () => {
+    // Full absolute paths, not suffixes: the gate matches against c.req.path,
+    // which Hono reports as the whole request path even inside a sub-router.
+    // And METHOD+PATH pairs, not bare paths: a path-only entry silently
+    // extends to every method that path ever grows.
+    expect(
+      [...PASSWORD_CHANGE_ALLOWLIST].map((r) => `${r.method} ${r.path}`).sort()
+    ).toEqual([
+      'GET /api/v1/auth/me',
+      // HEAD is a REAL entry, not padding. Hono answers HEAD from a GET route
+      // (measured on 4.12.33: 200, and the middleware sees method 'HEAD'), so
+      // dropping this line 403s every HEAD probe of /me for a mid-reset caller.
+      'HEAD /api/v1/auth/me',
+      'POST /api/v1/auth/change-password',
+      'POST /api/v1/auth/login',
+      'POST /api/v1/auth/logout',
+    ]);
+  });
+
+  it('OPTIONS is deliberately absent — cors() answers preflight before the gate runs', () => {
+    // Pinned as a decision rather than an omission. index.ts:29 mounts cors()
+    // globally, ahead of every router, and it returns 204 itself; measured,
+    // the gate never runs for an OPTIONS request. An entry here would imply a
+    // protection this layer does not provide.
+    expect(PASSWORD_CHANGE_ALLOWLIST.some((r) => r.method === 'OPTIONS')).toBe(false);
+  });
+});
+
+describe('isPasswordChangeExempt', () => {
+  it('matches on the pair, so a new method on an exempt path is NOT inherited', () => {
+    expect(isPasswordChangeExempt('GET', '/api/v1/auth/me')).toBe(true);
+    expect(isPasswordChangeExempt('HEAD', '/api/v1/auth/me')).toBe(true);
+    // The whole reason pairs exist: a future DELETE /api/v1/auth/me must be a
+    // deliberate addition, never a silent consequence of /me being listed.
+    expect(isPasswordChangeExempt('DELETE', '/api/v1/auth/me')).toBe(false);
+    expect(isPasswordChangeExempt('POST', '/api/v1/auth/me')).toBe(false);
+  });
+
+  it('matches on the pair, so a method is not exempt across unrelated paths', () => {
+    expect(isPasswordChangeExempt('POST', '/api/v1/auth/login')).toBe(true);
+    expect(isPasswordChangeExempt('POST', '/api/v1/projects')).toBe(false);
+    // The cross product must not be exempt just because both halves appear
+    // somewhere in the list.
+    expect(isPasswordChangeExempt('GET', '/api/v1/auth/login')).toBe(false);
+  });
+
+  it('matches the FULL path, never a suffix', () => {
+    expect(isPasswordChangeExempt('GET', '/api/v1/projects/auth/me')).toBe(false);
+    expect(isPasswordChangeExempt('GET', '/auth/me')).toBe(false);
+  });
+
+  it('is case-sensitive on the method, matching what Hono reports', () => {
+    // c.req.method is always upper-case for the standard verbs, so a
+    // lower-case entry in the list would be dead. Pinned so nobody "helpfully"
+    // adds a toUpperCase() that masks a typo in the list itself.
+    expect(isPasswordChangeExempt('get', '/api/v1/auth/me')).toBe(false);
   });
 });

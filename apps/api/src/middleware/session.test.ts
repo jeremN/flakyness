@@ -161,6 +161,29 @@ describe('sessionAuth() - valid session', () => {
       },
     });
   });
+
+  it('propagates mustChangePassword: true — the value, not just the key', async () => {
+    // The sibling test above pins the SHAPE. This pins the VALUE: a projection
+    // that hard-coded `mustChangePassword: false` would keep that test green
+    // while failing BOTH enforcement layers open, everywhere, silently.
+    const row: FakeRow = {
+      sessionId: 'sess-mid-reset',
+      expiresAt: new Date(Date.now() + 60_000),
+      lastSeenAt: new Date(Date.now() - 1_000),
+      id: 'user-2',
+      email: 'grace@example.com',
+      displayName: 'Grace Hopper',
+      isGlobalAdmin: false,
+      mustChangePassword: true,
+    };
+    selectMock.mockReturnValue(chain(Promise.resolve([row])));
+
+    const app = buildApp();
+    const res = await app.request('/', { headers: { Cookie: `${SESSION_COOKIE}=live-token` } });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).user.mustChangePassword).toBe(true);
+  });
 });
 
 describe('sessionAuth() - expired session', () => {

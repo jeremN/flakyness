@@ -65,6 +65,7 @@ export async function resolveAccessValue(c: Context): Promise<Access> {
       teamIds: memberships.map((m) => m.teamId),
       roleByTeam,
       projectId: null,
+      mustChangePassword: sessionUser.mustChangePassword,
     };
   }
 

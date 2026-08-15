@@ -379,6 +379,164 @@ docker compose logs -f dashboard
 
 ## 🔐 Security & Performance
 
+### Password Change Enforcement (`mustChangePassword`)
+
+`users.must_change_password` (set on admin-provisioned accounts and on an
+admin-triggered reset) is a real authorization boundary, enforced in TWO
+independent layers — deliberately, since either one alone can be bypassed by
+a route that forgets to wire it in.
+
+**Layer 1 — predicate short-circuits**
+(`apps/api/src/services/auth/access.ts`). `requiresPasswordChange(access)`
+returns true only for `access.kind === 'user'` with `mustChangePassword`
+set — a token-kind `Access` (admin/read/project) can never trip it, because
+every token `Access` is built by spreading `anonymousAccess()`, which fixes
+`mustChangePassword: false`. It gates the top of all four access predicates:
+`canReadProject`, `canWriteProject`, `canAdministerTeams`,
+`canEnterAdminApi`. This is a **backstop**, not a second copy of the gate's
+error contract: a denied predicate just returns `false`, so the caller falls
+through to whatever that route already does on a normal denial. In practice
+that is **three** different outcomes, and none of them carries
+`code: 'password_change_required'`:
+
+1. `404` — the two project-scoped predicates feed `loadScopedProject`-based
+   routes, which turn `false` into the same existence-hiding response an
+   out-of-team read gets.
+2. A code-less `403` — `canAdministerTeams` / `canEnterAdminApi` feed routes
+   that answer with their own message (e.g. `adminOrGlobalAdminAuth` throws
+   `HTTPException(403, 'Admin access required')`, `admin-teams.ts` answers
+   `{ error: 'Global admin required' }`).
+3. `200` **with an empty list** — the two list routes
+   (`GET /api/v1/projects`, `GET /api/v1/admin/projects`) filter rather than
+   refuse, so layer 1 removes every row instead of producing a status.
+
+Outcome 3 runs through a **fifth** predicate the four above do not cover:
+`scopesProjectList`, which answers "should this list be filtered" rather than
+"is this allowed". Its polarity is therefore inverted — `true` is the safe
+answer, and `false` skips `canReadProject` altogether — so it checks
+`requiresPasswordChange` **first**, ahead of its `isGlobalAdmin` shortcut.
+Without that ordering a mid-reset **global admin** took the unfiltered branch,
+`canReadProject` was never consulted, and layer 1 provided no backstop at all
+on the list routes for the single highest-privilege caller on the instance
+(caught in final review; regression-tested in
+`services/auth/access.test.ts` and
+`routes/password-change-enforcement.test.ts`).
+
+The two layers are therefore **not** independent in the strong sense of
+"either alone produces the documented behaviour" — layer 2 alone produces the
+contract, layer 1 alone only guarantees that no data escapes. Do not read
+"two layers" as "the gate is optional".
+
+**Layer 2 — `passwordChangeGate()`**
+(`apps/api/src/middleware/password-change.ts`) is the layer that actually
+owns the uniform error contract. It is mounted `use('*')` inside **each of
+the seven** `/api/v1` routers — `reports`, `projects`, `tests`,
+`admin-users`, `admin-teams`, `admin`, `auth` — immediately **after** that
+router's rate limiter, never as one `app.use('*', ...)` on the root app.
+An **eighth** mount covers `GET /api/v1` itself (the version stub in
+`index.ts`, which belongs to no router): route-level middleware,
+`app.get('/api/v1', passwordChangeGate(), handler)` — deliberately NOT
+`app.use('/api/v1', ...)`, which on the root app would match the entire
+`/api/v1` subtree and run ahead of all seven per-router limiters.
+Mount position is load-bearing: a denial returns without calling `next()`,
+so a global mount ahead of the routers would run before every per-router
+limiter and starve it — a mid-reset session could then send unlimited
+requests to a non-allowlisted path and never see a `429`, even though each
+one still pays the session DB lookup that `sessionAuth()` (mounted globally,
+`middleware/session.ts:43-111`) already does on every request regardless of
+this feature. The gate itself does no DB work — it just reads
+`getSessionUser(c)`, which is a plain context lookup (`session.ts:113-115`),
+not a query. On a hit it returns a 403 body
+`{ "error": "Password change required", "code": "password_change_required" }`
+directly via `c.json(...)` — it must **not** throw `HTTPException`, because
+the global error handler (`index.ts:44-51`) renders exceptions as
+`c.json({ error: err.message }, err.status)` and drops `code` entirely,
+which would leave a caller with only free-text to key off (the "Keycloak
+`invalid_grant`" failure mode called out in the source comment).
+
+**The allowlist** (`PASSWORD_CHANGE_ALLOWLIST` in `access.ts`) is a list of
+explicit **METHOD + absolute PATH pairs**, never a prefix and never a bare
+path: `POST /api/v1/auth/change-password` (the remedy), `GET` **and `HEAD`**
+`/api/v1/auth/me` (so the dashboard can render the change-password page at
+all), `POST /api/v1/auth/logout` (never trap a user in a session they can't
+leave), `POST /api/v1/auth/login` (re-authenticating must not itself be
+blocked). The gate matches through `isPasswordChangeExempt(method, path)`.
+
+Three measured Hono 4.12.33 facts sit behind that shape, and each one is
+pinned by a test:
+
+- **Pairs, not paths.** A path-only exemption extends to every method that
+  path ever grows — a future `DELETE /api/v1/auth/me` would have been allowed
+  mid-reset with nobody deciding it, and the coverage guard (which deduped
+  paths into a `Set`) could not have seen it.
+- **`HEAD /api/v1/auth/me` is a real entry.** Hono answers HEAD from a GET
+  route: status 200, and the middleware observes `c.req.method === 'HEAD'`.
+  Delete that entry and every HEAD probe of `/me` starts 403-ing mid-reset.
+  The coverage guard expands each `GET` registration into `GET` + `HEAD` for
+  exactly this reason.
+- **`OPTIONS` is deliberately absent.** `cors()` is mounted globally at
+  `index.ts:29`, ahead of every router, and answers preflight itself with a
+  204 — the gate never runs for an OPTIONS request. If `cors()` is ever moved
+  below the routers, revisit this.
+
+`c.req.path` is the post-normalisation routing key: Hono percent-decodes and
+resolves `..` before **both** dispatch and `c.req.path`, so gate and router
+always read the same string and no traversal/encoding bypass exists. Never add
+normalisation of your own here — a second, differently-implemented pass is the
+only way to desynchronise them.
+
+Adding a route to `auth.ts` without listing it fails
+`password-change-coverage.test.ts`, which also asserts all eight gate mounts
+exist (the seven routers plus the route-level one on `GET /api/v1`), with the
+seven router mounts in the correct order relative to each router's rate limiter. That guard
+compares against the **union** of the allowlist and an explicit
+`AUTH_ROUTES_DELIBERATELY_REFUSED` list, so "this new auth route is *not* part
+of recovery" is a one-line answer — the guard must never be greenable only by
+widening the allowlist.
+
+**Scope: session callers only.** `ADMIN_TOKEN`, `READ_TOKEN`, and project
+tokens never carry the flag — confirmed by the gate's own first line
+(`getSessionUser(c)`; if there is no session cookie, `sessionUser` is `null`
+and the gate falls straight through to `next()` regardless of any bearer
+token on the request). A request presenting **both** a mid-reset session
+cookie and a bearer token is still refused: `resolveAccessValue`
+(`middleware/access.ts:50-73`) checks for a session first and returns
+immediately if one is found, so the `Authorization` header is never even
+inspected once a session exists — the session is strictly the more specific
+credential.
+
+Covered by `apps/api/src/password-change-coverage.test.ts` (mount presence
+and order, a runtime scan of Hono's route table rather than a source-text
+scan) and `apps/api/src/routes/password-change-enforcement.test.ts` (HTTP
+behaviour, including the 429-starvation regression).
+
+**The assertion that catches a NEW ungated router is the derived one.**
+`password-change-coverage.test.ts` builds a coverage predicate from the mount
+paths it finds and demands that every `/api/v1` route in `app.routes` be
+covered by one. Its named-inventory assertions cannot do this job: a router
+that mounts no gate contributes nothing to the compared set, so both sides
+stay equal and every one of them passes — verified empirically by appending a
+real ungated router to the live app. `routes-auth-coverage.test.ts` cannot
+either, since it filters on `method === 'GET'` and a write-only router never
+appears. Two traps live in that predicate and both are pinned by self-tests
+against synthetic route tables:
+
+- Exact-path gates go in a `Set`; only `/*` mounts become prefixes. Folding
+  `'/api/v1'` in as a prefix would match every path under `/api/v1` and turn
+  the whole guard into a no-op that passes forever.
+- A `/*` mount covers its own root as well as its subtree.
+  `<router>.use('*', …)` mounted at `/api/v1/projects` surfaces as
+  `ALL /api/v1/projects/*` and really does run for the bare
+  `/api/v1/projects` (the router's `get('/')`). Matching the `base/` prefix
+  alone would report six correctly-gated index routes as ungated; matching
+  `base` as a bare prefix would wrongly cover a sibling like
+  `/api/v1/administrate`. Follow-up #20 in
+`plans/README.md` already noted `access.ts` had four surviving mutants
+against its floor of 90 (two genuine coverage gaps, two verified
+equivalents) before this landed; this work adds four new branches to that
+same file, so if the nightly `Mutation` run drops below floor, #20's two
+named gaps are the cheapest place to look first.
+
 ### Rate Limits (Phase 6)
 
 | Endpoint | Limit | Key |

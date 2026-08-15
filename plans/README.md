@@ -302,7 +302,8 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 056 | Roadmap #5+#6 Phase A: identity core — `users` + `sessions` (migration `0011`), scrypt hashing, cookie server sessions with a sliding 7-day TTL, `POST /auth/login\|logout\|change-password` + `GET /auth/me`, per-IP auth rate limiter. **Zero authorization change**: no existing route reads the session yet | P2 | M | — (first of the A–D phase chain) | DONE (merged via PR #119, squash `23a6e9a`) |
 | 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | DONE (merged via PR #120, squash `e65c3dc`) |
 | 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | DONE (merged via PR #129, squash `3d09576`) |
-| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain |
+| 058b | `mustChangePassword` enforcement: `Access.mustChangePassword` + four predicate short-circuits (layer 1), `passwordChangeGate()` mounted per-router after each rate limiter with a four-path recovery allowlist (layer 2), uniform `403 password_change_required`. Settles the decision plan 058 deferred | P2 | S–M | **058 (hard)** | OPEN (this branch; implemented + reviewed, awaiting merge) |
+| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain; the mustChangePassword contract it consumes is settled by 058b |
 
 **Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
 timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
@@ -869,6 +870,83 @@ rationale. Items 5–7 remain unplanned.
     dissolves follow-up #6) and rewriting the guard — the alternative already recorded as
     deferred in plan 040, blocked on a Dependabot dry-run to de-risk `dependabot-core`
     #11135/#10203.
+24. **[OPEN — found 2026-08-14 by Codex reviewing the `mustChangePassword` spec]
+    `POST /admin/users/:userId/reset-password` delivers the temp password non-atomically.**
+    It writes the new hash and revokes every session (`routes/admin-users.ts:306-311`), then
+    returns the plaintext temp password **only** in the HTTP response body (`:314-317`). If that
+    response is lost — dropped connection, proxy timeout, closed tab — nobody holds the password
+    and the account is unreachable. Usually another global admin just resets again; but a
+    **sole** global admin resetting their own account locks the entire install out, and the
+    `GLOBAL_ADMIN_MUTEX` last-admin guard does not cover this route (it guards demote at
+    `:244,268` and delete at `:346,358` only). Pre-existing and orthogonal to enforcement, but
+    enforcing `mustChangePassword` widens the blast radius, so it is recorded rather than
+    silently carried. Fix shapes worth weighing: a last-global-admin guard on self-reset, or
+    generating the temp password before the write and making delivery idempotent.
+
+25. **[OPEN — found 2026-08-15 while fact-checking plan 058b's docs] Validation `400`s return
+    `@hono/zod-validator`'s internal shape, breaking the API's own `{error: string}` contract.**
+    All 14 `zValidator(...)` call sites (`routes/{admin,admin-users,admin-teams,auth,reports}.ts`)
+    are mounted **without** the optional third `hook` argument, so the library's default runs:
+    `if (!result.success) return c.json(result, 400)` (`@hono/zod-validator@0.9.0/dist/index.mjs:23`).
+    The body is therefore `{"success": false, "error": {"name": "ZodError", "message": "<JSON string>"}}`
+    — `error` is an **object**, and its `message` is a *second* JSON encoding of the issue array, so a
+    client must `JSON.parse` twice to read the issues. Every other error path in the API returns
+    `{"error": "<string>"}`. Verified empirically 2026-08-15 against the installed version, not
+    inferred from source. Two consequences: clients that branch on `typeof body.error === 'string'`
+    break on validation errors, and because this shape is the library's default rather than
+    something we assert, a `@hono/zod-validator` bump can change the public contract silently
+    with no test failing. `docs/API.md` now documents the divergence rather than hiding it.
+    Fix shape: one shared `hook` that maps `ZodError.issues` to
+    `{error: '<summary>', code: 'validation_failed', issues: [...]}`, applied at all 14 sites,
+    plus a route test pinning the shape so the next bump fails loudly. Note this is a **breaking
+    change** for any existing consumer already parsing the current shape.
+
+26. **[OPEN — found 2026-08-15 in the `mustChangePassword` final review] `reports.ts` mounts
+    `projectAuth()` BEFORE its rate limiter, so an unauthenticated flood costs a DB lookup per
+    request before anything throttles it.** `routes/reports.ts:63-65` is
+    `projectAuth()` → `reportRateLimit` → `passwordChangeGate()`. Every sibling router puts its
+    limiter first, and `rate-limit.test.ts` carries two regression guards ("admin router mounts
+    the limiter before auth", "mute route rate-limits before auth") for exactly this shape — the
+    ingest router was never covered by either. Two consequences: (a) an anonymous flood of
+    `POST /api/v1/reports` pays a project-token lookup per request before being throttled;
+    (b) the password-change contract on that one router is `401 Authorization header required`
+    rather than the uniform `403 password_change_required` (verified empirically 2026-08-15 —
+    `docs/API.md` now documents it as a known contract-shape divergence). **Not a security hole**:
+    `projectAuth` still demands a valid project token, so a mid-reset session can never ingest.
+    Pre-existing; the `mustChangePassword` branch did not introduce it and deliberately did not
+    fix it — reordering middleware on the highest-traffic route in the system is a behavioural
+    change that deserves its own change and its own testing. Fix shape: swap the two `use('*')`
+    lines, add the third "limiter before auth" regression test alongside the two that exist, and
+    re-check the ingest tests that currently assume a 401 arrives before any throttling.
+
+27. **[OPEN — found 2026-08-15 in the same review] `GET /api/v1` is outside every rate limiter.**
+    The version stub is mounted directly on the root app (`index.ts`), below `sessionAuth()` but
+    inside no router, so no `*RateLimit` covers it. It now carries `passwordChangeGate()` as
+    route-level middleware, but nothing throttles it. Impact is small — it returns two static
+    strings and touches neither the database nor any credential — but a request carrying an
+    `fk_session` cookie still pays `sessionAuth`'s sessions↔users SELECT, so it is an
+    unthrottled DB path in the same family as follow-up #26. Pre-existing. Fix shape: mount
+    `apiRateLimit` on that one route (`app.get('/api/v1', apiRateLimit, passwordChangeGate(),
+    handler)`) and add `['/api/v1', apiRateLimit]` to `EXPECTED_GATE_ORDER` in
+    `password-change-coverage.test.ts`, which was deliberately left out of that list precisely
+    because no limiter covers the path today.
+
+28. **[OPEN — found 2026-08-15 in the `mustChangePassword` fix-round re-review] The gate
+    coverage guard checks path SHAPE but not registration ORDER, and Hono dispatches by
+    order.** `buildGateCoverage()` in `password-change-coverage.test.ts` answers "is this path
+    under a gated wildcard mount?" — it cannot see that a router mounted UNDER an already-gated
+    prefix but registered BEFORE it never runs that prefix's middleware chain. Measured, not
+    theorised: a sub-router mounted at `/api/v1/admin/<x>` above `adminRouter` runs **zero**
+    `ALL /api/v1/admin/*` middleware, yet every one of its paths is reported covered; a real
+    write-only ungated router appended that way left the suite 30/30 green. This is not an
+    exotic mounting mistake — `index.ts` deliberately mounts the more specific admin routers
+    (`admin/users`, `admin/teams`) above `adminRouter`, so it is the pattern the codebase
+    teaches. **No live gap today**: all three admin routers mount their own gate. The exposure
+    is a future sibling that forgets one. Fix shape: make coverage order-aware — require the
+    covering gate's `app.routes` index to be LOWER than the covered route's, and extend
+    `buildGateCoverage`'s existing self-test suite with an out-of-order case. Deferred from the
+    merge deliberately rather than rushed; the guard's own comment now documents this limit
+    instead of claiming a completeness it does not have.
 
 ## Findings considered and rejected
 

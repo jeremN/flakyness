@@ -6,6 +6,7 @@ import { setCookie, deleteCookie } from 'hono/cookie';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
 import { authRateLimit, apiRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import {
   getSessionUser,
   issueSession,
@@ -46,6 +47,10 @@ const authRouter = new Hono<{ Variables: { requestId: string } }>();
 authRouter.use('*', apiRateLimit);
 authRouter.use('/login', authRateLimit);
 authRouter.use('/change-password', authRateLimit);
+// All four current auth routes are allowlisted, so this mount changes nothing
+// today. That is the point: it is what makes a FUTURE auth route refused by
+// default rather than silently exempt.
+authRouter.use('*', passwordChangeGate());
 
 const loginSchema = z.object({
   email: z.string().email().max(255),
@@ -249,6 +254,31 @@ authRouter.post('/change-password', zValidator('json', changePasswordSchema), as
   if (!user || !(await verifyPassword(currentPassword, user.passwordHash))) {
     logger.warn('Failed password change', { userId: sessionUser.id, requestId: c.get('requestId') });
     return c.json({ error: 'Current password is incorrect' }, 401);
+  }
+
+  // NIST SP 800-63B §6.1.1 — "Temporary secrets SHALL NOT be reused". This
+  // route is the ONLY exit from the mustChangePassword boundary, which makes
+  // it load-bearing: without this check a leaked temporary password (Slack
+  // thread, ticket, shoulder-surf) can be "rotated" to ITSELF. That call
+  // returns 200, clears the flag, revokes every session and mints a fresh one
+  // for whoever made it — so an attacker converts a leaked temp secret into
+  // silent standing access, and the legitimate user later signs in with the
+  // password they were given and is never prompted. Nothing looks wrong.
+  //
+  // Compared against the STORED HASH rather than the submitted plaintext.
+  // Equivalent today (currentPassword was just verified against that same
+  // hash), but it stays correct if this route ever grows a path that reaches
+  // here without that check — e.g. an admin-initiated or token-based reset
+  // that carries no currentPassword at all.
+  if (await verifyPassword(newPassword, user.passwordHash)) {
+    logger.warn('Rejected password change: new password matches the current one', {
+      userId: user.id,
+      requestId: c.get('requestId'),
+    });
+    return c.json(
+      { error: 'New password must differ from the current one', code: 'password_reused' },
+      400
+    );
   }
 
   await db

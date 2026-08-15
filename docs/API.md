@@ -213,7 +213,12 @@ forced first-login reset (`mustChangePassword`).
 }
 ```
 `newPassword` must be at least 12 characters — length only, no
-character-class rules (NIST SP 800-63B recommends length over composition).
+character-class rules (NIST SP 800-63B recommends length over composition) —
+and must **differ from the current password**. Reusing it is refused with
+`400 password_reused`; NIST SP 800-63B §6.1.1 requires that a temporary secret
+not be reused, and this route is the only exit from the
+`password_change_required` boundary, so "rotating" a leaked temporary password
+to itself would clear the flag while leaving the leaked secret live.
 
 **Response (200):**
 ```json
@@ -229,6 +234,7 @@ anything.
 | Status | Condition |
 |--------|-----------|
 | `400` | `newPassword` shorter than 12 characters, or a malformed body. |
+| `400` | `{ "error": "New password must differ from the current one", "code": "password_reused" }` — key off `code`, not the message. Nothing is changed: the flag stays set, the hash is untouched, and no session is revoked or re-issued. |
 | `401` | Not authenticated, or `{ "error": "Current password is incorrect" }`. |
 | `429` | Rate limited — 10 attempts/minute per IP. |
 
@@ -2202,13 +2208,39 @@ scrape_configs:
 
 ## Error Responses
 
-All errors follow this format:
+Most errors carry an `error` **string**:
 
 ```json
 {
   "error": "Error message description"
 }
 ```
+
+Some also carry a machine-readable `code` alongside it — see
+[Password change required](#password-change-required) below for the one
+that does today.
+
+**Request-validation failures are the exception.** Routes validated by
+`@hono/zod-validator` are mounted without a custom error hook, so a `400`
+from schema validation returns the validator's own shape, in which `error`
+is an **object**, not a string:
+
+```json
+{
+  "success": false,
+  "error": {
+    "name": "ZodError",
+    "message": "[\n  {\n    \"expected\": \"string\", ... }\n]"
+  }
+}
+```
+
+Note that `message` is itself a JSON-encoded string of the issue array —
+parse it a second time to read the individual issues. Do not write a
+client that assumes `typeof body.error === 'string'`; branch on the
+status code, or check `body.success === false`, to tell the two shapes
+apart. (This shape is the validator library's default and is not part of
+a stability guarantee — see follow-up #25 in `plans/README.md`.)
 
 ### Common Status Codes
 
@@ -2218,10 +2250,75 @@ All errors follow this format:
 | `201` | Created |
 | `400` | Bad Request - Invalid input |
 | `401` | Unauthorized - Missing or invalid token |
+| `403` | Forbidden - identified, but not permitted (see `code` where present) |
 | `404` | Not Found - Resource doesn't exist |
 | `409` | Conflict - Resource already exists |
 | `429` | Too Many Requests - Rate limit exceeded |
 | `500` | Internal Server Error |
+
+### Password change required
+
+A session belonging to a user whose password was admin-provisioned or
+admin-reset, and not yet rotated, is refused on every `/api/v1` endpoint —
+including `GET /api/v1` itself — except the recovery pairs listed below. On
+all but one router (see *Two places the response is not this exact 403*) the
+refusal is:
+
+```
+403 { "error": "Password change required", "code": "password_change_required" }
+```
+
+Key off `code`, never the message text. What remains available is a list of
+exact **method + path** pairs — enough to complete the change and to leave the
+session, and nothing else:
+
+| Method | Path |
+|---|---|
+| `POST` | `/api/v1/auth/login` |
+| `POST` | `/api/v1/auth/change-password` |
+| `GET` | `/api/v1/auth/me` |
+| `HEAD` | `/api/v1/auth/me` |
+| `POST` | `/api/v1/auth/logout` |
+
+The exemption is keyed to the **pair**, not the path: any other method on one
+of these paths is refused like any other endpoint. `OPTIONS` never reaches
+this check — CORS preflight is answered globally, before the gate.
+
+Completing the change requires a **genuinely new** password: submitting the
+current (temporary) one as `newPassword` is refused with `400 password_reused`
+and leaves the caller inside the boundary. See *Change Password* above.
+
+This applies to **session** callers only. `ADMIN_TOKEN`, `READ_TOKEN` and
+project tokens never carry the flag and are unaffected. A request presenting
+both a mid-reset session cookie *and* a bearer token is refused: session
+resolution short-circuits before the `Authorization` header is even
+inspected, so the request is classified as the mid-reset user regardless of
+what token rides along with it.
+
+#### Two places the response is not this exact 403
+
+Neither is a way past the boundary — both still refuse — but a client keying
+strictly off `code` should know they exist.
+
+**`POST /api/v1/reports` answers `401`, not `403`.** That router applies
+`projectAuth()` before its rate limiter and before this check, so a mid-reset
+session with no project token gets:
+
+```
+401 { "error": "Authorization header required" }
+```
+
+Ingest is not reachable with a session in any case — it requires a valid
+project token, which never carries the flag — so a mid-reset caller can never
+ingest. The contract *shape* differs on that one router; the authorization
+outcome does not.
+
+**A trailing slash turns a `404` into this `403`.** `/api/v1/auth/me/` is not
+a route (the canonical path has no trailing slash), so it normally answers
+`404`. For a mid-reset caller the check runs before the router's 404 and
+answers `403 password_change_required` instead. Every canonical path behaves
+exactly as documented; only the non-existent trailing-slash spelling differs,
+and it differs in the safe direction.
 
 ---
 
@@ -2230,15 +2327,23 @@ All errors follow this format:
 | Endpoint | Limit |
 |----------|-------|
 | `POST /api/v1/reports` | 60 requests/minute per token |
-| Admin endpoints (missing/invalid `ADMIN_TOKEN`) | 5 requests/minute per IP |
-| Admin endpoints (valid `ADMIN_TOKEN`) | not limited by the admin brute-force limiter |
+| Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no session) | 5 requests/minute per IP |
+| Admin endpoints (valid `ADMIN_TOKEN`, **or** any signed-in session) | not limited by the admin brute-force limiter |
+| Admin endpoints (session pending a forced password change) | 5 requests/minute per IP — **not** exempt, even with a valid `ADMIN_TOKEN` alongside |
 | `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password` | 10 requests/minute per IP |
 | All other endpoints (including `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`) | 100 requests/minute per IP |
 
 The admin limiter throttles only unauthenticated or wrong-token requests — its
-job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN` is
-exempt, so a server-mediated admin console (whose calls all originate from one
-IP) is not throttled for legitimate use.
+job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN`, or
+one carrying a signed-in session, is exempt, so a server-mediated admin console
+(whose calls all originate from one IP) is not throttled for legitimate use.
+
+The one session that is **not** exempt is one pending a forced password change:
+every such request is going to be refused with `403 password_change_required`
+anyway, so exempting it would leave an unthrottled path that still costs a
+session lookup per request. That holds even when a valid `ADMIN_TOKEN`
+accompanies the cookie — the session outranks the bearer for the refusal, so it
+outranks it for the exemption too.
 
 When rate limited, you'll receive:
 

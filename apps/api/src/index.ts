@@ -10,6 +10,7 @@ import 'dotenv/config';
 import { requestLogger, logError, logger } from './middleware/logger';
 import { extractBearerToken, tokensMatch } from './middleware/auth';
 import { sessionAuth } from './middleware/session';
+import { passwordChangeGate } from './middleware/password-change';
 import { closeDb } from './db';
 import { renderMetrics } from './metrics';
 
@@ -98,7 +99,20 @@ app.get('/metrics', async (c) => {
 app.use('*', sessionAuth());
 
 // API routes
-app.get('/api/v1', (c) => {
+//
+// The gate is mounted as ROUTE-LEVEL middleware, not `app.use('/api/v1', ...)`.
+// A path-scoped `app.use` here would match every path BELOW /api/v1 too, and
+// being registered on the root app it would run ahead of every per-router rate
+// limiter — starving all seven of them, which is exactly the hazard the
+// mount-point comment in middleware/password-change.ts describes. Route-level
+// middleware runs only for this one exact route.
+//
+// This route is deliberately absent from EXPECTED_GATE_ORDER in
+// password-change-coverage.test.ts: no rate limiter covers /api/v1 (it is
+// outside every router), so there is no order to assert. That is pre-existing
+// and unchanged by gating it — the endpoint returns two static strings and
+// touches neither the database nor any credential.
+app.get('/api/v1', passwordChangeGate(), (c) => {
   return c.json({
     name: 'Flackyness API',
     version: '0.0.1',

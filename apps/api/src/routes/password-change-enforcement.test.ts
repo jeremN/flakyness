@@ -1,0 +1,891 @@
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
+import { db, users, teams, projects } from '../db';
+import { SESSION_COOKIE } from '../services/auth/session';
+import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
+import { clearMustChangePassword } from '../test-support/onboard-provisioned-user';
+
+const hasDatabase = !!process.env.DATABASE_URL;
+const hasAdminToken = !!process.env.ADMIN_TOKEN;
+const describeEnforcement = hasDatabase && hasAdminToken ? describe : describe.skip;
+
+let app: typeof import('../index').default;
+beforeAll(async () => {
+  if (hasDatabase) app = (await import('../index')).default;
+});
+
+const adminHeaders = () => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${process.env.ADMIN_TOKEN}`,
+});
+
+/** A real Playwright report — one spec, one passing execution. */
+function minimalReport() {
+  const startTime = new Date().toISOString();
+  return {
+    config: { version: '1.40.0' },
+    suites: [
+      {
+        title: 'enforcement.spec.ts',
+        file: 'enforcement.spec.ts',
+        specs: [
+          {
+            title: 'a test',
+            ok: true,
+            tags: [],
+            location: { file: 'enforcement.spec.ts', line: 1, column: 1 },
+            tests: [
+              { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describeEnforcement('mustChangePassword enforcement', () => {
+  let seq = 0;
+
+  /**
+   * Provision a mid-reset user who is `team_admin` of a fresh team of their own.
+   *
+   * TWO deliberate choices here, both load-bearing:
+   *
+   * 1. NOT a global admin. `admin-users.test.ts` mutates "who is a global
+   *    admin" ambiently across the whole table and serialises itself on
+   *    GLOBAL_ADMIN_LOCK_KEY (test-support/advisory-lock.ts) precisely because
+   *    that state is shared across test FILES, which vitest runs in separate
+   *    processes. Minting global admins here would race it — flaky tests, in a
+   *    flaky-test tracker's own suite.
+   *
+   * 2. `team_admin`, not a plain member. It is the account that WOULD be
+   *    allowed on every surface below, so a refusal can only come from the
+   *    flag — a plain member would be refused anyway and the tests would prove
+   *    nothing. It also exercises canEnterAdminApi's SECOND branch, which is
+   *    the one a half-fix (guarding only canAdministerTeams) leaves open.
+   */
+  interface Fixture {
+    id: string;
+    teamId: string;
+    email: string;
+    password: string;
+  }
+
+  /**
+   * Rows this file created, drained by the afterEach below.
+   *
+   * A registry rather than a `cleanup(f)` call at the end of each test: an
+   * assertion that throws skips everything after it, so a trailing cleanup
+   * call is exactly the code that does NOT run on the failure paths — the one
+   * time the leak matters. Leaked teams and users persist in the shared
+   * database and add noise to every later file (the `admin/teams` list route's
+   * own tests get progressively slower). This repo's entire subject is flaky
+   * tests; leaving that to a happy-path call would be poor form.
+   *
+   * Registration happens as each row is created, not once at the end, so a
+   * fixture that throws HALFWAY through still has its earlier rows reclaimed.
+   */
+  const createdUserIds: string[] = [];
+  const createdTeamIds: string[] = [];
+  const createdProjectIds: string[] = [];
+
+  afterEach(async () => {
+    // splice() first: the ids are removed from the registry before the deletes
+    // run, so a delete that itself fails cannot make every subsequent test
+    // retry the same rows and fail in the same place.
+    const userIds = createdUserIds.splice(0);
+    const teamIds = createdTeamIds.splice(0);
+    const projectIds = createdProjectIds.splice(0);
+    // Projects first: `projects.team_id` is ON DELETE SET NULL, so dropping the
+    // team without dropping the project leaves an ORPHANED project behind —
+    // visible to global admins on every list route, forever.
+    if (projectIds.length) await db.delete(projects).where(inArray(projects.id, projectIds));
+    if (userIds.length) await db.delete(users).where(inArray(users.id, userIds));
+    if (teamIds.length) await db.delete(teams).where(inArray(teams.id, teamIds));
+  });
+
+  async function provisionMustChangeUser(): Promise<Fixture> {
+    const stamp = `${Date.now()}-${seq++}`;
+
+    const teamRes = await app.request('/api/v1/admin/teams', {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify({ name: `must-change-team-${stamp}` }),
+    });
+    expect(teamRes.status, 'creating the fixture team must succeed').toBe(201);
+    const teamId = (await teamRes.json()).team.id;
+    createdTeamIds.push(teamId);
+
+    const email = `must-change-${stamp}@example.com`;
+    const userRes = await app.request('/api/v1/admin/users', {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify({ email }),
+    });
+    expect(userRes.status, 'provisioning the fixture user must succeed').toBe(201);
+    const body = await userRes.json();
+    createdUserIds.push(body.user.id);
+    expect(body.user.mustChangePassword, 'a provisioned user starts mid-reset').toBe(true);
+
+    const memberRes = await app.request(`/api/v1/admin/teams/${teamId}/members`, {
+      method: 'POST',
+      headers: adminHeaders(),
+      body: JSON.stringify({ userId: body.user.id, role: 'team_admin' }),
+    });
+    expect(memberRes.status, 'the fixture user must end up a team_admin').toBe(201);
+
+    return { id: body.user.id, teamId, email, password: body.temporaryPassword };
+  }
+
+  async function loginAs(email: string, password: string): Promise<string> {
+    const res = await app.request('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    expect(res.status, 'login must succeed even while mid-reset').toBe(200);
+    const cookie = (res.headers.get('set-cookie') ?? '')
+      .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+    // Asserted, not `!`-asserted: a bare non-null assertion is a TYPE claim
+    // only. Without this, a login that stopped issuing cookies would send
+    // `fk_session=undefined`, every request below would be anonymous, and the
+    // 403 assertions would silently be testing nothing.
+    expect(cookie, 'login must issue a session cookie').toBeDefined();
+    return cookie!;
+  }
+
+  const withCookie = (cookie: string) => ({
+    Cookie: `${SESSION_COOKIE}=${cookie}`,
+    'Content-Type': 'application/json',
+  });
+
+  /**
+   * THE LOCKOUT TEST — the most important test in this feature.
+   *
+   * Getting this wrong bricks every provisioned account with no recovery short
+   * of hand-written SQL. Each route gets its own session because logout and
+   * change-password both invalidate the one they are given.
+   */
+  describe('the four allowlisted routes still work while mid-reset', () => {
+    it('GET /api/v1/auth/me returns the caller, flag included', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/me', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // The dashboard needs this field to know to redirect. A 200 that omits
+      // it is a passing test and a broken feature.
+      expect(body.user.mustChangePassword).toBe(true);
+    });
+
+    it('HEAD /api/v1/auth/me works too — the method the pair-matching fix could have locked out', async () => {
+      // Exemptions became METHOD+PATH pairs. Hono answers HEAD from a GET
+      // route (200, with the middleware observing method 'HEAD'), so HEAD /me
+      // is genuinely reachable in production and was exempt by accident under
+      // the old path-only match. It must stay exempt on purpose. This runs
+      // through the REAL app, not the isolated gate, so it also proves nothing
+      // between cors() and the auth router turns HEAD into something else.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/me', {
+        method: 'HEAD',
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status, 'a HEAD probe of /me must not 403 mid-reset').toBe(200);
+    });
+
+    it('DELETE /api/v1/auth/me is REFUSED — the path is allowlisted, the method is not', async () => {
+      // The other half of pair-matching, proven on the real app. There is no
+      // DELETE handler today, so an unenforced caller gets 404; a mid-reset
+      // caller gets the gate's 403 because the gate runs before the router's
+      // 404. That is the point: if such a route were ever added, it would be
+      // refused by default rather than inheriting /me's exemption silently.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/me', {
+        method: 'DELETE',
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({
+        error: 'Password change required',
+        code: 'password_change_required',
+      });
+    });
+
+    it('POST /api/v1/auth/logout ends the session', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('POST /api/v1/auth/login re-authenticates a caller who is ALREADY carrying a mid-reset session', async () => {
+      // Routing this through loginAs() would prove nothing: loginAs() sends no
+      // Cookie header at all, so getSessionUser() resolves null,
+      // passwordChangeGate() short-circuits on `!sessionUser?.mustChangePassword`
+      // BEFORE ever consulting the allowlist, and the request would sail
+      // through even if '/api/v1/auth/login' were deleted from
+      // PASSWORD_CHANGE_ALLOWLIST. The real scenario this allowlist entry
+      // protects is a browser that already holds a mid-reset session cookie
+      // and re-authenticates while still sending it — the gate must actually
+      // consult the allowlist and let this specific path through.
+      const u = await provisionMustChangeUser();
+      const existingSessionCookie = await loginAs(u.email, u.password);
+
+      const res = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: withCookie(existingSessionCookie),
+        body: JSON.stringify({ email: u.email, password: u.password }),
+      });
+      expect(res.status).toBe(200);
+      // A bare status check is weaker than it looks: it would pass even if the
+      // route silently stopped issuing sessions. The cookie is the actual
+      // proof this response re-authenticated the caller rather than just
+      // acknowledging the credentials.
+      const reissuedCookie = (res.headers.get('set-cookie') ?? '')
+        .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+      expect(reissuedCookie, 're-authenticating must issue a fresh session cookie').toBeDefined();
+
+    });
+
+    it('POST /api/v1/auth/change-password completes the remedy and clears the flag', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/change-password', {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify({ currentPassword: u.password, newPassword: 'a-perfectly-fine-new-password' }),
+      });
+      expect(res.status).toBe(200);
+
+      const [row] = await db.select({ f: users.mustChangePassword }).from(users).where(eq(users.id, u.id));
+      expect(row.f, 'the remedy must actually clear the flag').toBe(false);
+
+      // And the account is usable again — the escape hatch really opens. This
+      // is the assertion that would catch a change-password that cleared the
+      // DB flag but left the caller holding a session still resolving to the
+      // old value. (It does not: auth.ts:255-260 revokes every session and
+      // issues a fresh one in the same response.)
+      const after = await loginAs(u.email, 'a-perfectly-fine-new-password');
+      const me = await app.request('/api/v1/admin/projects', { headers: withCookie(after) });
+      expect(me.status, 'a rotated password restores full authority').toBe(200);
+
+    });
+
+    /**
+     * ...but the remedy must be a REAL rotation. NIST SP 800-63B §6.1.1,
+     * "Temporary secrets SHALL NOT be reused" — the design spec's own lead
+     * citation, and until this test the one rule the exit route permitted
+     * violating.
+     *
+     * This sits in the LOCKOUT describe on purpose: it is the boundary's exit
+     * door, and the two facts about a door are that it opens for the right
+     * person (the test above) and does not open for the wrong one (this one).
+     * Exercised against a genuinely provisioned temporary password rather than
+     * a hand-seeded row, because that is the exact secret the attack leaks.
+     */
+    it('POST /api/v1/auth/change-password REFUSES reusing the temporary password, leaving the caller mid-reset', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/auth/change-password', {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify({ currentPassword: u.password, newPassword: u.password }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'New password must differ from the current one',
+        code: 'password_reused',
+      });
+
+      const [row] = await db.select({ f: users.mustChangePassword }).from(users).where(eq(users.id, u.id));
+      expect(row.f, 'a refused rotation must leave the account inside the boundary').toBe(true);
+
+      // Still refused everywhere, i.e. the boundary is genuinely still up —
+      // not merely a flag that reads true while the gate has moved on.
+      const after = await app.request('/api/v1/admin/projects', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(after.status).toBe(403);
+      expect((await after.json()).code).toBe('password_change_required');
+
+    });
+
+    /**
+     * CORS PREFLIGHT IS A FIFTH ESCAPE REQUIREMENT, and it is invisible in the
+     * allowlist because it is not this layer's to grant.
+     *
+     * The allowlist deliberately carries no OPTIONS entry: `cors()` is mounted
+     * globally at index.ts, ahead of every router, and answers preflight itself
+     * with a 204 before the gate ever runs. That ordering is the ONLY reason
+     * omitting OPTIONS is safe — and nothing pinned it against the REAL app.
+     * middleware/password-change.test.ts builds its own bare Hono, so it cannot
+     * see a change to index.ts's mount order.
+     *
+     * If cors() were ever moved below the routers, a browser preflight from a
+     * mid-reset user would reach the gate, get a 403, and the change-password
+     * page could never POST — a total lockout for every browser client, with
+     * CI green. That is why this assertion runs against the real exported app.
+     */
+    it('preflight to a refused path is answered by cors(), not by the gate', async () => {
+      const u = await provisionMustChangeUser();
+      const cookie = await loginAs(u.email, u.password);
+
+      const res = await app.request('/api/v1/projects', {
+        method: 'OPTIONS',
+        headers: {
+          ...withCookie(cookie),
+          Origin: 'http://localhost:5173',
+          'Access-Control-Request-Method': 'POST',
+        },
+      });
+
+      expect(
+        res.status,
+        'preflight for a mid-reset session must NOT be refused by the gate — ' +
+          'cors() must still be mounted ahead of the routers in index.ts. A 403 ' +
+          'here means every browser client is locked out of password recovery.'
+      ).not.toBe(403);
+    });
+  });
+
+  /**
+   * CONTRACT UNIFORMITY — the regression test for the defect the spec review
+   * found. Without the gate, these surfaces answer a mid-reset team_admin
+   * three DIFFERENT ways: 200-with-an-empty-list (the project list filters
+   * rather than refuses), 404 (tests.ts checks readability first, and layer 1
+   * routes into plan 058's existence-hiding path), and a code-less 403
+   * ("Admin access required"). All must now be the same 403 with the same code.
+   *
+   * Every assertion below compares the whole BODY, not just the status. Status
+   * alone is too weak here: two of these surfaces already 403 for unrelated
+   * reasons, so `expect(res.status).toBe(403)` would pass against a completely
+   * unmounted gate.
+   */
+  describe('every refused surface emits the same contract', () => {
+    const REFUSED_403 = { error: 'Password change required', code: 'password_change_required' };
+
+    it('read: GET /api/v1/projects — refused, not merely filtered to empty', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/projects', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(REFUSED_403);
+    });
+
+    it('write: PATCH /api/v1/tests/flaky/:id', async () => {
+      const u = await provisionMustChangeUser();
+      // A nonexistent id on purpose: the gate must fire BEFORE the row lookup.
+      // If it ran after, this would 404 and the test would red — which is
+      // exactly the ordering guarantee worth pinning.
+      const res = await app.request('/api/v1/tests/flaky/00000000-0000-4000-8000-000000000000', {
+        method: 'PATCH',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(REFUSED_403);
+    });
+
+    it('admin API: GET /api/v1/admin/projects', async () => {
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/admin/projects', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      // Not just "a 403". `Admin access required` is also a 403 and would be
+      // WRONG here — it names the wrong reason and carries no code.
+      expect(await res.json()).toEqual(REFUSED_403);
+    });
+
+    it('root: GET /api/v1 — mounted on the app itself, not on any router', async () => {
+      // The one /api/v1 endpoint that belongs to no router, and so was missed
+      // when the gate was mounted seven times. Only public version metadata,
+      // so the impact was low — but the documented contract is "every endpoint
+      // except the recovery pairs", and a stated boundary with an unstated
+      // hole in it is the thing that gets trusted and then quietly relied on.
+      //
+      // Gated with ROUTE-LEVEL middleware (app.get(path, gate, handler)), not
+      // app.use('/api/v1', gate): a path-scoped use() on the root app would
+      // also match everything below /api/v1 and run ahead of all seven
+      // per-router limiters, starving them — the hazard the enforcement test
+      // above pins from the other direction.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(REFUSED_403);
+    });
+
+    it('GET /api/v1 still answers everyone else — the gate is not a blanket refusal', async () => {
+      // The paired positive. Without it, the assertion above would also pass
+      // against a route that had simply been broken.
+      const res = await app.request('/api/v1');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ name: 'Flackyness API', version: '0.0.1' });
+    });
+
+    it('admin user CRUD: GET /api/v1/admin/users — a SEPARATE router mount', async () => {
+      // adminUsersRouter is mounted independently of adminRouter and carries
+      // its own use('*') stack, so the case above does not cover it.
+      //
+      // Be explicit about what this does and does not prove: a team_admin is
+      // refused here anyway (canAdministerTeams is global-admin only), so the
+      // STATUS proves nothing. The body is the whole assertion — without the
+      // gate this returns `{ error: 'Team administration requires a global
+      // admin' }` or similar, never a `code`.
+      const u = await provisionMustChangeUser();
+      const res = await app.request('/api/v1/admin/users', {
+        headers: withCookie(await loginAs(u.email, u.password)),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(REFUSED_403);
+    });
+  });
+
+  /**
+   * The two places the response is NOT the uniform 403.
+   *
+   * Both are documented in docs/API.md under "Two places the response is not
+   * this exact 403". These tests exist so that documentation cannot quietly
+   * become false — not because either shape is desirable.
+   */
+  describe('documented contract-shape divergences', () => {
+    it('POST /api/v1/reports answers 401, not 403 — projectAuth runs first', async () => {
+      // reports.ts mounts projectAuth() BEFORE its limiter and the gate
+      // (routes/reports.ts:63-65), so a mid-reset session with no project
+      // token is rejected for missing credentials before the gate is reached.
+      //
+      // NOT a security hole: projectAuth still demands a valid project token,
+      // which never carries the flag, so a mid-reset session can never ingest.
+      // The authorization outcome is identical; only the contract shape
+      // differs, on this one router.
+      //
+      // Left unreordered deliberately — that is the highest-traffic route in
+      // the system and moving its middleware deserves its own change. Filed as
+      // follow-up #26 in plans/README.md. IF YOU FIX #26, this test must be
+      // updated to expect the uniform 403 — do not delete it, and do not
+      // "fix" it by reordering reports.ts as a drive-by.
+      const u = await provisionMustChangeUser();
+      const res = await app.request(`/api/v1/reports?branch=main&commit=${'a'.repeat(40)}`, {
+        method: 'POST',
+        headers: withCookie(await loginAs(u.email, u.password)),
+        body: JSON.stringify(minimalReport()),
+      });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Authorization header required' });
+    });
+
+    it('a trailing slash yields 403 where everyone else gets 404', async () => {
+      // The gate runs before the router's 404, so a non-existent spelling of
+      // an otherwise-exempt path is refused rather than reported missing.
+      // Harmless — every canonical path behaves as documented, and this
+      // differs in the SAFE direction — but it is observable, so it is pinned
+      // and documented rather than left as a surprise.
+      const u = await provisionMustChangeUser();
+      const cookie = await loginAs(u.email, u.password);
+
+      const midReset = await app.request('/api/v1/auth/me/', { headers: withCookie(cookie) });
+      expect(midReset.status).toBe(403);
+      expect((await midReset.json()).code).toBe('password_change_required');
+
+      // The control: the same URL is a plain 404 for anyone else. Without it
+      // this would pass even if /api/v1/auth/me/ had become a real route.
+      const anonymous = await app.request('/api/v1/auth/me/');
+      expect(anonymous.status, 'the trailing-slash path is not a real route').toBe(404);
+    });
+  });
+
+  /**
+   * The zero-behaviour-change promise. An install with no user accounts must
+   * not notice this feature at all.
+   */
+  describe('machine credentials presenting no session cookie are unaffected', () => {
+    it('ADMIN_TOKEN still reaches the admin API', async () => {
+      const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
+      expect(res.status).toBe(200);
+    });
+
+    it('a mid-reset user existing on the instance does not affect a token caller', async () => {
+      // The flag lives on a row, not on the request. This pins that the gate
+      // reads the CALLER's session and nothing else. The fixture is created
+      // for its side effect — a mid-reset row existing on the instance — and
+      // the afterEach registry reclaims it, so nothing is bound here.
+      await provisionMustChangeUser();
+      const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
+      expect(res.status).toBe(200);
+    });
+
+    /**
+     * ADMIN_TOKEN is the easy case — it presents a bearer the gate ignores.
+     * The other two machine credentials each reach the API through a DIFFERENT
+     * code path and neither was covered:
+     *
+     *   project token  classified by projectAuth on the ingest hot path
+     *   READ_TOKEN     classified by readAuth on every read route
+     *
+     * Both build their `Access` by spreading `anonymousAccess()`, which fixes
+     * `mustChangePassword: false`, so neither can ever be mid-reset. That is
+     * the invariant the whole "zero behaviour change for token-only installs"
+     * promise rests on, and asserting it on ADMIN_TOKEN alone did not test it.
+     */
+    it('a project token still ingests while a mid-reset user exists on the instance', async () => {
+      const stamp = `${Date.now()}-${seq++}`;
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ingest-team-${stamp}` }),
+      });
+      expect(teamRes.status).toBe(201);
+      const teamId = (await teamRes.json()).team.id;
+      createdTeamIds.push(teamId);
+
+      const projectRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ingest-project-${stamp}`, teamId }),
+      });
+      expect(projectRes.status).toBe(201);
+      const project = await projectRes.json();
+      createdProjectIds.push(project.project.id);
+
+      // The mid-reset user is created AFTER the project on purpose: the point
+      // is that its mere existence on the instance changes nothing for a
+      // credential that carries no session.
+      await provisionMustChangeUser();
+
+      const res = await app.request(`/api/v1/reports?branch=main&commit=${'a'.repeat(40)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${project.token}` },
+        body: JSON.stringify(minimalReport()),
+      });
+      expect(res.status, 'ingest must be completely unaffected by the flag').toBe(201);
+    });
+
+    it('a READ_TOKEN caller still reads while a mid-reset user exists on the instance', async () => {
+      const prev = process.env.READ_TOKEN;
+      process.env.READ_TOKEN = `read-secret-${Date.now()}`;
+      try {
+        await provisionMustChangeUser();
+        const res = await app.request('/api/v1/projects', {
+          headers: { Authorization: `Bearer ${process.env.READ_TOKEN}` },
+        });
+        expect(res.status, 'a READ_TOKEN read must not be refused').toBe(200);
+        // Not merely "not 403": a READ_TOKEN caller is unscoped, so it must
+        // still see the instance's projects rather than the empty list a
+        // mid-reset caller would get. This is the assertion that would catch
+        // requiresPasswordChange leaking into a non-user kind.
+        expect(Array.isArray((await res.json()).projects)).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.READ_TOKEN;
+        else process.env.READ_TOKEN = prev;
+      }
+    });
+  });
+
+  it('a mid-reset cookie sent ALONGSIDE a valid ADMIN_TOKEN is still refused', async () => {
+    // Session outranks bearer (middleware/access.ts:50-70), a deliberate plan
+    // 058 decision this feature does not reverse. Documented here as intended
+    // behaviour so plan 059 does not discover it as a surprise: the dashboard
+    // holds ADMIN_TOKEN server-side and will gain a session cookie.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+    const res = await app.request('/api/v1/admin/projects', {
+      headers: { ...adminHeaders(), Cookie: `${SESSION_COOKIE}=${cookie}` },
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('password_change_required');
+  });
+
+  it('layer 1 alone still refuses when the gate is mocked out', async () => {
+    // Each layer must be proven to bite ALONE, or redundancy masks breakage:
+    // the gate always fires first, so layer 1 could be entirely broken and
+    // every other test in this file would still pass.
+    //
+    // Only THIS direction needs its own test. The reverse — "layer 2 alone
+    // bites" — is what every test above already proves, because layer 1 is
+    // never reached while the gate is mounted.
+    //
+    // The surface is the admin API on purpose. A read would be a bad choice:
+    // GET /api/v1/projects is a LIST route, so layer 1 refusing yields an empty
+    // 200, not a refusal — a test asserting 404 there would fail for the wrong
+    // reason, and one asserting "not 200" would pass with both layers broken.
+    // canEnterAdminApi, by contrast, is a clean permit/deny.
+    //
+    // Note the contract differs by design: this is `403 Admin access required`
+    // with NO code — layer 1 refuses, layer 2 owns the contract. Asserting the
+    // exact body is what proves the mock really took effect rather than the
+    // real gate having answered.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    vi.doMock('../middleware/password-change', () => ({
+      passwordChangeGate: () =>
+        Object.assign(async (_c: unknown, next: () => Promise<void>) => await next(), {
+          isPasswordChangeGate: true as const,
+        }),
+    }));
+    try {
+      const { Hono } = await import('hono');
+      const { HTTPException } = await import('hono/http-exception');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: adminRouter } = await import('./admin');
+
+      const ungated = new Hono();
+      // Mirrors index.ts's app.onError: outside the full app, an uncaught
+      // HTTPException's default getResponse() is plain text, not JSON — this
+      // is scaffolding to reproduce the real production contract, not a
+      // relaxation of the assertion below.
+      ungated.onError((err, c) => {
+        if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+        throw err;
+      });
+      ungated.use('*', sessionAuth());
+      ungated.route('/api/v1/admin', adminRouter);
+
+      const res = await ungated.request('/api/v1/admin/projects', {
+        headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+      });
+      expect(res.status, 'with the gate neutralised, layer 1 must still refuse').toBe(403);
+      expect(await res.json()).toEqual({ error: 'Admin access required' });
+    } finally {
+      vi.doUnmock('../middleware/password-change');
+      vi.resetModules();
+    }
+  });
+
+  /**
+   * The other half of "layer 1 alone still bites" — and the branch the test
+   * above structurally cannot reach.
+   *
+   * `GET /api/v1/projects` filters rather than refuses, and whether it filters
+   * at all is decided by `scopesProjectList`. That predicate used to open with
+   * `if (access.isGlobalAdmin) return false`, i.e. "do not filter" — so with
+   * the gate absent, a mid-reset GLOBAL ADMIN took the unfiltered branch,
+   * `canReadProject`'s mid-reset guard was never called, and layer 1 handed
+   * them EVERY project on the instance. The existing layer-1 test uses a
+   * `team_admin`, whose filtered branch already yielded `[]`, so it passed
+   * while never touching the broken branch.
+   *
+   * Both requests below go through the SAME ungated app with the SAME cookie;
+   * the only thing that changes between them is the database flag. That is
+   * what makes the empty list attributable to the flag rather than to the
+   * instance having no projects, to readAuth, or to the mock.
+   */
+  it('layer 1 alone empties the project LIST for a mid-reset GLOBAL ADMIN', async () => {
+    // MANDATORY: the lock spans the whole body, creation through final
+    // assertion — see the identical note in access-scope.test.ts:505-512.
+    // admin-users.test.ts's withSoleGlobalAdmin() demotes every ambient global
+    // admin and asserts its target is the sole one; releasing early would let
+    // a concurrent cycle flip this admin back to false mid-test, and the
+    // control request below would then see an empty list for the WRONG reason
+    // and go green while proving nothing.
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const stamp = `${Date.now()}-${seq++}`;
+
+      // A project must exist, or "sees an empty list" is true of every
+      // possible implementation and the assertion is vacuous.
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ga-list-team-${stamp}` }),
+      });
+      expect(teamRes.status).toBe(201);
+      const teamId = (await teamRes.json()).team.id;
+      createdTeamIds.push(teamId);
+
+      const projectRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ga-list-project-${stamp}`, teamId }),
+      });
+      expect(projectRes.status).toBe(201);
+      const projectId = (await projectRes.json()).project.id;
+      createdProjectIds.push(projectId);
+
+      const userRes = await app.request('/api/v1/admin/users', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ email: `ga-list-${stamp}@example.com`, isGlobalAdmin: true }),
+      });
+      expect(userRes.status).toBe(201);
+      const created = await userRes.json();
+      const userId = created.user.id;
+      // Registered BEFORE the assertions below, so a fixture that comes back
+      // wrong still gets its row reclaimed instead of leaking a global admin —
+      // the single worst row to leave behind in a shared database, since
+      // admin-users.test.ts's withSoleGlobalAdmin asserts on exactly that set.
+      createdUserIds.push(userId);
+      expect(created.user.isGlobalAdmin, 'the fixture must really be a global admin').toBe(true);
+      expect(created.user.mustChangePassword, 'and must start mid-reset').toBe(true);
+
+      const cookie = await loginAs(created.user.email, created.temporaryPassword);
+
+      vi.resetModules();
+      vi.doMock('../middleware/password-change', () => ({
+        passwordChangeGate: () =>
+          Object.assign(async (_c: unknown, next: () => Promise<void>) => await next(), {
+            isPasswordChangeGate: true as const,
+          }),
+      }));
+      try {
+        const { Hono } = await import('hono');
+        const { sessionAuth } = await import('../middleware/session');
+        const { default: projectsRouter } = await import('./projects');
+
+        const ungated = new Hono();
+        ungated.use('*', sessionAuth());
+        ungated.route('/api/v1/projects', projectsRouter);
+
+        const listAsCaller = async () => {
+          const res = await ungated.request('/api/v1/projects', {
+            headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+          });
+          // 200, not 403/404: this is the third layer-1 outcome, and pinning
+          // the status is what documents that layer 1 does NOT produce the
+          // uniform refusal contract here — only the gate does.
+          expect(res.status, 'the list route filters, it never refuses').toBe(200);
+          return (await res.json()).projects as Array<{ id: string }>;
+        };
+
+        expect(
+          await listAsCaller(),
+          'with the gate neutralised, a mid-reset global admin must see NO project'
+        ).toEqual([]);
+
+        // Same app, same cookie, flag cleared — the control. Without it the
+        // assertion above would also pass against a route that returned []
+        // to everyone, or against a fixture whose project was never created.
+        await clearMustChangePassword(userId);
+        const healthy = await listAsCaller();
+        expect(
+          healthy.map((p) => p.id),
+          'once rotated, the very same global admin sees the project again'
+        ).toContain(projectId);
+      } finally {
+        vi.doUnmock('../middleware/password-change');
+        vi.resetModules();
+        // Deleted HERE, still holding the lock, even though the afterEach
+        // registry would also reclaim these rows. Belt and braces, and the
+        // belt is the one that matters: this is the only fixture in the file
+        // that is a GLOBAL ADMIN, and the afterEach runs after the lock is
+        // released. Dropping the row inside the critical section keeps the
+        // window in which an extra global admin exists exactly as narrow as it
+        // was before the registry was introduced. The registry then no-ops on
+        // the happy path (DELETE ... WHERE id IN (already-gone) affects zero
+        // rows) and still covers the throwing paths, which is its whole job.
+        await db.delete(projects).where(eq(projects.id, projectId));
+        await db.delete(users).where(eq(users.id, userId));
+        await db.delete(teams).where(eq(teams.id, teamId));
+      }
+    });
+  });
+
+  it('a refused mid-reset caller is still rate-limited', async () => {
+    // The regression test for the mount-order defect. Mounting the gate
+    // globally (app.use('*')) rather than per-router runs it before every
+    // limiter; because a denial returns without next(), the limiter never
+    // counts the request and this test never sees a 429 — an unthrottled path
+    // that still pays a session DB lookup per request. Same hazard, same
+    // shape, as rate-limit.test.ts:341-361, which is also where this idiom
+    // (resetModules, enable the flag, build a MINIMAL app) comes from.
+    //
+    // Provision and log in FIRST, on the outer app: the limiter is a module
+    // singleton, and doing this after enabling it would spend real slots.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    const { __setRateLimitEnabled, API_RATE_LIMIT } = await import('../middleware/rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const { Hono } = await import('hono');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: projectsRouter } = await import('./projects');
+
+      const limited = new Hono();
+      limited.use('*', sessionAuth());
+      limited.route('/api/v1/projects', projectsRouter);
+
+      const codes: number[] = [];
+      for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
+        const res = await limited.request('/api/v1/projects', {
+          headers: { Cookie: `${SESSION_COOKIE}=${cookie}` },
+        });
+        codes.push(res.status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early requests really did reach the gate, proving the 429s
+      // came from exhausting the limiter rather than from everything being
+      // rejected outright — the assertion that fails under the global mount.
+      expect(codes[0]).toBe(403);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+
+  /**
+   * The SAME hazard as the test above, reached through a different door — and
+   * the door mount-ordering does not cover.
+   *
+   * The admin routers use `adminRateLimit`, whose skip predicate
+   * (`hasAdminStanding`) exempts any signed-in session. Ordering guarantees
+   * the limiter RUNS before the gate; it says nothing about the limiter then
+   * choosing to skip. So a mid-reset session hitting /api/v1/admin/* was
+   * exempted by the limiter, refused by the gate, and could repeat that
+   * forever — unthrottled, paying sessionAuth's session↔users SELECT every
+   * time. The projectsRouter test above cannot catch this: `apiRateLimit` has
+   * no skip predicate at all.
+   *
+   * Both variants matter. Session-only is the dashboard's shape; session PLUS
+   * a valid ADMIN_TOKEN is plan 059's shape, and since the gate refuses on the
+   * session regardless of the bearer, the bearer must not buy an exemption the
+   * gate will not honour.
+   */
+  it.each([
+    ['cookie alone', false],
+    ['cookie PLUS a valid ADMIN_TOKEN', true],
+  ])('a refused mid-reset caller on the ADMIN router is still rate-limited — %s', async (_label, withBearer) => {
+    // Provision and log in FIRST, on the outer app, before the limiter is
+    // enabled — it is a module singleton and this would otherwise spend slots.
+    const u = await provisionMustChangeUser();
+    const cookie = await loginAs(u.email, u.password);
+
+    vi.resetModules();
+    const { __setRateLimitEnabled, ADMIN_RATE_LIMIT } = await import('../middleware/rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const { Hono } = await import('hono');
+      const { HTTPException } = await import('hono/http-exception');
+      const { sessionAuth } = await import('../middleware/session');
+      const { default: adminRouter } = await import('./admin');
+
+      const limited = new Hono();
+      limited.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      limited.use('*', sessionAuth());
+      limited.route('/api/v1/admin', adminRouter);
+
+      const headers: Record<string, string> = { Cookie: `${SESSION_COOKIE}=${cookie}` };
+      if (withBearer) headers.Authorization = `Bearer ${process.env.ADMIN_TOKEN}`;
+
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 3; i++) {
+        codes.push((await limited.request('/api/v1/admin/projects', { headers })).status);
+      }
+      expect(codes).toContain(429);
+      // Sanity: the early requests reached the gate, so the 429s come from
+      // exhausting the bucket rather than everything being refused outright.
+      expect(codes[0]).toBe(403);
+    } finally {
+      __setRateLimitEnabled(false);
+      vi.resetModules();
+    }
+  });
+});

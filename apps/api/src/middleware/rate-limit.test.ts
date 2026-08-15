@@ -579,6 +579,117 @@ describe('hasAdminStanding (admin limiter exemption predicate — bearer OR sess
     process.env.ADMIN_TOKEN = 'the-admin-token';
     expect(hasAdminStanding(ctx({ authHeader: 'Bearer wrong-token' }))).toBe(false);
   });
+
+  // The exemption above is "any session". A session pending a forced password
+  // change is the one session that must NOT buy it: passwordChangeGate is
+  // about to 403 that request whatever it asked for, and a request the gate
+  // will refuse must never escape throttling. Mount order guarantees the
+  // limiter RUNS; it does nothing about a skip predicate that then waves the
+  // request through.
+  const midResetSession = {
+    id: 'u1',
+    email: 'mid-reset@example.test',
+    displayName: null,
+    isGlobalAdmin: true,
+    mustChangePassword: true,
+    sessionId: 's1',
+  };
+
+  it('is FALSE for a mid-reset session — the gate will refuse it, so it stays throttled', async () => {
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasAdminStanding(ctx({ sessionUser: midResetSession }))).toBe(false);
+    // Paired with the same session minus the flag, so this cannot pass for an
+    // unrelated reason (e.g. the fixture shape being rejected outright).
+    expect(
+      hasAdminStanding(ctx({ sessionUser: { ...midResetSession, mustChangePassword: false } }))
+    ).toBe(true);
+  });
+
+  it('is FALSE for a mid-reset session even alongside a VALID ADMIN_TOKEN', async () => {
+    // Order matters: the flag is checked before the bearer. Session resolution
+    // outranks the bearer (middleware/access.ts:50-70, plan 058), so the gate
+    // refuses this request regardless of the token riding along — which means
+    // the token must not purchase an exemption the gate will not honour.
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(
+      hasAdminStanding(ctx({ authHeader: 'Bearer the-admin-token', sessionUser: midResetSession }))
+    ).toBe(false);
+  });
+
+  it('still exempts a valid ADMIN_TOKEN with NO session — plan 055 console path, unregressed', async () => {
+    // The lockout-adjacent direction of this change. getSessionUser returns
+    // null here, so `sessionUser?.mustChangePassword` is undefined (falsy) and
+    // the bearer check decides, exactly as before. A fix written as
+    // `if (getSessionUser(c)?.mustChangePassword !== false) return false`
+    // would red this and silently re-throttle every dashboard admin call.
+    const { hasAdminStanding } = await import('./rate-limit');
+    process.env.ADMIN_TOKEN = 'the-admin-token';
+    expect(hasAdminStanding(ctx({ authHeader: 'Bearer the-admin-token' }))).toBe(true);
+    expect(hasAdminStanding(ctx({ authHeader: 'Bearer the-admin-token', sessionUser: undefined }))).toBe(true);
+  });
+});
+
+// The behavioural half of the predicate tests above: prove the admin limiter
+// actually 429s a mid-reset flood, through the real adminRateLimit singleton.
+describe('admin limiter does NOT exempt a mid-reset session (final review, F3)', () => {
+  const midReset = {
+    id: 'u1',
+    email: 'mid-reset@example.test',
+    displayName: null,
+    isGlobalAdmin: true,
+    mustChangePassword: true,
+    sessionId: 's1',
+  };
+
+  it.each([
+    ['no bearer', undefined],
+    ['a VALID ADMIN_TOKEN alongside the cookie', 'Bearer valid-admin-token'],
+  ])('429s a mid-reset flood past 5/min — %s', async (_label, authHeader) => {
+    // MANDATORY per row: adminRateLimit is a module singleton over ONE store,
+    // and both rows key to the same bucket (app.request has no socket, so
+    // getClientIp returns 'unknown' for every request). Without a reset the
+    // first row exhausts the bucket and the second row's `codes[0]` is already
+    // 429 — it would still "contain 429" and pass while proving nothing about
+    // the bearer variant.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { adminRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'valid-admin-token';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono<{ Variables: { sessionUser: unknown } }>();
+      // Simulates sessionAuth() populating c.get('sessionUser') globally,
+      // ahead of the router's own chain — the order production uses.
+      app.use('*', async (c, next) => {
+        c.set('sessionUser', midReset);
+        await next();
+      });
+      app.use('*', adminRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      const codes: number[] = [];
+      for (let i = 0; i < ADMIN_RATE_LIMIT.limit + 3; i++) {
+        const res = await app.request('/x', authHeader ? { headers: { Authorization: authHeader } } : undefined);
+        codes.push(res.status);
+      }
+      // Reverting hasAdminStanding to `bearer || session !== null` reds both
+      // rows: the flood would be exempt and never see a 429.
+      expect(codes).toContain(429);
+      // Sanity: the first requests really were allowed through, so the 429s
+      // come from exhausting the bucket rather than from everything being
+      // rejected outright.
+      expect(codes[0]).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevToken;
+      vi.resetModules();
+    }
+  });
 });
 
 describe('admin limiter exempts a valid admin token (not just throttles bad ones)', () => {

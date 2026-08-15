@@ -5,6 +5,7 @@ import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests, quarantineRules, teams } from '../db';
 import { adminOrGlobalAdminAuth, hashToken, generateToken } from '../middleware/auth';
 import { adminRateLimit } from '../middleware/rate-limit';
+import { passwordChangeGate } from '../middleware/password-change';
 import { logger } from '../middleware/logger';
 import { resolveProjectConfig } from '../services/flakiness';
 import { globToRegExp } from '../services/rules';
@@ -25,6 +26,11 @@ const uuidSchema = z.string().uuid();
 // be throttled here, not waved through to adminOrGlobalAdminAuth (which would
 // 401/403 each attempt and never reach the limiter). Guarded by rate-limit.test.ts.
 adminRouter.use('*', adminRateLimit);
+// Ahead of adminOrGlobalAdminAuth on purpose: that gate 403s a refused caller
+// as `HTTPException(403, 'Admin access required')`, which carries no `code` and
+// names the wrong reason. Running first is what makes the admin surface emit
+// the same contract as reads and writes.
+adminRouter.use('*', passwordChangeGate());
 adminRouter.use('*', adminOrGlobalAdminAuth());
 
 /**

@@ -178,6 +178,51 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `${}`) — Postgres case-folds the unquoted identifier to lowercase, which
   matches Drizzle's quoted lowercase table name. Always verify with
   `.toSQL().sql` on both sides; don't assume.
+- **`mustChangePassword` is enforced in TWO places, and the gate's mount
+  position is load-bearing.** `passwordChangeGate()`
+  (`middleware/password-change.ts`) is mounted `use('*')` inside **each** of
+  the seven `/api/v1` routers, immediately **after** that router's rate
+  limiter — never as a global `app.use()`. A denial returns without calling
+  `next()`, so a global mount would run ahead of every per-router limiter and
+  starve it: a mid-reset session could then hammer any non-allowlisted path
+  unthrottled, each request still paying the session DB lookup that already
+  runs globally in `sessionAuth` (`middleware/session.ts:45,49`). The one
+  `/api/v1` endpoint that belongs to no router — `GET /api/v1`, the version
+  stub in `index.ts` — takes the gate as **route-level** middleware
+  (`app.get('/api/v1', passwordChangeGate(), handler)`), never
+  `app.use('/api/v1', ...)`, which would match the whole subtree from the root
+  app and starve all seven limiters. Guarded by
+  `password-change-coverage.test.ts`: named mounts in the right order, the
+  auth-route decision list, and — the assertion that actually catches a NEW
+  ungated router — a completeness check that derives the `/api/v1` surface
+  from `app.routes` and demands every route be covered by some mount. The
+  named-inventory assertions cannot do that job: a router with no gate
+  contributes nothing to the set they compare, so both sides stay equal and
+  they pass. `routes-auth-coverage.test.ts` cannot either — it filters on
+  `method === 'GET'`, so a write-only router is invisible to it. A 429
+  regression test covers the mount-order hazard. The gate must `return c.json(...)`, **not**
+  throw `HTTPException` — the global error handler (`index.ts:44-51`) renders
+  exceptions as `c.json({ error: err.message }, err.status)`, which drops the
+  `code` field entirely. Layer 1 (short-circuits in `services/auth/access.ts`'s
+  four predicates — `canReadProject`, `canWriteProject`, `canAdministerTeams`,
+  `canEnterAdminApi`) is the backstop for a router that forgets to mount the
+  gate, but it is **not** a second copy of the gate's contract: each predicate
+  just returns `false`, so the caller falls through to whatever that route
+  already does on a normal denial. That is **three** outcomes, not two —
+  `404` existence-hiding for the two project-scoped predicates on a
+  single-project route; a *different*, code-less `403` (e.g. `'Global admin
+  required'`) for the two team/admin-scoped ones; and **`200` with an empty
+  list** on the two LIST routes (`GET /api/v1/projects`,
+  `GET /api/v1/admin/projects`), which filter rather than refuse. Only the
+  gate guarantees the uniform `403 password_change_required` contract, which
+  is why it — not the predicates — owns it. The list routes reach layer 1
+  through a **fifth** predicate, `scopesProjectList`, whose polarity is
+  inverted from the other four: it returns "should this list be filtered", so
+  `true` is the safe answer and `false` skips `canReadProject` entirely.
+  It therefore checks `requiresPasswordChange` **first**, ahead of its
+  `isGlobalAdmin` shortcut — without that, a mid-reset *global admin* took the
+  unfiltered branch and layer 1 never ran at all for the highest-privilege
+  caller on the instance.
 
 ## Conventions
 

@@ -52,9 +52,22 @@
 </script>
 
 {#if data.user}
-  <div class="flex h-screen">
-    <!-- Sidebar -->
-    <aside class="w-64 bg-white border-r border-subtle p-6 flex flex-col gap-6">
+  <div class="flex min-h-screen">
+    <!-- Sidebar: `sticky top-0 h-screen` gives IT (not the outer wrapper) a
+         definite, viewport-bounded height. This is a deliberate correction
+         from an earlier version of this fix, which made the OUTER wrapper
+         `h-screen` instead — that also activated `<main>`'s `overflow-y-auto`
+         (previously inert under `min-h-screen`), turning `<main>` into the
+         scroller. SvelteKit's router only ever manages the WINDOW's scroll
+         position (scroll-to-top on navigate, back/forward restoration), never
+         an inner container's `scrollTop` — so that version silently broke
+         both on every authenticated page. Keeping the outer wrapper at
+         `min-h-screen` and bounding just `<aside>` restores the window as the
+         scroller (`<main>`'s `overflow-y-auto` goes back to being inert,
+         harmless — leave it) while still giving the sidebar a fixed box for
+         the project list to clip inside. See plan 059 Task 6 review round 2,
+         Important #1. -->
+    <aside class="w-64 bg-white border-r border-subtle p-6 flex flex-col gap-6 sticky top-0 h-screen">
       <!-- Logo -->
       <div class="flex items-center gap-2">
         <div class="icon-circle icon-circle-purple">
@@ -70,11 +83,11 @@
            unassigned), and this list sits ABOVE the nav/admin nav/user menu
            in DOM order. `overflow-y-auto` + `min-h-0` let this div (not
            <aside> itself) absorb the overflow so Sign out never scrolls off
-           the bottom of an otherwise-fixed sidebar — see the outer
-           container's `h-screen` (not `min-h-screen`) below, which this
-           relies on: a flex child can only be capped by `min-h-0` +
-           `overflow-y-auto` when its ancestor chain has a definite height to
-           shrink within. -->
+           the bottom of the sidebar — this relies on <aside>'s OWN
+           `sticky top-0 h-screen` above, which is what gives the sidebar (and
+           therefore this div's flex ancestor chain) a definite height to
+           shrink within; `min-h-0` + `overflow-y-auto` alone do nothing
+           against an ancestor whose height is merely content-driven. -->
       {#if partitioned.assigned.length > 0 || (data.user.isGlobalAdmin && partitioned.unassigned.length > 0)}
         <div class="overflow-y-auto min-h-0">
           {#if partitioned.assigned.length > 0}

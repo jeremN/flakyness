@@ -51,16 +51,34 @@ describe('+layout', () => {
   // coverage — `return '#';` left the whole suite green. This single
   // assertion pins the function is called, the existing `team=t1` param
   // survives, and `project=` is SET (not appended to an existing one).
-  it("sets a project link's href from the current URL, preserving other params", async () => {
-    render(Layout, { props: { children, data: data({ projects: [project] }) } });
+  //
+  // Finding #2 (task 6 review round 2): the FIRST version of this test only
+  // rendered one project against one mocked URL, so it pinned a coincidence —
+  // a body hardcoded to `return '/flaky?team=t1&project=p1';`, ignoring both
+  // its arguments, also made it pass. Rendering a SECOND project with a
+  // different id closes that gap: a hardcoded literal cannot produce two
+  // different values for two different links, so this table proves the
+  // function actually uses its `projectId` argument (and, via `$page.url`,
+  // the current URL) rather than returning a fixed string. `withQueryParam`'s
+  // own replace-vs-append property is already unit-tested in isolation
+  // (`href.test.ts`); this test's job is only to prove `projectHref` is wired
+  // to it, not to re-prove that property here.
+  it("sets each project link's href from the current URL, preserving other params", async () => {
+    render(Layout, { props: { children, data: data({ projects: [project, project2] }) } });
     await expect
       .element(vitestPage.getByRole('link', { name: 'Proj One' }))
       .toHaveAttribute('href', '/flaky?team=t1&project=p1');
+    await expect
+      .element(vitestPage.getByRole('link', { name: 'Proj Two' }))
+      .toHaveAttribute('href', '/flaky?team=t1&project=p3');
   });
 
   // Minor #3 (task 6 review round 1): isSelectedProject had zero assertion
   // coverage — `return true;` left the whole suite green. Mirrors the
-  // existing nav-link (line ~63) and TeamSwitcher active-team assertions.
+  // existing nav-link assertion ("applies the active styling to the
+  // current-page nav link, not the others", below) and TeamSwitcher's
+  // active-team assertions — named, not line-numbered, since line references
+  // go stale as the file grows (task 6 review round 2, Minor).
   it('marks only the selected project link as current', async () => {
     render(Layout, {
       props: { children, data: data({ projects: [project, project2], selectedProject: project }) },
@@ -187,6 +205,59 @@ describe('+layout', () => {
       // in this fixture, the whole sidebar (and therefore its project list)
       // must not render for an anonymous caller.
       await expect.element(vitestPage.getByRole('link', { name: 'Proj One' })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('sidebar scroll containment keeps the window as the scroller (plan 059 Task 6 review round 2, Important #1)', () => {
+    // An EARLIER version of this fix made the OUTER wrapper `h-screen`, which
+    // silently broke SvelteKit's scroll-to-top-on-navigate and back/forward
+    // restoration (the router only ever manages the WINDOW's scroll position,
+    // never an inner container's `scrollTop` — see the comment on the outer
+    // <div> in +layout.svelte). The corrected version bounds <aside> itself
+    // (`sticky top-0 h-screen`) and leaves the outer wrapper at
+    // `min-h-screen`, so the window stays the scroller.
+    //
+    // This asserts classList membership ONLY, not computed style — verified
+    // by hand that this harness cannot honestly assert the latter. A probe
+    // rendering this same layout and reading `getComputedStyle` on an element
+    // carrying `class="flex ..."` returned `display: "block"`, and on
+    // `class="... sticky ..."` returned `position: "static"`: the two
+    // stylesheets present in this render totalled 36 CSS rules combined —
+    // consistent with Svelte's per-component scoped `<style>` output, not
+    // Tailwind's generated utility layer, which is thousands of rules in the
+    // real app. Tailwind's utility CSS is not applied in this render context,
+    // so a `getComputedStyle` assertion here would silently pass or fail for
+    // reasons unrelated to this component's classes — theatre, per the
+    // finding's own escape hatch. No other test in this codebase asserts
+    // `getComputedStyle` for exactly this reason; every existing styling
+    // assertion uses `toHaveClass` (see e.g. the "applies the active
+    // styling…" test above). This test follows that precedent and pins the
+    // two literal, load-bearing facts the real (Tailwind-built) app's
+    // behaviour depends on: which element carries the bounding classes, and
+    // which one must not. It WOULD catch the exact regression class this
+    // finding describes: reverting `<aside>`'s classes, or moving
+    // `h-screen` back to the outer wrapper.
+    it('bounds the sidebar (not the outer wrapper) to the viewport', async () => {
+      render(Layout, { props: { children, data: data() } });
+
+      const aside = document.querySelector('aside');
+      const outer = aside?.parentElement;
+
+      expect(aside).not.toBeNull();
+      expect(outer).not.toBeNull();
+
+      // <aside> carries the bounding classes: sticky, pinned to the top, a
+      // definite viewport height.
+      expect(aside?.classList.contains('sticky')).toBe(true);
+      expect(aside?.classList.contains('top-0')).toBe(true);
+      expect(aside?.classList.contains('h-screen')).toBe(true);
+
+      // The outer wrapper must stay content-driven (`min-h-screen`, exact
+      // token — not merely a substring match, since "min-h-screen" itself
+      // contains the substring "h-screen") — never `h-screen`, which would
+      // reintroduce the <main> `overflow-y-auto` regression.
+      expect(outer?.classList.contains('min-h-screen')).toBe(true);
+      expect(outer?.classList.contains('h-screen')).toBe(false);
     });
   });
 });

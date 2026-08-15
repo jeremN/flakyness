@@ -8,13 +8,23 @@
 
 **Tech Stack:** SvelteKit (Svelte 5 runes), TypeScript, Vitest (node + browser mode via `vitest-browser-svelte`), Playwright (E2E), Tailwind v4, Stryker.
 
-**Spec:** `docs/superpowers/specs/2026-07-25-teams-identity-access-control-design.md` (Phase D)
+**Spec:** `docs/superpowers/specs/2026-07-25-teams-identity-access-control-design.md` (Phase D),
+amended by `docs/superpowers/specs/2026-08-15-dashboard-accounts-delta-design.md`
+(what plan 058b changed underneath this plan — adds **Task 0** and amends Tasks
+1, 2, 3, 6 and 7).
 
 ## Global Constraints
 
 Every task's requirements implicitly include this section.
 
-- **Depends hard on plans 056–058.** The API must already accept global-admin **sessions** on the admin API (plan 058, Task 5) — otherwise the console cannot work without `ADMIN_TOKEN`.
+- **Rate limits must key per browser, not per dashboard container (delta §D1).**
+  Making the dashboard a confidential client routes every API call through one
+  socket, collapsing `apiRateLimit` (100/min) and `authRateLimit` (10/min) into a
+  single shared bucket for the whole installation. Task 0 makes the API able to
+  trust `X-Forwarded-For` from a pinned proxy address; Tasks 2 and 3 make the
+  dashboard send it. `adminRateLimit` is already immune (`hasAdminStanding`
+  exempts any signed-in session) and `reportRateLimit` is CI ingest only.
+- **Depends hard on plans 056–058, and on 058b (PR #133, `e689af0`).** The API must already accept global-admin **sessions** on the admin API (plan 058, Task 5) — otherwise the console cannot work without `ADMIN_TOKEN`.
 - **Global admins must see an explicit "Unassigned" grouping in the dashboard's project list (plan 058 pre-flight ruling).** `POST /admin/projects` intentionally leaves `teamId` optional, so a project created without one stays `team_id IS NULL` — and, by `canReadProject`'s design (plan 058), invisible to every non-global-admin. That ruling was made **conditional on this plan surfacing the state**: without it, a project created without a team becomes silently invisible to the very team that created it, and 1,529 of 2,952 projects on the dev database are already in that state. Task 6's team-scoped project list must render an explicit **"Unassigned"** group for `teamId === null` projects, shown only when `locals.user.isGlobalAdmin` (the only caller who can read them at all) — a silent gap is the trap this bullet exists to close.
 - **THE ONE BREAKING CHANGE IN THIS WHOLE FEATURE: `DASHBOARD_PASSWORD` is removed.** After this plan, an operator who upgrades without creating a user account cannot sign in. The upgrade note in `docs/GETTING_STARTED.md` (plan 057, Task 8, Step 3) is what prevents that being a surprise; Task 8 here makes it prominent. Do not leave a fallback path — a dual gate is two things to get wrong, and the account system supersedes the password by design (spec §Dashboard).
 - **`ADMIN_TOKEN` leaves the dashboard entirely.** Today `$lib/server/adminApi.ts` spends a server-held token on behalf of whoever submits a form (plan 053). That was the correct shape when there were no users; it is ambient authority now that there are. The console acts **as the signed-in user**. `ADMIN_TOKEN` stays a valid API credential for operators and scripts — the dashboard simply stops holding one.
@@ -28,7 +38,7 @@ Every task's requirements implicitly include this section.
 **Create:**
 - `apps/dashboard/src/lib/session.ts` — `SESSION_COOKIE`, `parseSessionCookie(setCookieHeader)`, `redirectTargetFor(user, pathname)`.
 - `apps/dashboard/src/lib/session.test.ts` — node unit tests.
-- `apps/dashboard/src/lib/server/session.ts` — server-only `fetchMe(sessionToken)`.
+- `apps/dashboard/src/lib/server/session.ts` — server-only `fetchMe(sessionToken, clientIp)`.
 - `apps/dashboard/src/routes/login/+page.server.ts` / `+page.svelte` / `page.svelte.test.ts`
 - `apps/dashboard/src/routes/change-password/+page.server.ts` / `+page.svelte` / `page.svelte.test.ts`
 - `apps/dashboard/src/routes/admin/teams/+page.server.ts` / `+page.svelte` / `page.svelte.test.ts`
@@ -46,6 +56,247 @@ Every task's requirements implicitly include this section.
 - `apps/dashboard/src/routes/+layout.svelte` — user menu, sign-out, team switcher.
 - `apps/dashboard/src/lib/server/basicAuth.ts` + its test — **deleted**.
 - `docker-compose.yml`, `.env.example`, `docs/GETTING_STARTED.md`, `AGENTS.md`, `plans/README.md`.
+
+---
+
+### Task 0: per-user rate-limit keys behind the dashboard (API side)
+
+**Delta task — added 2026-08-15.** See
+`docs/superpowers/specs/2026-08-15-dashboard-accounts-delta-design.md` §D1.
+
+**Files:**
+- Modify: `apps/api/src/middleware/rate-limit.ts` (`getClientIp`, ~:39-55)
+- Modify: `apps/api/src/middleware/rate-limit.test.ts`
+- Modify: `apps/api/src/index.ts` (boot warnings, after the `isCookieSecure()` block at :144-154)
+- Modify: `docker-compose.yml`, `.env.example`, `docs/GETTING_STARTED.md`
+
+**Interfaces:**
+- Produces:
+  - `getClientIp(c: Context): string` — unchanged signature, now matching
+    `TRUSTED_PROXY_IPS` against IPv4-mapped socket addresses.
+  - `trustedProxyWarning(trustedProxyIps: string | undefined): string | null` —
+    the boot-warning text, or null when configured.
+
+**Why this task exists, and why it is first:** plan 059 makes the dashboard a
+confidential client, so every API request in the installation arrives from one
+socket — the dashboard container. `apiRateLimit` (100/min) and `authRateLimit`
+(10/min) are both keyed per-IP by `getClientIp`, so both collapse into a single
+shared bucket: roughly twenty page views a minute for the whole install, and ten
+sign-ins. `adminRateLimit` is already immune (`hasAdminStanding` exempts any
+signed-in session) and `reportRateLimit` is CI ingest only. Without this task the
+login page ships unusable for a team of any size, so it lands before the login
+page exists.
+
+- [ ] **Step 1: Write the failing normalization tests**
+
+Add to `apps/api/src/middleware/rate-limit.test.ts`, inside `describe('getClientIp')`.
+Note every existing test in this file uses a bare IPv4 socket address, which is
+exactly why this gap survived — these MUST use the `::ffff:` form:
+
+```ts
+  it('matches a trusted proxy when the socket reports an IPv4-mapped address', () => {
+    // MEASURED, not assumed: Node reports an IPv4 connection on a dual-stack
+    // listener as '::ffff:127.0.0.1'. Every other test here uses a bare IPv4
+    // address, so the exact-string match in getClientIp passes them while
+    // silently failing in every real deployment — the operator sets
+    // TRUSTED_PROXY_IPS=172.28.0.10, the socket says '::ffff:172.28.0.10',
+    // the trust check fails, and the shared bucket returns with no error.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('matches when TRUSTED_PROXY_IPS itself is written in the IPv4-mapped form', () => {
+    // Normalize BOTH sides: an operator who copies the address out of a log
+    // will paste the ::ffff: form, and that must work too.
+    process.env.TRUSTED_PROXY_IPS = '::ffff:172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('still ignores a spoofed X-Forwarded-For from an untrusted IPv4-mapped socket', () => {
+    // The normalization must not become a bypass: '::ffff:9.9.9.9' is still
+    // not the trusted proxy, so its XFF stays ignored.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9', xff: '1.1.1.1' }))).toBe('9.9.9.9');
+  });
+
+  it('returns the socket IP normalized, so one client occupies one bucket', () => {
+    // Without normalizing the RETURN value, the same client could be keyed as
+    // both '::ffff:9.9.9.9' and '9.9.9.9' depending on the listener, splitting
+    // its bucket and doubling its effective limit.
+    delete process.env.TRUSTED_PROXY_IPS;
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9' }))).toBe('9.9.9.9');
+  });
+```
+
+- [ ] **Step 2: Write the failing boot-warning tests**
+
+Add a new `describe` block to the same file:
+
+```ts
+import { getClientIp, trustedProxyWarning } from './rate-limit';
+
+describe('trustedProxyWarning', () => {
+  it('warns when TRUSTED_PROXY_IPS is unset', () => {
+    const msg = trustedProxyWarning(undefined);
+    expect(msg).toContain('TRUSTED_PROXY_IPS');
+    expect(msg).toContain('X-Forwarded-For');
+  });
+
+  it('warns when TRUSTED_PROXY_IPS is set but empty or blank', () => {
+    // `TRUSTED_PROXY_IPS=` in a .env file yields '' — configured in name only.
+    expect(trustedProxyWarning('')).not.toBeNull();
+    expect(trustedProxyWarning('   ')).not.toBeNull();
+  });
+
+  it('stays silent when a proxy is genuinely configured', () => {
+    expect(trustedProxyWarning('172.28.0.10')).toBeNull();
+  });
+});
+```
+
+- [ ] **Step 3: Run to verify both fail**
+
+```bash
+cd apps/api && pnpm exec vitest run src/middleware/rate-limit.test.ts
+```
+Expected: FAIL — `trustedProxyWarning` is not exported, and the `::ffff:` cases
+return the socket IP instead of the forwarded one.
+
+- [ ] **Step 4: Implement**
+
+In `apps/api/src/middleware/rate-limit.ts`, add above `getClientIp`:
+
+```ts
+/**
+ * Strip the IPv4-mapped IPv6 prefix so a socket address and a configured one
+ * compare equal.
+ *
+ * Node reports an IPv4 connection on a dual-stack listener as
+ * '::ffff:172.28.0.10' (measured on this Node version, not assumed). Without
+ * this, TRUSTED_PROXY_IPS can never be set to a value that matches, the trust
+ * check silently fails, and every caller behind the proxy shares one bucket.
+ */
+function normalizeIp(ip: string): string {
+  return ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+}
+```
+
+Then rewrite the tail of `getClientIp` so both sides are normalized:
+
+```ts
+  const normalizedSocketIp = socketIp ? normalizeIp(socketIp) : undefined;
+
+  if (trustedProxies && normalizedSocketIp) {
+    const trusted = trustedProxies.map(normalizeIp);
+    if (trusted.includes(normalizedSocketIp)) {
+      const forwarded = c.req.header('x-forwarded-for')?.split(',')[0].trim();
+      if (forwarded) return normalizeIp(forwarded);
+    }
+  }
+
+  return normalizedSocketIp || 'unknown';
+```
+
+Add the warning helper at the end of the file:
+
+```ts
+/**
+ * The boot warning for an unconfigured trusted proxy, or null when configured.
+ *
+ * A pure function rather than an inline `if` in index.ts so it is unit-testable
+ * and mutation-provable — the same extraction the dashboard's $lib helpers use.
+ * Without TRUSTED_PROXY_IPS the API ignores X-Forwarded-For (correctly — it is
+ * spoofable from an untrusted socket), which means a server-mediated dashboard
+ * puts every user in one rate-limit bucket. That degrades at a threshold rather
+ * than failing outright, so it must be announced rather than discovered.
+ */
+export function trustedProxyWarning(trustedProxyIps: string | undefined): string | null {
+  if (trustedProxyIps && trustedProxyIps.trim() !== '') return null;
+  return (
+    'TRUSTED_PROXY_IPS is not set — X-Forwarded-For is ignored and every ' +
+    'request is rate-limited by its socket address. If the dashboard reaches ' +
+    'this API server-side (the default docker-compose deployment), ALL users ' +
+    'share one bucket: ~100 API calls and 10 sign-ins per minute for the whole ' +
+    'installation, regardless of how many people are using it. Set ' +
+    'TRUSTED_PROXY_IPS to the dashboard container\'s address so each browser ' +
+    'gets its own bucket. See docs/GETTING_STARTED.md.'
+  );
+}
+```
+
+- [ ] **Step 5: Wire the warning into boot**
+
+In `apps/api/src/index.ts`, import `trustedProxyWarning` alongside the existing
+rate-limit imports and add this immediately after the `isCookieSecure()` block
+(`:144-154`), matching the fires-once-at-module-evaluation shape of its two
+neighbours:
+
+```ts
+// Same fires-once-at-boot shape as the two warnings above (plan 059 Task 0).
+const proxyWarning = trustedProxyWarning(process.env.TRUSTED_PROXY_IPS);
+if (proxyWarning) logger.warn(proxyWarning);
+```
+
+- [ ] **Step 6: Run to verify it passes**
+
+```bash
+cd apps/api && pnpm exec vitest run src/middleware/rate-limit.test.ts && pnpm exec tsc --noEmit
+```
+Expected: PASS, exit 0.
+
+- [ ] **Step 7: Pin the dashboard's address in compose**
+
+In `docker-compose.yml`, give the network an explicit subnet (it currently has
+none, so no static address can be assigned):
+
+```yaml
+networks:
+  flackyness:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+```
+
+Give the dashboard service a fixed address by replacing its short-form
+`networks:` list:
+
+```yaml
+    networks:
+      flackyness:
+        ipv4_address: 172.28.0.10
+```
+
+And add to the **api** service's `environment:` block:
+
+```yaml
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.28.0.10}
+```
+
+Trust exactly that one address — **never the `172.28.0.0/16` range**. With
+published ports, Docker's userland proxy can present external traffic as a
+bridge address, so trusting the range would let an internet client spoof
+`X-Forwarded-For` and evade the login throttle entirely. `getClientIp` does an
+exact match precisely so this stays a single, operator-controlled address.
+
+- [ ] **Step 8: Document it**
+
+- `.env.example` — add `TRUSTED_PROXY_IPS=` with a comment: set it to the
+  address of whatever reaches the API on a browser's behalf (the dashboard
+  container, or your reverse proxy), or all users share one rate-limit bucket.
+- `docs/GETTING_STARTED.md` — a short subsection under the deployment notes
+  explaining the same, and stating that the compose file sets it automatically.
+
+- [ ] **Step 9: Verify and commit**
+
+```bash
+cd apps/api && pnpm exec vitest run && pnpm exec tsc --noEmit
+cd ../.. && pnpm run lint
+docker compose config >/dev/null && echo "compose parses"
+git add apps/api/src/middleware/rate-limit.ts apps/api/src/middleware/rate-limit.test.ts \
+        apps/api/src/index.ts docker-compose.yml .env.example docs/GETTING_STARTED.md
+git commit -m "fix(api): key rate limits per browser behind a trusted proxy"
+```
 
 ---
 
@@ -223,6 +474,10 @@ declare global {
       user: SessionUser | null;
       teams: TeamSummary[];
       sessionToken: string | null;
+      // The browser's address, forwarded to the API as X-Forwarded-For so its
+      // rate limiters key per user instead of per dashboard container
+      // (Task 0). Populated in Task 3 from event.getClientAddress().
+      clientIp: string | null;
     }
   }
 }
@@ -255,9 +510,17 @@ git commit -m "feat(dashboard): session cookie helpers and account types"
 
 **Interfaces:**
 - Produces:
-  - `fetchMe(sessionToken: string): Promise<{ user: SessionUser; teams: TeamSummary[] } | null>`
-  - `createApi(sessionToken: string | null)` — returns `{ getProjects, getProjectStats, getFlakyTests, getProjectRuns, getRunDetail, getTestHistory, getFlakeTrend, getTestTrend, getAnalysis }`, same signatures as today.
-  - `createAdminApi(sessionToken: string | null)` — returns the existing admin functions plus `listTeams`, `createTeam`, `patchTeam`, `deleteTeam`, `listTeamMembers`, `addTeamMember`, `patchTeamMember`, `removeTeamMember`, `listUsers`, `createUser`, `patchUser`, `resetUserPassword`, `deleteUser`.
+  - `fetchMe(sessionToken: string, clientIp: string | null): Promise<{ user: SessionUser; teams: TeamSummary[] } | null>`
+  - `createApi(sessionToken: string | null, clientIp: string | null)` — returns `{ getProjects, getProjectStats, getFlakyTests, getProjectRuns, getRunDetail, getTestHistory, getFlakeTrend, getTestTrend, getAnalysis }`, same signatures as today.
+  - `createAdminApi(sessionToken: string | null, clientIp: string | null)` — returns the existing admin functions plus `listTeams`, `createTeam`, `patchTeam`, `deleteTeam`, `listTeamMembers`, `addTeamMember`, `patchTeamMember`, `removeTeamMember`, `listUsers`, `createUser`, `patchUser`, `resetUserPassword`, `deleteUser`.
+
+**Delta (2026-08-15, §D1.2):** all three take `clientIp` as a second parameter
+and send it as `X-Forwarded-For`. It belongs here, in the shared fetch layer,
+rather than on individual call sites — the same argument that makes these
+factories rather than optional parameters: a call site that forgets would keep
+compiling and quietly put its user back in the shared bucket. Adding it as a
+**required** positional parameter means the compiler names every call site,
+exactly as the session-token conversion does.
 
 **Why a factory and not an extra parameter:** converting to a factory **deletes** the module-level exports, so every existing call site stops compiling until it supplies an identity. An optional parameter would let a forgotten call site keep compiling and silently make an unauthenticated request — the same "remember to do it" failure class this repo has been bitten by three times.
 
@@ -268,22 +531,46 @@ Extend `apps/dashboard/src/lib/server/adminApi.test.ts` (and create the equivale
 ```ts
   it('forwards the caller\'s session cookie, not an ADMIN_TOKEN', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ projects: [] }));
-    await createAdminApi('sess-abc').listProjects();
+    await createAdminApi('sess-abc', null).listProjects();
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers.Cookie).toBe('fk_session=sess-abc');
     expect(init.headers.Authorization).toBeUndefined();
   });
 
   it('refuses to call the admin API with no session rather than calling it anonymously', async () => {
-    await expect(createAdminApi(null).listProjects()).rejects.toBeInstanceOf(NotAuthenticatedError);
+    await expect(createAdminApi(null, null).listProjects()).rejects.toBeInstanceOf(NotAuthenticatedError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('surfaces a 403 from the API as an AdminApiError carrying the status', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'Global admin required' }, 403));
-    await expect(createAdminApi('s').listTeams()).rejects.toMatchObject({ statusCode: 403 });
+    await expect(createAdminApi('s', null).listTeams()).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  // Delta 2026-08-15 (§D1.2): without these the dashboard puts every user in
+  // one rate-limit bucket. Task 0 made the API able to trust the header; these
+  // prove the dashboard actually sends it.
+  it('forwards the browser IP as X-Forwarded-For so the API keys per user', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ projects: [] }));
+    await createAdminApi('sess-abc', '203.0.113.7').listProjects();
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+  });
+
+  it('omits X-Forwarded-For entirely when there is no client IP', async () => {
+    // An empty header is worse than none: getClientIp takes the first
+    // comma-separated hop, so '' would key every such request to the same
+    // empty-string bucket rather than falling back to the socket address.
+    fetchMock.mockResolvedValue(jsonResponse({ projects: [] }));
+    await createAdminApi('sess-abc', null).listProjects();
+    const [, init] = fetchMock.mock.calls[0];
+    expect('X-Forwarded-For' in init.headers).toBe(false);
   });
 ```
+
+Write the equivalent two assertions for `createApi` and for `fetchMe`. All three
+share the seam, so all three need the proof — a passing `createAdminApi` says
+nothing about the read client that serves every page load.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -322,7 +609,7 @@ export class NotAuthenticatedError extends Error {
   }
 }
 
-export function createAdminApi(sessionToken: string | null) {
+export function createAdminApi(sessionToken: string | null, clientIp: string | null) {
   async function adminFetch<T>(
     path: string,
     init: { method: string; body?: unknown } = { method: 'GET' }
@@ -330,6 +617,10 @@ export function createAdminApi(sessionToken: string | null) {
     if (!sessionToken) throw new NotAuthenticatedError();
 
     const headers: Record<string, string> = { Cookie: `${SESSION_COOKIE}=${sessionToken}` };
+    // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
+    // every such request into one bucket instead of falling back to the socket
+    // address, which is the opposite of the intent.
+    if (clientIp) headers['X-Forwarded-For'] = clientIp;
     const hasBody = init.body !== undefined;
     if (hasBody) headers['Content-Type'] = 'application/json';
 
@@ -397,7 +688,7 @@ export function createAdminApi(sessionToken: string | null) {
 
 - [ ] **Step 4: Convert `api.ts` the same way**
 
-Wrap the existing nine read functions in `createApi(sessionToken)`. Replace the `READ_TOKEN` Authorization header with the session cookie, but **keep the `READ_TOKEN` fallback** for the token itself: a deployment may run the dashboard against an API that has `READ_TOKEN` set, and SSR requests made before login (there are none once the gate lands, but the 401 message is still the operator's best diagnostic) should keep the existing explanatory error at `api.ts:41-49`. Concretely:
+Wrap the existing nine read functions in `createApi(sessionToken, clientIp)`. Replace the `READ_TOKEN` Authorization header with the session cookie, but **keep the `READ_TOKEN` fallback** for the token itself: a deployment may run the dashboard against an API that has `READ_TOKEN` set, and SSR requests made before login (there are none once the gate lands, but the 401 message is still the operator's best diagnostic) should keep the existing explanatory error at `api.ts:41-49`. Concretely:
 
 ```ts
     const headers: Record<string, string> = {};
@@ -427,11 +718,17 @@ const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
  * timeout keeps a hung API from hanging every page load.
  */
 export async function fetchMe(
-  sessionToken: string
+  sessionToken: string,
+  clientIp: string | null
 ): Promise<{ user: SessionUser; teams: TeamSummary[] } | null> {
   try {
+    const headers: Record<string, string> = { Cookie: `${SESSION_COOKIE}=${sessionToken}` };
+    // Delta §D1.2. This call runs in hooks.server.ts on EVERY request, so it is
+    // the single largest contributor to the shared-bucket problem Task 0 fixes.
+    if (clientIp) headers['X-Forwarded-For'] = clientIp;
+
     const res = await fetch(`${API_URL}/api/v1/auth/me`, {
-      headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
+      headers,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -452,7 +749,7 @@ It will list every `+page.server.ts` importing the old module-level functions. U
 import { createApi } from '$lib/server/api';
 
 export async function load({ locals, url }: ServerLoadEvent) {
-  const api = createApi(locals.sessionToken);
+  const api = createApi(locals.sessionToken, locals.clientIp);
   // …existing body, calling api.getProjectStats(...) etc.
 }
 ```
@@ -531,7 +828,13 @@ import { fetchMe } from '$lib/server/session';
 export const handle: Handle = async ({ event, resolve }) => {
   const token = event.cookies.get(SESSION_COOKIE) ?? null;
 
-  const me = token ? await fetchMe(token) : null;
+  // Delta §D1.2. Read once here and thread it through locals: this is the only
+  // place the browser's address is available. adapter-node derives it from
+  // ADDRESS_HEADER/XFF_DEPTH when the dashboard is itself behind a proxy —
+  // those are the operator's existing knobs and this does not change them.
+  const clientIp = event.getClientAddress();
+
+  const me = token ? await fetchMe(token, clientIp) : null;
 
   if (token && !me) {
     // The API rejected it (expired, revoked) or was unreachable. Drop the
@@ -544,6 +847,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   event.locals.user = me?.user ?? null;
   event.locals.teams = me?.teams ?? [];
   event.locals.sessionToken = me ? token : null;
+  event.locals.clientIp = clientIp;
 
   const target = redirectTargetFor(event.locals.user, event.url.pathname);
   if (target) throw redirect(303, target);
@@ -551,6 +855,65 @@ export const handle: Handle = async ({ event, resolve }) => {
   return resolve(event);
 };
 ```
+
+- [ ] **Step 3b: Pin the two halves of the mid-reset contract (delta §D3)**
+
+`redirectTargetFor`'s `ESCAPE_HATCHES` lists the dashboard routes a mid-reset
+user may reach. Plan 058b's `PASSWORD_CHANGE_ALLOWLIST` lists the API requests
+such a user may make. **They are two halves of one contract**: if the dashboard
+redirects a user to a page whose load calls an API route the gate refuses, the
+user is trapped in a loop with no way out — the exact lockout both plans exist to
+prevent.
+
+They agree today, by construction rather than by test: `/change-password` →
+`POST /auth/change-password`, `/logout` → `POST /auth/logout`, and the gate's own
+`fetchMe` → `GET /auth/me`. 058b's allowlist comment already records that
+`/auth/me` is allowlisted *specifically* so the change-password page can render.
+Agreement by coincidence is not a guarantee.
+
+Add to `apps/dashboard/src/lib/session.test.ts`:
+
+```ts
+/**
+ * The API calls each dashboard escape-hatch route makes. Hard-coded rather than
+ * derived: this is a CONTRACT, and the test's value is that changing either
+ * side forces a deliberate edit here.
+ */
+const ESCAPE_HATCH_API_CALLS = [
+  { route: '/change-password', method: 'POST', path: '/api/v1/auth/change-password' },
+  { route: '/logout', method: 'POST', path: '/api/v1/auth/logout' },
+  // Not a route the user visits — the session gate calls it on EVERY request,
+  // so a mid-reset user cannot render any page without it.
+  { route: '<session gate>', method: 'GET', path: '/api/v1/auth/me' },
+];
+
+it('every API call reachable while mid-reset is on the API allowlist', () => {
+  // Mirrors apps/api/src/services/auth/access.ts PASSWORD_CHANGE_ALLOWLIST.
+  // If this list drifts from the API's, the assertion below fails and whoever
+  // changed one side must consciously change the other.
+  const apiAllowlist = [
+    { method: 'POST', path: '/api/v1/auth/change-password' },
+    { method: 'GET', path: '/api/v1/auth/me' },
+    { method: 'HEAD', path: '/api/v1/auth/me' },
+    { method: 'POST', path: '/api/v1/auth/logout' },
+    { method: 'POST', path: '/api/v1/auth/login' },
+  ];
+
+  for (const call of ESCAPE_HATCH_API_CALLS) {
+    expect(
+      apiAllowlist.some((a) => a.method === call.method && a.path === call.path),
+      `Dashboard route ${call.route} calls ${call.method} ${call.path} while the ` +
+        `user is mid-reset, but that request is NOT on the API's ` +
+        `PASSWORD_CHANGE_ALLOWLIST. The gate will answer 403 ` +
+        `password_change_required, the page cannot load, and the user is locked ` +
+        `out of password recovery with no way forward.`
+    ).toBe(true);
+  }
+});
+```
+
+Prove it bites: temporarily drop the `/auth/me` entry from `apiAllowlist` and
+watch it redden. A test that passes against an empty allowlist proves nothing.
 
 - [ ] **Step 4: Delete the Basic-Auth module**
 
@@ -768,14 +1131,24 @@ git commit -m "feat(dashboard): forced first-login password reset"
 
 ```ts
 export async function load({ url, locals }: ServerLoadEvent) {
-  const api = createApi(locals.sessionToken);
+  const api = createApi(locals.sessionToken, locals.clientIp);
 
   let projects: Project[] = [];
   let apiError: string | null = null;
-  try {
-    projects = await api.getProjects();
-  } catch {
-    apiError = 'Cannot reach the Flackyness API. Showing an empty dashboard.';
+
+  // Delta §D2. This layout load runs for EVERY route, including
+  // /change-password. Under plan 058b a mid-reset session is refused on every
+  // non-allowlisted route, so getProjects() answers 403
+  // password_change_required — and the catch below would report "Cannot reach
+  // the Flackyness API" on the one page the user must use to recover, while
+  // the API is healthy and answering exactly as designed. There is also
+  // nothing to show a user who cannot read projects yet, so skip the call.
+  if (!locals.user?.mustChangePassword) {
+    try {
+      projects = await api.getProjects();
+    } catch {
+      apiError = 'Cannot reach the Flackyness API. Showing an empty dashboard.';
+    }
   }
 
   // NOTE: `projects` is ALREADY team-scoped by the API (plan 058) — this
@@ -798,6 +1171,11 @@ export async function load({ url, locals }: ServerLoadEvent) {
   };
 }
 ```
+
+Add a load test for the skip (delta §D2): a mid-reset user's layout load
+performs **no** projects fetch and surfaces **no** `apiError`. Assert the fetch
+was not called, not merely that `apiError` is null — the latter passes if the
+call happens and happens to succeed.
 
 This relies on `teamId` being present on the `GET /api/v1/projects` response, which plan 058 (Task 3, Step 4) returns additively. If it is missing, stop and fix it in the API rather than inferring team membership client-side — a filter over a field the API does not send silently shows everything.
 
@@ -908,7 +1286,7 @@ import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/serve
 
 export async function load({ locals }: ServerLoadEvent) {
   if (!locals.user?.isGlobalAdmin) error(404, 'Not found');
-  const api = createAdminApi(locals.sessionToken);
+  const api = createAdminApi(locals.sessionToken, locals.clientIp);
   const [{ teams }, { users }] = await Promise.all([api.listTeams(), api.listUsers()]);
   return { teams, users };
 }
@@ -926,7 +1304,7 @@ export const actions: Actions = {
     const name = String((await request.formData()).get('name') ?? '').trim();
     if (!name) return fail(400, { error: 'Enter a team name.' });
     try {
-      await createAdminApi(locals.sessionToken).createTeam(name);
+      await createAdminApi(locals.sessionToken, locals.clientIp).createTeam(name);
       return { success: true };
     } catch (e) {
       return toFail(e);
@@ -939,7 +1317,7 @@ export const actions: Actions = {
     const teamId = String(form.get('teamId') ?? '');
     const typedName = String(form.get('confirmName') ?? '');
 
-    const api = createAdminApi(locals.sessionToken);
+    const api = createAdminApi(locals.sessionToken, locals.clientIp);
     // Re-fetch the authoritative name server-side and compare there. A
     // client-submitted "expected name" would let the confirmation gate be
     // bypassed by editing the DOM — same rule as plan 055's reorder.
@@ -983,6 +1361,16 @@ Table of users (email, display name, global-admin flag, teams, last login), plus
 - [ ] **Step 4: Add team assignment to the project settings screen**
 
 In `admin/[projectId]/+page.svelte`, add a team `<select>` (options from `listTeams`, plus an explicit "Unassigned") wired into the existing settings form action, which already PATCHes the project.
+
+**Known limitation, do not treat as a bug (delta §D4):** a form that fails
+**schema** validation shows the generic `API request failed (400)` rather than
+the real problem. Follow-up #25 in `plans/README.md` records why: all 14
+`zValidator` call sites are mounted without a custom hook, so a validation `400`
+returns the library's own shape, in which `error` is an **object**, not a string
+— and `adminFetch`'s `typeof errBody.error === 'string'` check correctly
+declines to render an object. It degrades safely: no crash, no wrong data. Do
+**not** fix it inside this plan; that means changing the error contract of 14 API
+routes mid-feature, which is #25's job. Expect it during console testing.
 
 - [ ] **Step 5: Render tests**
 
@@ -1081,6 +1469,12 @@ git commit -m "feat(dashboard): retire DASHBOARD_PASSWORD in favour of user acco
 
 ## Definition of done
 
+- [ ] Two dashboard users signing in from **different** browser IPs occupy
+      **separate** rate-limit buckets on the API — the assertion that actually
+      proves delta §D1. One that checks a single request still passes against
+      the shared bucket this work exists to eliminate.
+- [ ] A mid-reset user's layout load performs no projects fetch and shows no
+      "Cannot reach the Flackyness API" banner (delta §D2).
 - [ ] An anonymous visit to any route redirects to `/login`; there is no redirect loop on `/login` itself.
 - [ ] A provisioned user signs in with their temp password, is forced to `/change-password`, cannot navigate away, and **stays signed in** after changing it.
 - [ ] A member sees only their teams' projects; the team switcher appears only for multi-team users; the Teams/Users nav appears only for global admins.

@@ -1623,6 +1623,25 @@ git commit -m "feat(dashboard): user menu, sign-out and team switcher"
 
 ### Task 7: the teams and users admin console
 
+> **Split during execution (2026-08-15) into 7a and 7b.** Requirements are
+> unchanged — only the dispatch boundary moved. This task is ~2.5× its closest
+> analogue in the repo (plan 055's rules console was one whole task at 162 +
+> 279 + 379 lines; this is two of those plus two file modifications), and the
+> two screens are independently reviewable.
+> - **7a** — Step 1 and Step 2: the `/admin/teams` screen.
+> - **7b** — Steps 3, 3b and 4: the `/admin/users` screen, the stale
+>   "Set `ADMIN_TOKEN`" copy fix, and project team assignment.
+>
+> Three constraints on Step 4 that this section does not state, verified
+> against the API while briefing: `admin/[projectId]` is reachable by a
+> **team_admin**, but `GET /admin/teams` is global-admin only
+> (`admin-teams.ts:28-33`), so fetching it unconditionally 403s that page for
+> them; the select must render for a global admin only; and the API
+> distinguishes `teamId` **absent** from `teamId: null`
+> (`admin.ts:443` gates on `'teamId' in data`, since `null` is the deliberate
+> orphaning case), so always sending the key makes every team_admin settings
+> save fail.
+
 **Files:**
 - Create: `apps/dashboard/src/routes/admin/teams/+page.server.ts`, `+page.svelte`, `page.svelte.test.ts`
 - Create: `apps/dashboard/src/routes/admin/users/+page.server.ts`, `+page.svelte`, `page.svelte.test.ts`

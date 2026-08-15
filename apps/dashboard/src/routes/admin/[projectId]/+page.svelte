@@ -127,6 +127,27 @@
       Enable auto-quarantine
     </label>
 
+    {#if data.user?.isGlobalAdmin}
+      <!-- Team reassignment is global-admin-only on the API (admin.ts:443) —
+           a team_admin must not be shown a control that will always 403.
+           Omitted entirely rather than disabled: a disabled control still
+           submits its value, which would make the patch action send a
+           `teamId` key this caller isn't allowed to send. -->
+      <div>
+        <label for="teamId" class="block text-sm font-medium text-gray-700 mb-1">Team</label>
+        <select
+          id="teamId"
+          name="teamId"
+          class="w-full border border-subtle rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="" selected={project.teamId === null}>Unassigned</option>
+          {#each data.teams as t (t.id)}
+            <option value={t.id} selected={project.teamId === t.id}>{t.name}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
+
     <button type="submit" class="pill-btn pill-btn-primary self-start">Save settings</button>
   </form>
 </section>

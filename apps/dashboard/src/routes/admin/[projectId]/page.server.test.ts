@@ -24,6 +24,7 @@ const mockedPatch = vi.fn();
 const mockedRotate = vi.fn();
 const mockedPrune = vi.fn();
 const mockedDelete = vi.fn();
+const mockedListTeams = vi.fn();
 
 vi.mocked(createAdminApi).mockReturnValue({
   listProjects: mockedList,
@@ -31,6 +32,7 @@ vi.mocked(createAdminApi).mockReturnValue({
   rotateToken: mockedRotate,
   pruneProject: mockedPrune,
   deleteProject: mockedDelete,
+  listTeams: mockedListTeams,
 } as unknown as ReturnType<typeof createAdminApi>);
 
 const project = {
@@ -52,6 +54,8 @@ const project = {
   stats: { totalRuns: 3, totalTests: 9, activeFlakyTests: 1 },
 } as any;
 
+const team = { id: 't2', name: 'Team Two', createdAt: 'x', memberCount: 0, projectCount: 0 } as any;
+
 function formEvent(
   fields: Record<string, string>,
   id = 'p1',
@@ -67,8 +71,17 @@ function formEvent(
   } as any;
 }
 
-function loadEvent(projectId: string, sessionToken: string | null = 'sess-1', clientIp: string | null = null) {
-  return { params: { projectId }, locals: { sessionToken, clientIp } } as any;
+// `user` defaults to `null` (an anonymous/non-admin `locals.user`), matching
+// what most of this file's existing tests exercise implicitly — `load` takes
+// the non-global-admin branch (`teams: []`, no listTeams() call) unless a
+// test opts into `{ isGlobalAdmin: true }`.
+function loadEvent(
+  projectId: string,
+  sessionToken: string | null = 'sess-1',
+  clientIp: string | null = null,
+  user: { isGlobalAdmin: boolean } | null = null
+) {
+  return { params: { projectId }, locals: { sessionToken, clientIp, user } } as any;
 }
 
 beforeEach(() => {
@@ -77,6 +90,7 @@ beforeEach(() => {
   mockedRotate.mockReset();
   mockedPrune.mockReset();
   mockedDelete.mockReset();
+  mockedListTeams.mockReset();
   // Clears createAdminApi's own call history (mockReturnValue survives
   // mockClear), so an identity assertion below only sees this test's own
   // call — see the task-2b review's finding on flaky/page.server.test.ts for
@@ -89,7 +103,7 @@ describe('admin/[projectId] load', () => {
   it('returns the matching project', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
     const result = await load(loadEvent('p1'));
-    expect(result).toEqual({ project });
+    expect(result).toEqual({ project, teams: [] });
   });
 
   it('404s when the project id is not in the list', async () => {
@@ -116,6 +130,38 @@ describe('admin/[projectId] load', () => {
     mockedList.mockResolvedValue({ projects: [project] });
     await load(loadEvent('p1', 'sess-1', '203.0.113.7'));
     expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
+});
+
+describe('admin/[projectId] load — team assignment (Task 7b)', () => {
+  it('does not fetch teams for a non-global-admin', async () => {
+    mockedList.mockResolvedValue({ projects: [project] });
+    const result = await load(loadEvent('p1', 'sess-1', null, { isGlobalAdmin: false }));
+    expect(result).toEqual({ project, teams: [] });
+    expect(mockedListTeams).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch teams for an anonymous caller', async () => {
+    mockedList.mockResolvedValue({ projects: [project] });
+    const result = await load(loadEvent('p1', 'sess-1', null, null));
+    expect(result).toEqual({ project, teams: [] });
+    expect(mockedListTeams).not.toHaveBeenCalled();
+  });
+
+  it('fetches teams for a global admin', async () => {
+    mockedList.mockResolvedValue({ projects: [project] });
+    mockedListTeams.mockResolvedValue({ teams: [team] });
+    const result = await load(loadEvent('p1', 'sess-1', null, { isGlobalAdmin: true }));
+    expect(mockedListTeams).toHaveBeenCalled();
+    expect(result).toEqual({ project, teams: [team] });
+  });
+
+  it('maps an AdminApiError from listTeams to that status, not an unhandled 500', async () => {
+    mockedList.mockResolvedValue({ projects: [project] });
+    mockedListTeams.mockRejectedValue(new AdminApiError(503, 'API down'));
+    await expect(load(loadEvent('p1', 'sess-1', null, { isGlobalAdmin: true }))).rejects.toMatchObject({
+      status: 503,
+    });
   });
 });
 
@@ -173,6 +219,35 @@ describe('admin/[projectId] patch action', () => {
     mockedPatch.mockResolvedValue({});
     await actions.patch(formEvent({ windowDays: '20' }, 'p1', 'sess-1', '203.0.113.7'));
     expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
+});
+
+describe('admin/[projectId] patch action — team assignment (Task 7b)', () => {
+  // The load-bearing pair: a test that only checks "teamId was sent" cannot
+  // tell "absent" from "null", and those are the two cases admin.ts:443
+  // treats differently (absent ⇒ leave the team untouched; null ⇒ the
+  // deliberate orphaning case). This one covers "absent" — the team_admin
+  // case, since the <select> is never rendered for them.
+  it('omits teamId from the patch body when the form did not submit one', async () => {
+    mockedPatch.mockResolvedValue({});
+    await actions.patch(formEvent({ windowDays: '20' }));
+    const body = mockedPatch.mock.calls[0][1];
+    expect('teamId' in body).toBe(false);
+  });
+
+  it('sends teamId: null when "Unassigned" is chosen', async () => {
+    mockedPatch.mockResolvedValue({});
+    await actions.patch(formEvent({ windowDays: '20', teamId: '' }));
+    const body = mockedPatch.mock.calls[0][1];
+    expect('teamId' in body).toBe(true);
+    expect(body.teamId).toBeNull();
+  });
+
+  it('sends the chosen team id', async () => {
+    mockedPatch.mockResolvedValue({});
+    await actions.patch(formEvent({ windowDays: '20', teamId: 't2' }));
+    const body = mockedPatch.mock.calls[0][1];
+    expect(body.teamId).toBe('t2');
   });
 });
 

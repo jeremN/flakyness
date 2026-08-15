@@ -24,10 +24,10 @@
 
 {#if !data.adminEnabled}
   <div class="card p-8 text-center">
-    <h3 class="text-lg font-semibold text-gray-900 mb-2">Admin actions are disabled</h3>
+    <h3 class="text-lg font-semibold text-gray-900 mb-2">Admin actions are unavailable</h3>
     <p class="text-muted">
-      Set <code class="font-mono">ADMIN_TOKEN</code> in the dashboard's environment to manage
-      projects from here.
+      Your account does not have permission to manage projects. Ask a global
+      administrator for access.
     </p>
   </div>
 {:else if data.adminProjects.length === 0}

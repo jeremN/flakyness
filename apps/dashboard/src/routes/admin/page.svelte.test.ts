@@ -41,7 +41,7 @@ const layout = {
 describe('admin/+page (list)', () => {
   it('shows the disabled notice when adminEnabled is false', async () => {
     render(Page, { props: { data: { ...layout, adminProjects: [], adminEnabled: false } } });
-    await expect.element(page.getByText('Admin actions are disabled')).toBeInTheDocument();
+    await expect.element(page.getByText('Admin actions are unavailable')).toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'New project' })).not.toBeInTheDocument();
   });
 

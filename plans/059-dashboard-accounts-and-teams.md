@@ -1551,6 +1551,42 @@ member about projects they cannot open.
 
 Show the display name or email, a "Teams"/"Users" nav entry **only when `user.isGlobalAdmin`**, and a sign-out form posting to `/logout`. Add render assertions to `layout.svelte.test.ts` for: the admin links appearing for a global admin, **not** appearing for a member, and the switcher's absence for a single-team user.
 
+- [ ] **Step 3b: Render no app chrome when nobody is signed in**
+
+**Added 2026-08-15, found while briefing Task 4.** `+layout.svelte` renders the
+whole application shell — the nav (Overview / Flaky Tests / Runs / Analysis /
+**Admin**) and the project selector fed by `data.selectedProject`. Task 3's gate
+lets `/login` through anonymously by design, and that page therefore renders
+*inside* this shell: an unauthenticated visitor sees links to every
+authenticated screen and a project dropdown.
+
+A SvelteKit `+page@.svelte` breakout does **not** solve this. `/login` lives at
+`src/routes/login/`, and the only layout above it *is* the root — there is no
+higher layout to break out to, so the `@` suffix would resolve to the same
+component.
+
+Wrap the chrome instead, so the shell is a function of being signed in:
+
+```svelte
+{#if data.user}
+  <!-- existing nav + project selector + user menu -->
+  {@render children()}
+{:else}
+  <!-- login and any other anonymous route: the page renders bare -->
+  {@render children()}
+{/if}
+```
+
+Add a `layout.svelte.test.ts` assertion for **both** directions: with
+`data.user` set the nav is present, and with `data.user: null` **no nav link and
+no project selector is in the DOM**. Assert on the absence of a specific nav
+link (e.g. the "Admin" one), not merely that some wrapper is missing — the
+latter passes if the markup moves rather than disappears.
+
+This pairs with Step 1's fetch guard: that one stops the *data* reaching an
+anonymous caller, this one stops the *navigation* doing so. Both are needed —
+the fetch guard alone still renders an empty project selector and a full nav.
+
 - [ ] **Step 4: Implement `/logout`**
 
 ```ts

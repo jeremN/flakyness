@@ -122,10 +122,13 @@ app.get('/api/v1', passwordChangeGate(), (c) => {
 
 // Fires once, at module evaluation (server start), not per-request — loud
 // enough that an operator cannot miss it in the boot log, without spamming
-// every request. Mirrors the DASHBOARD_PASSWORD warning in the dashboard's
-// hooks.server.ts, and follows the same reasoning (plan 041, D1): leaving
-// reads open is a legitimate choice for a network-isolated deployment, so we
-// warn rather than hard-fail.
+// every request. Used to mirror an equivalent DASHBOARD_PASSWORD warning in
+// the dashboard's hooks.server.ts; plan 059 removed that counterpart, because
+// dashboard authentication is now unconditional (real per-user sessions, not
+// an optional shared password) — there is no "unset means no gate" case left
+// to warn about there. This warning stands on its own: READ_TOKEN unset is
+// still a legitimate choice for a network-isolated deployment (plan 041,
+// D1), so the API still warns rather than hard-fails.
 if (!process.env.READ_TOKEN) {
   logger.warn(
     'READ_TOKEN is not set — all read endpoints are unauthenticated, and ' +

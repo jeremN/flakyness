@@ -46,7 +46,7 @@ beforeEach(() => {
 
 describe('hooks.server handle (session gate)', () => {
   it('redirects an anonymous request to /login', async () => {
-    const { event } = makeEvent('/flaky', null);
+    const { event, cookies } = makeEvent('/flaky', null);
     const resolve = vi.fn();
 
     let caught: unknown;
@@ -60,6 +60,11 @@ describe('hooks.server handle (session gate)', () => {
     expect((caught as Redirect).status).toBe(303);
     expect((caught as Redirect).location).toBe('/login');
     expect(resolve).not.toHaveBeenCalled();
+    // The delete is for clearing a token the API rejected — an anonymous
+    // caller never presented one, so there is nothing to clear. Firing it
+    // anyway would put a spurious Set-Cookie on every anonymous response,
+    // including the /login page itself.
+    expect(cookies.delete).not.toHaveBeenCalled();
   });
 
   it('does not redirect the /login page itself (no loop)', async () => {
@@ -85,6 +90,10 @@ describe('hooks.server handle (session gate)', () => {
     }
 
     expect(cookies.delete).toHaveBeenCalledWith(SESSION_COOKIE, { path: '/' });
+    // A rejected token must not survive into locals — a downstream client
+    // built from a stale sessionToken would hand the API a token it just
+    // refused, turning a clean re-login into a 401 on every request.
+    expect(event.locals.sessionToken).toBeNull();
   });
 
   it('populates locals.user for a valid session', async () => {
@@ -98,6 +107,11 @@ describe('hooks.server handle (session gate)', () => {
     expect(event.locals.teams).toEqual(teams);
     expect(event.locals.sessionToken).toBe('good-token');
     expect(event.locals.clientIp).toBe('203.0.113.7');
+    // Task 0 exists to stop every /auth/me call from keying to the dashboard
+    // container's own socket address — that guarantee only holds if the real
+    // browser IP is what's actually handed to fetchMe, not just stored on
+    // locals for someone else to forward later.
+    expect(fetchMe).toHaveBeenCalledWith('good-token', '203.0.113.7');
   });
 
   it('redirects a must_change_password user to /change-password', async () => {

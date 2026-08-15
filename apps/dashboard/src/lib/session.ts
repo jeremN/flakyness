@@ -17,15 +17,22 @@ export function parseSessionCookie(setCookieHeader: string | null): string | nul
   return match?.[1] ?? null;
 }
 
-/** Pages reachable without a completed password change. */
-const ESCAPE_HATCHES = ['/change-password', '/logout'];
+/**
+ * Pages reachable without a completed password change.
+ *
+ * Exported so session.test.ts can assert every entry here has a matching row
+ * in its ESCAPE_HATCH_API_CALLS contract table — otherwise a new hatch route
+ * ships with no check that its API calls are on the password-change
+ * allowlist.
+ */
+export const ESCAPE_HATCHES = ['/change-password', '/logout'];
 
 /**
  * Where should this request be redirected, or null to let it through?
  *
  * Extracted from hooks.server.ts so the routing rules are unit-testable
- * without a running server — the same reasoning that made `checkBasicAuth`
- * a pure module in plan 031.
+ * without a running server — the same reasoning that made plan 031's
+ * now-removed `checkBasicAuth` a pure module.
  */
 export function redirectTargetFor(user: SessionUser | null, pathname: string): string | null {
   if (!user) return pathname === '/login' ? null : '/login';

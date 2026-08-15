@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SESSION_COOKIE, parseSessionCookie, redirectTargetFor } from './session';
+import { SESSION_COOKIE, parseSessionCookie, redirectTargetFor, ESCAPE_HATCHES } from './session';
 
 describe('parseSessionCookie', () => {
   it('extracts the token from a realistic API Set-Cookie header', () => {
@@ -78,10 +78,30 @@ const ESCAPE_HATCH_API_CALLS = [
   { route: '<session gate>', method: 'GET', path: '/api/v1/auth/me' },
 ];
 
+it('every dashboard escape hatch has a row describing its API calls', () => {
+  // Closes the other half of the contract: ESCAPE_HATCHES (session.ts) says
+  // which pages a mid-reset user may reach; ESCAPE_HATCH_API_CALLS says what
+  // those pages call. If a route is added to one and not the other, this
+  // fails — a new hatch page would otherwise be free to call an endpoint no
+  // one has checked against the API's allowlist below.
+  for (const route of ESCAPE_HATCHES) {
+    expect(
+      ESCAPE_HATCH_API_CALLS.some((c) => c.route === route),
+      `ESCAPE_HATCHES lists ${route}, but ESCAPE_HATCH_API_CALLS does not say which ` +
+        `API calls that route makes — so nothing checks them against the API allowlist.`
+    ).toBe(true);
+  }
+});
+
 it('every API call reachable while mid-reset is on the API allowlist', () => {
-  // Mirrors apps/api/src/services/auth/access.ts PASSWORD_CHANGE_ALLOWLIST.
-  // If this list drifts from the API's, the assertion below fails and whoever
-  // changed one side must consciously change the other.
+  // Hard-coded MIRROR of apps/api/src/services/auth/access.ts's
+  // PASSWORD_CHANGE_ALLOWLIST, not a derivation from it — this file cannot
+  // import server code. That means editing the real PASSWORD_CHANGE_ALLOWLIST
+  // in access.ts does NOT redden this test; only editing this copy does. It
+  // catches drift on the dashboard side (a hatch route calling something not
+  // in this mirror) but not drift on the API side (the mirror going stale
+  // against the real list) — keeping the two in sync is on whoever edits
+  // either file to check the other by hand.
   const apiAllowlist = [
     { method: 'POST', path: '/api/v1/auth/change-password' },
     { method: 'GET', path: '/api/v1/auth/me' },

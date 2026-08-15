@@ -432,13 +432,30 @@ describe('authorization', () => {
 //    being touched — the same property that makes the authorization test
 //    above robust to a newly added action, applied to payload SHAPE instead
 //    of status.
-// 2. A small per-action fixture map for the `toFail`-routed branches
-//    (AdminApiError → its own status; an unrecognized throw → 502), which
-//    unavoidably needs to know each action's minimal valid fields and which
-//    mock to reject — the same narrow, per-call-site knowledge the identity
-//    assertions elsewhere in this file already require. `toFail` is shared
-//    code, so exercising it via any action proves its 3 fail() sites; this
-//    exercises it via all four so no action's catch branch is skipped.
+// 2. A small per-action fixture map (`TOFAIL_FIXTURES`) for the
+//    `toFail`-routed branches (AdminApiError → its own status; an
+//    unrecognized throw → 502), which unavoidably needs to know each
+//    action's minimal valid fields and which mock to reject — the same
+//    narrow, per-call-site knowledge the identity assertions elsewhere in
+//    this file already require. `toFail` is shared code, so exercising it
+//    via any action proves its 3 fail() sites; this exercises it via all
+//    four.
+//
+//    Tier 2 is HAND-MAINTAINED and does NOT auto-extend the way tier 1 does
+//    (findings-r2, proven by two executed escapes): a fifth action, added
+//    with its own leaking `fail()` in a catch block not routed through
+//    `toFail`, passed 54/54 with the leak uncaught, because it has no entry
+//    here; the completeness check right below turns THAT specific escape
+//    loud (a missing/extra key in `TOFAIL_FIXTURES` now fails by name,
+//    mirroring `routes-auth-coverage.test.ts` and
+//    `password-change-coverage.test.ts`'s hard-coded counts that "you must
+//    bump deliberately"). It does NOT close a narrower escape: a NEW
+//    `fail()` branch added inside an EXISTING, already-fixtured action,
+//    reachable only via a field `validFields()` doesn't supply, also passed
+//    52/52 uncaught — that is genuinely hard to catch generically, and nothing
+//    below closes it. Covering such a branch costs a deliberate edit to that
+//    action's `validFields()` (or a dedicated test), same as everywhere else
+//    in this file.
 describe('fail() payloads never carry an extra field (findings-r1 I-1)', () => {
   function assertOnlyErrorKey(result: any) {
     expect(result).toBeTruthy();
@@ -469,6 +486,16 @@ describe('fail() payloads never carry an extra field (findings-r1 I-1)', () => {
       primaryMock: mockedDeleteUser,
     },
   };
+
+  // findings-r2 (a): closes the bigger of the two escapes — a NEW action can
+  // no longer be added without a matching `TOFAIL_FIXTURES` entry, or this
+  // fails and names the missing key. Derived from `actions`, the same move
+  // as tier 1 and the derived authorization test above. It does NOT close
+  // the narrower escape (a new fail() branch inside an EXISTING, already-
+  // fixtured action) — see the block comment above this describe.
+  it('TOFAIL_FIXTURES covers every exported action', () => {
+    expect(Object.keys(TOFAIL_FIXTURES).sort()).toEqual(Object.keys(actions).sort());
+  });
 
   for (const [name, fixture] of Object.entries(TOFAIL_FIXTURES)) {
     const action = (actions as any)[name];

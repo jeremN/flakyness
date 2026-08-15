@@ -40,6 +40,12 @@ function formEvent(
 // the test. Braces force `undefined` to be returned instead.
 beforeEach(() => {
   mockedCreate.mockReset();
+  // Clears createAdminApi's own call history (mockReturnValue survives
+  // mockClear), so an identity assertion below only sees this test's own
+  // call — see the task-2b review's finding on flaky/page.server.test.ts for
+  // why an un-cleared factory mock can make an argument-swap assertion
+  // vacuous.
+  vi.mocked(createAdminApi).mockClear();
 });
 
 describe('admin/new create action', () => {

@@ -77,6 +77,12 @@ beforeEach(() => {
   mockedRotate.mockReset();
   mockedPrune.mockReset();
   mockedDelete.mockReset();
+  // Clears createAdminApi's own call history (mockReturnValue survives
+  // mockClear), so an identity assertion below only sees this test's own
+  // call — see the task-2b review's finding on flaky/page.server.test.ts for
+  // why an un-cleared factory mock can make an argument-swap assertion
+  // vacuous.
+  vi.mocked(createAdminApi).mockClear();
 });
 
 describe('admin/[projectId] load', () => {
@@ -157,6 +163,17 @@ describe('admin/[projectId] patch action', () => {
     expect(result.status).toBe(403);
     expect(result.data.message).toBe(err.message);
   });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it. `load`'s
+  // own identity test above only covers `load`'s call site, not this one —
+  // each action builds its own client (task-2b review, single-call-site gap).
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedPatch.mockResolvedValue({});
+    await actions.patch(formEvent({ windowDays: '20' }, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });
 
 describe('admin/[projectId] rotate action', () => {
@@ -165,6 +182,15 @@ describe('admin/[projectId] rotate action', () => {
     const result = (await actions.rotate(formEvent({}))) as any;
     expect(mockedRotate).toHaveBeenCalledWith('p1');
     expect(result).toMatchObject({ action: 'rotate', token: 'new_tok', warning: 'gone' });
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedRotate.mockResolvedValue({ project: { id: 'p1', name: 'Proj' }, token: 't', warning: 'w' });
+    await actions.rotate(formEvent({}, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
 
@@ -182,6 +208,23 @@ describe('admin/[projectId] prune actions', () => {
     expect(mockedPrune).toHaveBeenCalledWith('p1', true);
     expect(result).toMatchObject({ action: 'prune', prune: { dryRun: false, runsDeleted: 5 } });
   });
+
+  // pruneDryRun and pruneConfirm are separate call sites in production
+  // (each builds its own adminApi); both need their own identity coverage.
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('pruneDryRun builds the admin client from the request session, not a swapped pair', async () => {
+    mockedPrune.mockResolvedValue({ dryRun: true, cutoff: '2026-01-01' });
+    await actions.pruneDryRun(formEvent({}, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
+
+  it('pruneConfirm builds the admin client from the request session, not a swapped pair', async () => {
+    mockedPrune.mockResolvedValue({ dryRun: false, cutoff: '2026-01-01' });
+    await actions.pruneConfirm(formEvent({}, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });
 
 describe('admin/[projectId] delete action', () => {
@@ -195,6 +238,15 @@ describe('admin/[projectId] delete action', () => {
     const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'wrong' }))) as any;
     expect(result.status).toBe(400);
     expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedDelete.mockResolvedValue({ success: true, message: 'gone' });
+    await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }, 'p1', 'sess-1', '203.0.113.7')).catch(() => {});
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 
   it('deletes and redirects to /admin when the typed name matches', async () => {

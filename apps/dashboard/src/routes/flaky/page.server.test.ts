@@ -80,6 +80,13 @@ function formEvent(
 beforeEach(() => {
   mockedGetFlakyTests.mockReset();
   mockedSetFlakyStatus.mockReset();
+  // The factory mock itself (`createApi`) is never reset by the two lines
+  // above — only the methods it returns are. Without this, `load`'s correct
+  // call from an earlier test stays in `createApi.mock.calls` forever, so
+  // the action's identity assertion below can pass on residual history even
+  // if the action itself swaps its arguments. `mockClear()` drops call
+  // history only; `mockReturnValue` (set once at module scope) survives it.
+  vi.mocked(createApi).mockClear();
 });
 
 describe('flaky/+page.server load', () => {

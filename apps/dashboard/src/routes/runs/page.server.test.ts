@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project } from '../../app.d';
 
 // Minimal by design: this route previously had no server-load test file at
@@ -15,6 +15,15 @@ const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01',
 
 const mockedGetProjectRuns = vi.fn();
 vi.mocked(createApi).mockReturnValue({ getProjectRuns: mockedGetProjectRuns } as unknown as ReturnType<typeof createApi>);
+
+beforeEach(() => {
+  mockedGetProjectRuns.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
+});
 
 describe('routes/runs/+page.server load', () => {
   // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))

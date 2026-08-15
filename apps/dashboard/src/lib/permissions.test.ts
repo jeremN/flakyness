@@ -51,6 +51,14 @@ describe('canMuteTests', () => {
     expect(canMuteTests(user({ isGlobalAdmin: true }), TEAMS, null)).toBe(false);
   });
 
+  it('refuses a non-admin caller with no selected project', () => {
+    // The existing null-project case above only uses a global admin, so it
+    // exercises the `project !== null` branch under `isGlobalAdmin`, not the
+    // `!project` half of the guard below it — a non-admin caller is the only
+    // fixture that reaches that half.
+    expect(canMuteTests(user(), TEAMS, null)).toBe(false);
+  });
+
   it('refuses a mid-reset user even when they are a global admin', () => {
     // Mirrors requiresPasswordChange()'s short-circuit, which is the FIRST
     // check in every API predicate (plan 058b). Without this the console would

@@ -21,6 +21,14 @@ export function canMuteTests(
   if (!user) return false;
   if (user.mustChangePassword) return false;
   if (user.isGlobalAdmin) return project !== null;
+  // `!project` is load-bearing (a caller with no selected project). The
+  // `project.teamId === null` half is defensive symmetry with the API's
+  // explicit `project.teamId !== null` precondition in `canWriteProject`
+  // (apps/api/src/services/auth/access.ts) — it is NOT independently
+  // provable here: `teams.some(...)` below already returns `false` for a
+  // null `teamId`, since no `TeamSummary.id` (typed `string`) can equal
+  // `null`. It stays for shape-parity with the predicate it mirrors, not
+  // because a test in this file can currently make it the deciding branch.
   if (!project || project.teamId === null) return false;
   return teams.some((t) => t.id === project.teamId && t.role === 'team_admin');
 }

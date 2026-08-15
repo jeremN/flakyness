@@ -71,6 +71,12 @@ beforeEach(() => {
   mockedPatch.mockReset();
   mockedDelete.mockReset();
   mockedReorder.mockReset();
+  // Clears createAdminApi's own call history (mockReturnValue survives
+  // mockClear), so an identity assertion below only sees this test's own
+  // call — see the task-2b review's finding on flaky/page.server.test.ts for
+  // why an un-cleared factory mock can make an argument-swap assertion
+  // vacuous.
+  vi.mocked(createAdminApi).mockClear();
 });
 
 describe('rules load', () => {
@@ -155,6 +161,19 @@ describe('create action', () => {
     expect(result.status).toBe(403);
     expect(result.data).toMatchObject({ action: 'create', message: err.message });
   });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it. `load`'s
+  // own identity test covers only `load`'s call site, not this one — each
+  // action builds its own client (task-2b review, single-call-site gap).
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedCreate.mockResolvedValue({ rule: {} as any });
+    await actions.create(
+      formEvent({ action: 'quarantine', conditionType: 'flake_rate', flakeThreshold: '0.3' }, 'p1', 'sess-1', '203.0.113.7')
+    );
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });
 
 describe('update action', () => {
@@ -193,6 +212,15 @@ describe('update action', () => {
     const result = (await actions.update(formEvent({ ruleId: 'r1', action: 'exempt' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
   });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedPatch.mockResolvedValue({ rule: {} as any });
+    await actions.update(formEvent({ ruleId: 'r1', action: 'exempt' }, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
+  });
 });
 
 describe('toggle action', () => {
@@ -219,6 +247,15 @@ describe('toggle action', () => {
     mockedPatch.mockRejectedValue(new NotAuthenticatedError());
     const result = (await actions.toggle(formEvent({ ruleId: 'r1', enabled: 'true' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedPatch.mockResolvedValue({ rule: {} as any });
+    await actions.toggle(formEvent({ ruleId: 'r1', enabled: 'true' }, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
 
@@ -253,6 +290,15 @@ describe('delete action', () => {
     mockedDelete.mockRejectedValue(new NotAuthenticatedError());
     const result = (await actions.delete(formEvent({ ruleId: 'r1' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedDelete.mockResolvedValue({ success: true });
+    await actions.delete(formEvent({ ruleId: 'r1' }, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
 
@@ -317,5 +363,17 @@ describe('reorder action', () => {
     const result = (await actions.reorder(formEvent({ ruleId: 'r1', direction: 'up' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
     expect(mockedReorder).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createAdminApi(clientIp,
+  // sessionToken)) compiles clean since both are `string | null` — only a
+  // call-site assertion with two distinguishable values catches it. `reorder`
+  // builds one adminApi instance and reuses it for both listRules and
+  // reorderRules, so one assertion covers that whole call site.
+  it('builds the admin client from the request session, not a swapped pair', async () => {
+    mockedListRules.mockResolvedValue({ rules: [ruleRow('r1', 0), ruleRow('r2', 1)] });
+    mockedReorder.mockResolvedValue({ success: true });
+    await actions.reorder(formEvent({ ruleId: 'r2', direction: 'up' }, 'p1', 'sess-1', '203.0.113.7'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });

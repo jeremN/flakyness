@@ -38,6 +38,11 @@ vi.mocked(createApi).mockReturnValue({ getRunDetail: mockedGetRunDetail } as unk
 
 beforeEach(() => {
   mockedGetRunDetail.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
 });
 
 // `error(...)` from '@sveltejs/kit' throws immediately (it never returns —

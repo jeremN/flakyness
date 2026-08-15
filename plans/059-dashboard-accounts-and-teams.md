@@ -1808,6 +1808,19 @@ Use a fresh browser context (not the shared `storageState`) for the specs that n
 - [ ] **Step 3: Retire `DASHBOARD_PASSWORD`**
 
 - `docker-compose.yml` — remove `DASHBOARD_PASSWORD` from the dashboard service's `environment`. **Leave `ORIGIN` alone.** If `DASHBOARD_PASSWORD` is in the top-level `env_file`/required-vars set, remove it there too — `AGENTS.md` records that compose refuses to parse without `DB_PASSWORD` and `ADMIN_TOKEN`; confirm `DASHBOARD_PASSWORD` is not in that same required set before assuming its removal is inert.
+
+- `docker-compose.yml` **and** `.env.example` — **add `COOKIE_SECURE` to the *dashboard* service.** Found 2026-08-15 by the Task 4 review. From plan 059 on, the cookie the dashboard sets at login is the **only session cookie a browser ever holds** — the API's own `Set-Cookie` is consumed server-side by `parseSessionCookie` and never reaches the browser. `COOKIE_SECURE` today appears only in `docs/API.md` and on the API service, so `privateEnv.COOKIE_SECURE` in the dashboard is permanently `undefined` on the documented deployment: an operator running behind a TLS proxy has **no way to mark the real session cookie `Secure`**. Add it as
+  `COOKIE_SECURE: ${COOKIE_SECURE:-false}` with a comment saying to set it to
+  `true` whenever the dashboard is served over https, and add the same line to
+  `.env.example`.
+
+  **Do not "fix" this by making the dashboard mirror the API's
+  `isCookieSecure()`.** That helper is three-way (`'true'`→true, `'false'`→false,
+  unset→`NODE_ENV === 'production'`); the dashboard's is deliberately two-way
+  (unset→false). Compose sets `NODE_ENV: production` with a plain-http `ORIGIN`,
+  so adopting the API's default would mark the browser cookie `Secure` over
+  http, the browser would silently drop it, and **sign-in would break on the
+  default deployment**. The divergence is correct; the missing knob is the bug.
 - `.env.example` — remove the variable; add a comment pointing at the bootstrap procedure.
 - `AGENTS.md` — replace the plan-053 sharp edge about `DASHBOARD_PASSWORD` gating `/admin` with the account model, and add:
 

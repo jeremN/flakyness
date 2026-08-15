@@ -277,4 +277,32 @@ describe('lib/api', () => {
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('&days=30');
   });
+
+  it('sends the mute as a PATCH carrying the session cookie, never an ADMIN_TOKEN', async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', '203.0.113.7').setFlakyStatus('ft-1', 'ignored');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/tests/flaky/ft-1');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ status: 'ignored' }));
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  it('surfaces a mute rejection as an APIError carrying the status', async () => {
+    // The action maps this to fail(); it must NOT become a thrown error page,
+    // which would replace the form with a 500 screen instead of an inline message.
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response('{}', { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createApi('s', null).setFlakyStatus('ft-1', 'ignored')).rejects.toMatchObject({
+      name: 'APIError',
+      statusCode: 403,
+    });
+  });
 });

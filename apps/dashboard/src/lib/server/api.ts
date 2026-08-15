@@ -27,22 +27,27 @@ export class APIError extends Error {
 }
 
 export function createApi(sessionToken: string | null, clientIp: string | null) {
+  function buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (sessionToken) {
+      headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
+    } else if (privateEnv.READ_TOKEN) {
+      headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
+    }
+    // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
+    // every such request into one bucket instead of falling back to the
+    // socket address, which is the opposite of the intent.
+    if (clientIp) headers['X-Forwarded-For'] = clientIp;
+    return headers;
+  }
+
   async function fetchJson<T>(path: string): Promise<T> {
     try {
       // Server-only by construction: this module lives under $lib/server, which
       // SvelteKit refuses to bundle into client code. READ_TOKEN must never be
       // exposed to the browser, which is also why it is NOT prefixed PUBLIC_
       // (unlike PUBLIC_API_URL above).
-      const headers: Record<string, string> = {};
-      if (sessionToken) {
-        headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
-      } else if (privateEnv.READ_TOKEN) {
-        headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
-      }
-      // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
-      // every such request into one bucket instead of falling back to the
-      // socket address, which is the opposite of the intent.
-      if (clientIp) headers['X-Forwarded-For'] = clientIp;
+      const headers = buildHeaders();
 
       const response = await fetch(`${API_URL}${path}`, { headers });
 
@@ -138,6 +143,30 @@ export function createApi(sessionToken: string | null, clientIp: string | null) 
       return fetchJson<AnalysisResponse>(
         `/api/v1/projects/${projectId}/analysis?days=${days}&threshold=${threshold}`
       );
+    },
+
+    /**
+     * Mute or unmute a flaky test.
+     *
+     * Throws APIError rather than SvelteKit's error() — unlike every read above,
+     * this is called from a form action, which must answer with fail() so the
+     * message renders beside the form instead of replacing the page.
+     */
+    async setFlakyStatus(id: string, status: 'ignored' | 'active'): Promise<void> {
+      const path = `/api/v1/tests/flaky/${id}`;
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}${path}`, {
+          method: 'PATCH',
+          headers: { ...buildHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status }),
+        });
+      } catch {
+        throw new APIError(503, `Cannot reach the Flackyness API (${API_URL}).`, path);
+      }
+      if (!response.ok) {
+        throw new APIError(response.status, `Failed to update status`, path);
+      }
     },
   };
 }

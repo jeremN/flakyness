@@ -4,6 +4,19 @@ import type { SessionUser } from '../app.d';
 export const SESSION_COOKIE = 'fk_session';
 
 /**
+ * The path every session-cookie write and delete must use — login's
+ * cookies.set, the gate's cookies.delete, and /logout.
+ *
+ * A cookie deletion only matches a cookie set with the identical path, so
+ * this MUST be a single shared constant, not a literal repeated at each call
+ * site: two independently-edited `'/'` literals can drift into a mismatch
+ * with each side's own tests staying green (each test only pins its own
+ * file's literal), silently resurrecting the stale-credential loop the
+ * delete exists to break. See the Task 4 review, plan 059.
+ */
+export const SESSION_COOKIE_PATH = '/';
+
+/**
  * Lift the session token out of the API's `Set-Cookie` response header.
  *
  * The API's cookie is scoped to the API's origin and never reaches the

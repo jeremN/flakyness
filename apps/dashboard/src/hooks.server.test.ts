@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { isRedirect, type Handle, type Redirect } from '@sveltejs/kit';
-import { SESSION_COOKIE } from '$lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '$lib/session';
 import type { SessionUser, TeamSummary } from './app.d';
 
 vi.mock('$lib/server/session', () => ({
@@ -89,7 +89,7 @@ describe('hooks.server handle (session gate)', () => {
       // separately). This test only cares that the stale cookie was cleared.
     }
 
-    expect(cookies.delete).toHaveBeenCalledWith(SESSION_COOKIE, { path: '/' });
+    expect(cookies.delete).toHaveBeenCalledWith(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
     // A rejected token must not survive into locals — a downstream client
     // built from a stale sessionToken would hand the API a token it just
     // refused, turning a clean re-login into a 401 on every request.

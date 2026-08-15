@@ -42,4 +42,14 @@ describe('login/+page', () => {
 
     await expect.element(page.getByLabelText('Password')).toHaveValue('');
   });
+
+  it('submits via a standard POST form, not GET', async () => {
+    // Survives mutation to method="GET" otherwise — a GET form submission
+    // would put the password in the URL/query string and browser history.
+    // Raw DOM query (no accessible-role query for a plain <form>) — mirrors
+    // routes/runs/page.svelte.test.ts's document.querySelector precedent.
+    render(Page, { props: { form: null } });
+
+    expect(document.querySelector('form')?.getAttribute('method')).toBe('POST');
+  });
 });

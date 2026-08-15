@@ -1,5 +1,5 @@
 import { redirect, type Handle } from '@sveltejs/kit';
-import { SESSION_COOKIE, redirectTargetFor } from '$lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, redirectTargetFor } from '$lib/session';
 import { fetchMe } from '$lib/server/session';
 
 /**
@@ -30,7 +30,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     // cookie so the browser stops presenting a dead credential on every
     // request — otherwise a revoked session costs an API round-trip per page
     // view, forever.
-    event.cookies.delete(SESSION_COOKIE, { path: '/' });
+    event.cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
   }
 
   event.locals.user = me?.user ?? null;

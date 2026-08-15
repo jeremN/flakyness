@@ -20,7 +20,7 @@ const user: SessionUser = {
 
 const teams: TeamSummary[] = [{ id: 't1', name: 'Team A', role: 'member' }];
 
-function makeEvent(pathname: string, cookie: string | null) {
+function makeEvent(pathname: string, cookie: string | null, clientIp = '203.0.113.7') {
   const store = new Map<string, string>();
   if (cookie) store.set(SESSION_COOKIE, cookie);
 
@@ -32,7 +32,7 @@ function makeEvent(pathname: string, cookie: string | null) {
   return {
     event: {
       cookies,
-      getClientAddress: vi.fn(() => '203.0.113.7'),
+      getClientAddress: vi.fn(() => clientIp),
       url: new URL(`http://localhost${pathname}`),
       locals: {} as App.Locals,
     } as unknown as Parameters<Handle>[0]['event'],
@@ -98,7 +98,13 @@ describe('hooks.server handle (session gate)', () => {
 
   it('populates locals.user for a valid session', async () => {
     vi.mocked(fetchMe).mockResolvedValue({ user, teams });
-    const { event } = makeEvent('/flaky', 'good-token');
+    // Deliberately distinct from every other test's default fixture IP
+    // (203.0.113.7): if the hook ever hardcoded a literal instead of
+    // threading event.getClientAddress() through, a fixture-matching literal
+    // would pass this assertion by coincidence. A value unique to this test
+    // can only match if the real wiring is exercised.
+    const clientIp = '198.51.100.9';
+    const { event } = makeEvent('/flaky', 'good-token', clientIp);
     const resolve = vi.fn().mockResolvedValue(new Response('ok'));
 
     await handle({ event, resolve });
@@ -106,12 +112,12 @@ describe('hooks.server handle (session gate)', () => {
     expect(event.locals.user).toEqual(user);
     expect(event.locals.teams).toEqual(teams);
     expect(event.locals.sessionToken).toBe('good-token');
-    expect(event.locals.clientIp).toBe('203.0.113.7');
+    expect(event.locals.clientIp).toBe(clientIp);
     // Task 0 exists to stop every /auth/me call from keying to the dashboard
     // container's own socket address — that guarantee only holds if the real
     // browser IP is what's actually handed to fetchMe, not just stored on
     // locals for someone else to forward later.
-    expect(fetchMe).toHaveBeenCalledWith('good-token', '203.0.113.7');
+    expect(fetchMe).toHaveBeenCalledWith('good-token', clientIp);
   });
 
   it('redirects a must_change_password user to /change-password', async () => {

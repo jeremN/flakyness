@@ -284,6 +284,30 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   proxy guidance shipped with it (recorded as a follow-up in
   `plans/README.md`).
 
+- **GitGuardian flags the password test fixtures, and `.gitguardian.yaml`
+  will NOT silence it.** PR #135 tripped 8 "Generic Password" findings, all
+  false positives: mock return values (`temporaryPassword: 'tmp_pw_1'`,
+  `'tmp_secret_1'`, `'tmp_reset'`, …) and form fixtures
+  (`currentPassword: 'current-secret-1'`, `newPassword: 'new-secret-123'`) in
+  `admin/users/page.server.test.ts`, `admin/users/page.svelte.test.ts`,
+  `change-password/page.server.test.ts` and `lib/password-form.test.ts`.
+  Verified: every one of those literals appears **only** in `*.test.ts`, none
+  authenticates against anything, and nothing needs rotating. The detector
+  keys on the *shape* — a password-ish key beside a string literal — not on
+  entropy, so renaming the values does not reliably help either.
+  The trap is the remediation: this repo has **no** repo-side GitGuardian
+  integration (no `ggshield`, no config, no CI job — the check comes from the
+  GitGuardian **GitHub App**), and per
+  [ggshield's own docs](https://docs.gitguardian.com/ggshield-docs/reference/secret/ignore)
+  *"ggshield does not share its ignored secrets with the dashboard"* — the sync
+  is **one-way, dashboard → ggshield**. So adding `.gitguardian.yaml` with
+  `ignored-matches` is **dead config** against the App: the PR check keeps
+  firing and you have shipped a guard that guards nothing. Dismiss these in the
+  GitGuardian dashboard instead, as **Ignore** with reason **false positive**
+  (an ignored incident does not reopen on new occurrences, which is what
+  actually stops the recurring PR noise) — and because the sync runs that
+  direction, doing it there also covers `ggshield` if it is ever added.
+
 ## Conventions
 
 - Structured logger (`apps/api/src/middleware/logger.ts`), never `console.log`.

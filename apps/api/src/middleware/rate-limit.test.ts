@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Context } from 'hono';
-import { getClientIp } from './rate-limit';
+import { getClientIp, trustedProxyWarning } from './rate-limit';
 
 // Build the minimal shape getClientIp reads: c.env.incoming.socket.remoteAddress
 // and c.req.header('x-forwarded-for').
@@ -66,6 +66,57 @@ describe('getClientIp', () => {
     // not ''. Mutating the guard to `if (true)` would return '' here.
     process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
     expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '' }))).toBe('1.2.3.4');
+  });
+
+  it('matches a trusted proxy when the socket reports an IPv4-mapped address', () => {
+    // MEASURED, not assumed: Node reports an IPv4 connection on a dual-stack
+    // listener as '::ffff:127.0.0.1'. Every other test here uses a bare IPv4
+    // address, so the exact-string match in getClientIp passes them while
+    // silently failing in every real deployment — the operator sets
+    // TRUSTED_PROXY_IPS=172.28.0.10, the socket says '::ffff:172.28.0.10',
+    // the trust check fails, and the shared bucket returns with no error.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('matches when TRUSTED_PROXY_IPS itself is written in the IPv4-mapped form', () => {
+    // Normalize BOTH sides: an operator who copies the address out of a log
+    // will paste the ::ffff: form, and that must work too.
+    process.env.TRUSTED_PROXY_IPS = '::ffff:172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('still ignores a spoofed X-Forwarded-For from an untrusted IPv4-mapped socket', () => {
+    // The normalization must not become a bypass: '::ffff:9.9.9.9' is still
+    // not the trusted proxy, so its XFF stays ignored.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9', xff: '1.1.1.1' }))).toBe('9.9.9.9');
+  });
+
+  it('returns the socket IP normalized, so one client occupies one bucket', () => {
+    // Without normalizing the RETURN value, the same client could be keyed as
+    // both '::ffff:9.9.9.9' and '9.9.9.9' depending on the listener, splitting
+    // its bucket and doubling its effective limit.
+    delete process.env.TRUSTED_PROXY_IPS;
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9' }))).toBe('9.9.9.9');
+  });
+});
+
+describe('trustedProxyWarning', () => {
+  it('warns when TRUSTED_PROXY_IPS is unset', () => {
+    const msg = trustedProxyWarning(undefined);
+    expect(msg).toContain('TRUSTED_PROXY_IPS');
+    expect(msg).toContain('X-Forwarded-For');
+  });
+
+  it('warns when TRUSTED_PROXY_IPS is set but empty or blank', () => {
+    // `TRUSTED_PROXY_IPS=` in a .env file yields '' — configured in name only.
+    expect(trustedProxyWarning('')).not.toBeNull();
+    expect(trustedProxyWarning('   ')).not.toBeNull();
+  });
+
+  it('stays silent when a proxy is genuinely configured', () => {
+    expect(trustedProxyWarning('172.28.0.10')).toBeNull();
   });
 });
 

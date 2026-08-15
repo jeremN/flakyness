@@ -386,6 +386,27 @@ docker compose exec api pnpm db:migrate
 > project's reads — this is how the GitHub Action fetches its quarantine
 > list without a second secret.
 
+> ⚠️ **`TRUSTED_PROXY_IPS` matters as soon as the dashboard is your login
+> path — set to the wrong thing, or left unset, every user shares one
+> rate-limit bucket.** The dashboard is a confidential client: the browser
+> never calls the API directly, the dashboard *server* does, on behalf of
+> everyone who uses it. Without `TRUSTED_PROXY_IPS`, the API can't tell those
+> requests apart from one another and rate-limits them all by the same
+> socket address — `apiRateLimit` (100/min) and `authRateLimit` (10/min, the
+> login throttle) collapse into one shared bucket for the **whole
+> installation**, not per user. `docker-compose.yml` sets this for you
+> automatically: the `flackyness` network is pinned to `172.28.0.0/16` and
+> the `dashboard` service gets the fixed address `172.28.0.10`, which the
+> `api` service trusts by default (`TRUSTED_PROXY_IPS=172.28.0.10`). If you
+> run behind your own reverse proxy instead, set `TRUSTED_PROXY_IPS` to
+> *that* proxy's address — and **never** a whole subnet: with a published
+> port, Docker's userland proxy can present external traffic as a bridge
+> address, so trusting the range would let an internet client spoof
+> `X-Forwarded-For` and evade the login throttle entirely. Unset (or
+> misconfigured), the API only logs a warning at boot rather than refusing
+> to start, since an unset value is still correct for a genuinely
+> network-isolated deployment.
+
 ### Option 2: Kubernetes / Cloud Run
 
 Build the Docker images and deploy to your container platform:

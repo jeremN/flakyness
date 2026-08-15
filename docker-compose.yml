@@ -43,6 +43,12 @@ services:
       DASHBOARD_URL: http://localhost:3000
       ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN environment variable is required}
       READ_TOKEN: ${READ_TOKEN:-}
+      # Trusts X-Forwarded-For only from the dashboard container's fixed
+      # address below (172.28.0.10) — never the whole 172.28.0.0/16 range: a
+      # published port lets Docker's userland proxy present external traffic
+      # as a bridge address, which would let an internet client spoof this
+      # header and evade the login throttle. See docs/GETTING_STARTED.md.
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-172.28.0.10}
     ports:
       - "8080:8080"
     healthcheck:
@@ -99,12 +105,19 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+    # Fixed address (long-form mapping, unlike postgres/api's short-form
+    # list above) so the API can trust exactly this one container as its
+    # X-Forwarded-For source — see TRUSTED_PROXY_IPS on the api service.
     networks:
-      - flackyness
+      flackyness:
+        ipv4_address: 172.28.0.10
 
 networks:
   flackyness:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   postgres_data:

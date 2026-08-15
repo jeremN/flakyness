@@ -11,6 +11,7 @@ import { requestLogger, logError, logger } from './middleware/logger';
 import { extractBearerToken, tokensMatch } from './middleware/auth';
 import { sessionAuth } from './middleware/session';
 import { passwordChangeGate } from './middleware/password-change';
+import { trustedProxyWarning } from './middleware/rate-limit';
 import { closeDb } from './db';
 import { renderMetrics } from './metrics';
 
@@ -152,6 +153,10 @@ if (!isCookieSecure()) {
       'or COOKIE_SECURE=true.'
   );
 }
+
+// Same fires-once-at-boot shape as the two warnings above (plan 059 Task 0).
+const proxyWarning = trustedProxyWarning(process.env.TRUSTED_PROXY_IPS);
+if (proxyWarning) logger.warn(proxyWarning);
 
 // Mount routes
 app.route('/api/v1/reports', reports);

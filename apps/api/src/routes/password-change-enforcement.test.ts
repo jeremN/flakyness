@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { db, users, teams } from '../db';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
+import { db, users, teams, projects } from '../db';
 import { SESSION_COOKIE } from '../services/auth/session';
 import { withAdvisoryLock, GLOBAL_ADMIN_LOCK_KEY } from '../test-support/advisory-lock';
 import { clearMustChangePassword } from '../test-support/onboard-provisioned-user';
@@ -18,6 +18,31 @@ const adminHeaders = () => ({
   'Content-Type': 'application/json',
   Authorization: `Bearer ${process.env.ADMIN_TOKEN}`,
 });
+
+/** A real Playwright report — one spec, one passing execution. */
+function minimalReport() {
+  const startTime = new Date().toISOString();
+  return {
+    config: { version: '1.40.0' },
+    suites: [
+      {
+        title: 'enforcement.spec.ts',
+        file: 'enforcement.spec.ts',
+        specs: [
+          {
+            title: 'a test',
+            ok: true,
+            tags: [],
+            location: { file: 'enforcement.spec.ts', line: 1, column: 1 },
+            tests: [
+              { results: [{ workerIndex: 0, status: 'passed', duration: 10, retry: 0, startTime }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
 
 describeEnforcement('mustChangePassword enforcement', () => {
   let seq = 0;
@@ -47,6 +72,39 @@ describeEnforcement('mustChangePassword enforcement', () => {
     password: string;
   }
 
+  /**
+   * Rows this file created, drained by the afterEach below.
+   *
+   * A registry rather than a `cleanup(f)` call at the end of each test: an
+   * assertion that throws skips everything after it, so a trailing cleanup
+   * call is exactly the code that does NOT run on the failure paths — the one
+   * time the leak matters. Leaked teams and users persist in the shared
+   * database and add noise to every later file (the `admin/teams` list route's
+   * own tests get progressively slower). This repo's entire subject is flaky
+   * tests; leaving that to a happy-path call would be poor form.
+   *
+   * Registration happens as each row is created, not once at the end, so a
+   * fixture that throws HALFWAY through still has its earlier rows reclaimed.
+   */
+  const createdUserIds: string[] = [];
+  const createdTeamIds: string[] = [];
+  const createdProjectIds: string[] = [];
+
+  afterEach(async () => {
+    // splice() first: the ids are removed from the registry before the deletes
+    // run, so a delete that itself fails cannot make every subsequent test
+    // retry the same rows and fail in the same place.
+    const userIds = createdUserIds.splice(0);
+    const teamIds = createdTeamIds.splice(0);
+    const projectIds = createdProjectIds.splice(0);
+    // Projects first: `projects.team_id` is ON DELETE SET NULL, so dropping the
+    // team without dropping the project leaves an ORPHANED project behind —
+    // visible to global admins on every list route, forever.
+    if (projectIds.length) await db.delete(projects).where(inArray(projects.id, projectIds));
+    if (userIds.length) await db.delete(users).where(inArray(users.id, userIds));
+    if (teamIds.length) await db.delete(teams).where(inArray(teams.id, teamIds));
+  });
+
   async function provisionMustChangeUser(): Promise<Fixture> {
     const stamp = `${Date.now()}-${seq++}`;
 
@@ -57,6 +115,7 @@ describeEnforcement('mustChangePassword enforcement', () => {
     });
     expect(teamRes.status, 'creating the fixture team must succeed').toBe(201);
     const teamId = (await teamRes.json()).team.id;
+    createdTeamIds.push(teamId);
 
     const email = `must-change-${stamp}@example.com`;
     const userRes = await app.request('/api/v1/admin/users', {
@@ -66,6 +125,7 @@ describeEnforcement('mustChangePassword enforcement', () => {
     });
     expect(userRes.status, 'provisioning the fixture user must succeed').toBe(201);
     const body = await userRes.json();
+    createdUserIds.push(body.user.id);
     expect(body.user.mustChangePassword, 'a provisioned user starts mid-reset').toBe(true);
 
     const memberRes = await app.request(`/api/v1/admin/teams/${teamId}/members`, {
@@ -76,13 +136,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
     expect(memberRes.status, 'the fixture user must end up a team_admin').toBe(201);
 
     return { id: body.user.id, teamId, email, password: body.temporaryPassword };
-  }
-
-  /** Both rows, every time. Leaked teams accumulate across runs and make the
-   *  `admin/teams` list route's own tests progressively slower and noisier. */
-  async function cleanup(f: Fixture): Promise<void> {
-    await db.delete(users).where(eq(users.id, f.id));
-    await db.delete(teams).where(eq(teams.id, f.teamId));
   }
 
   async function loginAs(email: string, password: string): Promise<string> {
@@ -125,7 +178,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       // The dashboard needs this field to know to redirect. A 200 that omits
       // it is a passing test and a broken feature.
       expect(body.user.mustChangePassword).toBe(true);
-      await cleanup(u);
     });
 
     it('HEAD /api/v1/auth/me works too — the method the pair-matching fix could have locked out', async () => {
@@ -141,7 +193,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
         headers: withCookie(await loginAs(u.email, u.password)),
       });
       expect(res.status, 'a HEAD probe of /me must not 403 mid-reset').toBe(200);
-      await cleanup(u);
     });
 
     it('DELETE /api/v1/auth/me is REFUSED — the path is allowlisted, the method is not', async () => {
@@ -160,7 +211,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
         error: 'Password change required',
         code: 'password_change_required',
       });
-      await cleanup(u);
     });
 
     it('POST /api/v1/auth/logout ends the session', async () => {
@@ -170,7 +220,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
         headers: withCookie(await loginAs(u.email, u.password)),
       });
       expect(res.status).toBe(200);
-      await cleanup(u);
     });
 
     it('POST /api/v1/auth/login re-authenticates a caller who is ALREADY carrying a mid-reset session', async () => {
@@ -200,7 +249,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
         .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
       expect(reissuedCookie, 're-authenticating must issue a fresh session cookie').toBeDefined();
 
-      await cleanup(u);
     });
 
     it('POST /api/v1/auth/change-password completes the remedy and clears the flag', async () => {
@@ -224,7 +272,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       const me = await app.request('/api/v1/admin/projects', { headers: withCookie(after) });
       expect(me.status, 'a rotated password restores full authority').toBe(200);
 
-      await cleanup(u);
     });
 
     /**
@@ -263,7 +310,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       expect(after.status).toBe(403);
       expect((await after.json()).code).toBe('password_change_required');
 
-      await cleanup(u);
     });
   });
 
@@ -290,7 +336,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual(REFUSED_403);
-      await cleanup(u);
     });
 
     it('write: PATCH /api/v1/tests/flaky/:id', async () => {
@@ -305,7 +350,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual(REFUSED_403);
-      await cleanup(u);
     });
 
     it('admin API: GET /api/v1/admin/projects', async () => {
@@ -317,7 +361,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       // Not just "a 403". `Admin access required` is also a 403 and would be
       // WRONG here — it names the wrong reason and carries no code.
       expect(await res.json()).toEqual(REFUSED_403);
-      await cleanup(u);
     });
 
     it('root: GET /api/v1 — mounted on the app itself, not on any router', async () => {
@@ -338,7 +381,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual(REFUSED_403);
-      await cleanup(u);
     });
 
     it('GET /api/v1 still answers everyone else — the gate is not a blanket refusal', async () => {
@@ -364,7 +406,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual(REFUSED_403);
-      await cleanup(u);
     });
   });
 
@@ -380,11 +421,78 @@ describeEnforcement('mustChangePassword enforcement', () => {
 
     it('a mid-reset user existing on the instance does not affect a token caller', async () => {
       // The flag lives on a row, not on the request. This pins that the gate
-      // reads the CALLER's session and nothing else.
-      const u = await provisionMustChangeUser();
+      // reads the CALLER's session and nothing else. The fixture is created
+      // for its side effect — a mid-reset row existing on the instance — and
+      // the afterEach registry reclaims it, so nothing is bound here.
+      await provisionMustChangeUser();
       const res = await app.request('/api/v1/admin/projects', { headers: adminHeaders() });
       expect(res.status).toBe(200);
-      await cleanup(u);
+    });
+
+    /**
+     * ADMIN_TOKEN is the easy case — it presents a bearer the gate ignores.
+     * The other two machine credentials each reach the API through a DIFFERENT
+     * code path and neither was covered:
+     *
+     *   project token  classified by projectAuth on the ingest hot path
+     *   READ_TOKEN     classified by readAuth on every read route
+     *
+     * Both build their `Access` by spreading `anonymousAccess()`, which fixes
+     * `mustChangePassword: false`, so neither can ever be mid-reset. That is
+     * the invariant the whole "zero behaviour change for token-only installs"
+     * promise rests on, and asserting it on ADMIN_TOKEN alone did not test it.
+     */
+    it('a project token still ingests while a mid-reset user exists on the instance', async () => {
+      const stamp = `${Date.now()}-${seq++}`;
+      const teamRes = await app.request('/api/v1/admin/teams', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ingest-team-${stamp}` }),
+      });
+      expect(teamRes.status).toBe(201);
+      const teamId = (await teamRes.json()).team.id;
+      createdTeamIds.push(teamId);
+
+      const projectRes = await app.request('/api/v1/admin/projects', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ name: `ingest-project-${stamp}`, teamId }),
+      });
+      expect(projectRes.status).toBe(201);
+      const project = await projectRes.json();
+      createdProjectIds.push(project.project.id);
+
+      // The mid-reset user is created AFTER the project on purpose: the point
+      // is that its mere existence on the instance changes nothing for a
+      // credential that carries no session.
+      await provisionMustChangeUser();
+
+      const res = await app.request(`/api/v1/reports?branch=main&commit=${'a'.repeat(40)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${project.token}` },
+        body: JSON.stringify(minimalReport()),
+      });
+      expect(res.status, 'ingest must be completely unaffected by the flag').toBe(201);
+    });
+
+    it('a READ_TOKEN caller still reads while a mid-reset user exists on the instance', async () => {
+      const prev = process.env.READ_TOKEN;
+      process.env.READ_TOKEN = `read-secret-${Date.now()}`;
+      try {
+        await provisionMustChangeUser();
+        const res = await app.request('/api/v1/projects', {
+          headers: { Authorization: `Bearer ${process.env.READ_TOKEN}` },
+        });
+        expect(res.status, 'a READ_TOKEN read must not be refused').toBe(200);
+        // Not merely "not 403": a READ_TOKEN caller is unscoped, so it must
+        // still see the instance's projects rather than the empty list a
+        // mid-reset caller would get. This is the assertion that would catch
+        // requiresPasswordChange leaking into a non-user kind.
+        expect(Array.isArray((await res.json()).projects)).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.READ_TOKEN;
+        else process.env.READ_TOKEN = prev;
+      }
     });
   });
 
@@ -400,7 +508,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
     });
     expect(res.status).toBe(403);
     expect((await res.json()).code).toBe('password_change_required');
-    await cleanup(u);
   });
 
   it('layer 1 alone still refuses when the gate is mocked out', async () => {
@@ -458,7 +565,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
     } finally {
       vi.doUnmock('../middleware/password-change');
       vi.resetModules();
-      await cleanup(u);
     }
   });
 
@@ -500,6 +606,7 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(teamRes.status).toBe(201);
       const teamId = (await teamRes.json()).team.id;
+      createdTeamIds.push(teamId);
 
       const projectRes = await app.request('/api/v1/admin/projects', {
         method: 'POST',
@@ -508,6 +615,7 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(projectRes.status).toBe(201);
       const projectId = (await projectRes.json()).project.id;
+      createdProjectIds.push(projectId);
 
       const userRes = await app.request('/api/v1/admin/users', {
         method: 'POST',
@@ -516,9 +624,14 @@ describeEnforcement('mustChangePassword enforcement', () => {
       });
       expect(userRes.status).toBe(201);
       const created = await userRes.json();
+      const userId = created.user.id;
+      // Registered BEFORE the assertions below, so a fixture that comes back
+      // wrong still gets its row reclaimed instead of leaking a global admin —
+      // the single worst row to leave behind in a shared database, since
+      // admin-users.test.ts's withSoleGlobalAdmin asserts on exactly that set.
+      createdUserIds.push(userId);
       expect(created.user.isGlobalAdmin, 'the fixture must really be a global admin').toBe(true);
       expect(created.user.mustChangePassword, 'and must start mid-reset').toBe(true);
-      const userId = created.user.id;
 
       const cookie = await loginAs(created.user.email, created.temporaryPassword);
 
@@ -566,6 +679,16 @@ describeEnforcement('mustChangePassword enforcement', () => {
       } finally {
         vi.doUnmock('../middleware/password-change');
         vi.resetModules();
+        // Deleted HERE, still holding the lock, even though the afterEach
+        // registry would also reclaim these rows. Belt and braces, and the
+        // belt is the one that matters: this is the only fixture in the file
+        // that is a GLOBAL ADMIN, and the afterEach runs after the lock is
+        // released. Dropping the row inside the critical section keeps the
+        // window in which an extra global admin exists exactly as narrow as it
+        // was before the registry was introduced. The registry then no-ops on
+        // the happy path (DELETE ... WHERE id IN (already-gone) affects zero
+        // rows) and still covers the throwing paths, which is its whole job.
+        await db.delete(projects).where(eq(projects.id, projectId));
         await db.delete(users).where(eq(users.id, userId));
         await db.delete(teams).where(eq(teams.id, teamId));
       }
@@ -613,7 +736,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
     } finally {
       __setRateLimitEnabled(false);
       vi.resetModules();
-      await cleanup(u);
     }
   });
 
@@ -674,7 +796,6 @@ describeEnforcement('mustChangePassword enforcement', () => {
     } finally {
       __setRateLimitEnabled(false);
       vi.resetModules();
-      await cleanup(u);
     }
   });
 });

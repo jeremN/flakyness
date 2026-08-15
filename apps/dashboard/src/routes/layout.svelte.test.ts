@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readable } from 'svelte/store';
 import { createRawSnippet } from 'svelte';
-vi.mock('$app/stores', () => ({ page: readable({ url: new URL('http://localhost/flaky') }) }));
+// The query string here is load-bearing: it lets tests assert that project-link
+// hrefs (built via `projectHref` -> `withQueryParam`) both PRESERVE an existing
+// param (`team=t1`) and SET `project=` rather than appending a duplicate. A
+// bare `/flaky` mock would leave that round-trip unexercised (finding #1, task
+// 6 review round 1).
+vi.mock('$app/stores', () => ({ page: readable({ url: new URL('http://localhost/flaky?team=t1') }) }));
 import { render } from 'vitest-browser-svelte';
 import { page as vitestPage } from 'vitest/browser';
 import Layout from './+layout.svelte';
@@ -16,6 +21,7 @@ import Layout from './+layout.svelte';
 // all-null fixture set would test nothing (every project would silently fall into the same
 // bucket). `unassignedProject` is the dedicated teamId: null fixture those tests use instead.
 const project = { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z', teamId: 't1' };
+const project2 = { id: 'p3', name: 'Proj Two', createdAt: '2026-01-03T00:00:00Z', teamId: 't1' };
 const unassignedProject = { id: 'p2', name: 'Unassigned Proj', createdAt: '2026-01-02T00:00:00Z', teamId: null };
 
 const member = { id: 'u1', email: 'member@example.com', displayName: null, isGlobalAdmin: false, mustChangePassword: false };
@@ -39,6 +45,28 @@ describe('+layout', () => {
   it('renders the project list when there are projects', async () => {
     render(Layout, { props: { children, data: data({ projects: [project] }) } });
     await expect.element(vitestPage.getByRole('link', { name: 'Proj One' })).toBeInTheDocument();
+  });
+
+  // Finding #1 (task 6 review round 1): projectHref had zero navigation
+  // coverage — `return '#';` left the whole suite green. This single
+  // assertion pins the function is called, the existing `team=t1` param
+  // survives, and `project=` is SET (not appended to an existing one).
+  it("sets a project link's href from the current URL, preserving other params", async () => {
+    render(Layout, { props: { children, data: data({ projects: [project] }) } });
+    await expect
+      .element(vitestPage.getByRole('link', { name: 'Proj One' }))
+      .toHaveAttribute('href', '/flaky?team=t1&project=p1');
+  });
+
+  // Minor #3 (task 6 review round 1): isSelectedProject had zero assertion
+  // coverage — `return true;` left the whole suite green. Mirrors the
+  // existing nav-link (line ~63) and TeamSwitcher active-team assertions.
+  it('marks only the selected project link as current', async () => {
+    render(Layout, {
+      props: { children, data: data({ projects: [project, project2], selectedProject: project }) },
+    });
+    await expect.element(vitestPage.getByRole('link', { name: 'Proj One' })).toHaveAttribute('aria-current', 'page');
+    await expect.element(vitestPage.getByRole('link', { name: 'Proj Two' })).not.toHaveAttribute('aria-current');
   });
 
   it('hides the project list when there are no projects', async () => {
@@ -92,14 +120,17 @@ describe('+layout', () => {
     it('shows the Teams and Users links for a global admin', async () => {
       render(Layout, { props: { children, data: data({ user: admin }) } });
 
-      await expect.element(vitestPage.getByRole('link', { name: 'Teams' })).toBeInTheDocument();
+      // exact: true (finding #4, task 6 review round 1) — a substring match
+      // also resolves "All teams" once the switcher renders for a multi-team
+      // admin, which would make this a strict-mode violation with >=2 teams.
+      await expect.element(vitestPage.getByRole('link', { name: 'Teams', exact: true })).toBeInTheDocument();
       await expect.element(vitestPage.getByRole('link', { name: 'Users' })).toBeInTheDocument();
     });
 
     it('hides the Teams and Users links for a non-admin member', async () => {
       render(Layout, { props: { children, data: data({ user: member }) } });
 
-      await expect.element(vitestPage.getByRole('link', { name: 'Teams' })).not.toBeInTheDocument();
+      await expect.element(vitestPage.getByRole('link', { name: 'Teams', exact: true })).not.toBeInTheDocument();
       await expect.element(vitestPage.getByRole('link', { name: 'Users' })).not.toBeInTheDocument();
     });
   });

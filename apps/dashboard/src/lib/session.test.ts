@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { SESSION_COOKIE, parseSessionCookie, redirectTargetFor, ESCAPE_HATCHES } from './session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, parseSessionCookie, redirectTargetFor, ESCAPE_HATCHES } from './session';
+
+// Minor #5 (task 6 review round 1): every call site imports this constant, so
+// no other assertion in the suite pins its VALUE — mutating it to '/wrong'
+// left all 366 node tests green. A wrong path would silently break every
+// session cookie (set/delete mismatch) with green CI until the Task 8 E2E
+// suite catches it.
+it('pins the session cookie path', () => {
+  expect(SESSION_COOKIE_PATH).toBe('/');
+});
 
 describe('parseSessionCookie', () => {
   it('extracts the token from a realistic API Set-Cookie header', () => {
@@ -102,6 +111,16 @@ it('every API call reachable while mid-reset is on the API allowlist', () => {
   // in this mirror) but not drift on the API side (the mirror going stale
   // against the real list) — keeping the two in sync is on whoever edits
   // either file to check the other by hand.
+  //
+  // The staleness is bidirectional, and this table is equally hand-maintained
+  // against the DASHBOARD side too: ESCAPE_HATCH_API_CALLS is not derived from
+  // the actual route files, so editing e.g. logout/+page.server.ts's endpoint
+  // (say, to /api/v1/auth/signout) only reddens that route's own
+  // page.server.test.ts — this file stays green regardless, because it only
+  // checks the hard-coded table above against the hard-coded allowlist below,
+  // never the real route source. Editing a route and its own test together
+  // leaves this contract table silently stale (finding #7, task 6 review
+  // round 1). Comment only — no deriving mechanism is being built for this.
   const apiAllowlist = [
     { method: 'POST', path: '/api/v1/auth/change-password' },
     { method: 'GET', path: '/api/v1/auth/me' },

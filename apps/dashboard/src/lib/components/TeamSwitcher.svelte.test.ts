@@ -54,4 +54,14 @@ describe('TeamSwitcher', () => {
     await expect.element(vitestPage.getByRole('link', { name: 'Team Beta' })).toHaveAttribute('aria-current', 'page');
     await expect.element(vitestPage.getByRole('link', { name: 'Team Alpha' })).not.toHaveAttribute('aria-current');
   });
+
+  // Minor #8 (task 6 review round 1): the ternary on "All teams" itself
+  // (activeTeam === null ? 'page' : undefined) had no coverage — mutating it
+  // to a plain `undefined` left the suite green, since the per-team case
+  // above only exercises the OTHER branch of a different ternary.
+  it('marks "All teams" current when no team filter is active', async () => {
+    render(TeamSwitcher, { props: { teams: [teamA, teamB], activeTeam: null } });
+
+    await expect.element(vitestPage.getByRole('link', { name: 'All teams' })).toHaveAttribute('aria-current', 'page');
+  });
 });

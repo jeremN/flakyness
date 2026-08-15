@@ -52,7 +52,7 @@
 </script>
 
 {#if data.user}
-  <div class="flex min-h-screen">
+  <div class="flex h-screen">
     <!-- Sidebar -->
     <aside class="w-64 bg-white border-r border-subtle p-6 flex flex-col gap-6">
       <!-- Logo -->
@@ -65,9 +65,18 @@
 
       <TeamSwitcher teams={data.teams} activeTeam={data.activeTeam} />
 
-      <!-- Project list -->
+      <!-- Project list. Its own scroll container: an instance can have
+           thousands of projects (2,952 on the dev database, 1,529
+           unassigned), and this list sits ABOVE the nav/admin nav/user menu
+           in DOM order. `overflow-y-auto` + `min-h-0` let this div (not
+           <aside> itself) absorb the overflow so Sign out never scrolls off
+           the bottom of an otherwise-fixed sidebar — see the outer
+           container's `h-screen` (not `min-h-screen`) below, which this
+           relies on: a flex child can only be capped by `min-h-0` +
+           `overflow-y-auto` when its ancestor chain has a definite height to
+           shrink within. -->
       {#if partitioned.assigned.length > 0 || (data.user.isGlobalAdmin && partitioned.unassigned.length > 0)}
-        <div>
+        <div class="overflow-y-auto min-h-0">
           {#if partitioned.assigned.length > 0}
             <h3 class="block text-xs text-muted uppercase tracking-wider mb-2 font-medium">
               Projects

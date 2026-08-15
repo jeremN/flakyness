@@ -12,7 +12,9 @@ import Page from './+page.svelte';
 // top level. RunResult needs `testFile`; failureDetail's stdout/stderr/snippet/stack are optional STRINGS
 // (omit them, don't set null).
 const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
-const base = { projects: [], selectedProject: project, apiError: null };
+// user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not read by this
+// page, present only so the fixture type-checks against the generated PageData.
+const base = { projects: [], selectedProject: project, apiError: null, user: null, teams: [], activeTeam: null };
 const run = { id: 'r1', branch: 'main', commitSha: 'abcdef1234567', pipelineId: null,
   startedAt: null, finishedAt: null, totalTests: 1, passed: 0, failed: 1, skipped: 0, flaky: 0,
   createdAt: '2026-03-15T10:00:00Z' };

@@ -12,7 +12,9 @@ import { MIN_PASSWORD_LENGTH } from '$lib/password-form';
 // these three fields is read by this page; they're here only so the fixture
 // type-checks against the generated PageData.
 const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
-const base = { projects: [], selectedProject: project, apiError: null };
+// user/teams/activeTeam (plan 059 Task 6) join the same "not read by this page" set noted
+// above — present only so the fixture type-checks against the generated PageData.
+const base = { projects: [], selectedProject: project, apiError: null, user: null, teams: [], activeTeam: null };
 
 describe('change-password/+page', () => {
   it('shows the forced heading when data.forced is true', async () => {

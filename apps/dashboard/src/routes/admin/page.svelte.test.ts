@@ -31,6 +31,11 @@ const layout = {
   projects: [],
   selectedProject: { id: 'p1', name: 'Project One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
+  // user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not
+  // read by this page, present only so the fixture type-checks.
+  user: null,
+  teams: [],
+  activeTeam: null,
 };
 
 describe('admin/+page (list)', () => {

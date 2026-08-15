@@ -5,7 +5,17 @@ import { page } from 'vitest/browser';
 import Page from './+page.svelte';
 
 const project = { id: 'p1', name: 'Test Project', createdAt: '2026-01-01T00:00:00Z', teamId: null };
-const base = { currentProject: null, projects: [], selectedProject: project, apiError: null };
+// user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not read by this
+// page, present only so the fixture type-checks against the generated PageData.
+const base = {
+  currentProject: null,
+  projects: [],
+  selectedProject: project,
+  apiError: null,
+  user: null,
+  teams: [],
+  activeTeam: null,
+};
 
 describe('runs/+page', () => {
   it('shows the empty state when there are no runs', async () => {

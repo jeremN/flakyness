@@ -13,7 +13,17 @@ const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', tea
 const row = (over: Partial<FlakyTest> = {}): FlakyTest => ({ id: '1', testName: 't', testFile: 'f.spec.ts',
   flakeRate: '0.2', totalRuns: 10, flakeCount: 2, firstDetected: '2026-03-01T00:00:00Z',
   lastSeen: '2026-03-15T10:00:00Z', status: 'active', ...over });
-const base = { projects: [], selectedProject: project, apiError: null, currentProject: project };
+// user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not read by this
+// page, present only so the fixture type-checks against the generated PageData.
+const base = {
+  projects: [],
+  selectedProject: project,
+  apiError: null,
+  currentProject: project,
+  user: null,
+  teams: [],
+  activeTeam: null,
+};
 
 describe('flaky/+page', () => {
   it('shows "No active flaky tests!" for an empty active list', async () => {

@@ -8,7 +8,18 @@ import Page from './+page.svelte';
 // `{ analysis: AnalysisResponse, currentProject: Project, days, threshold }`. `selectedProject`
 // is a NON-NULL Project (see plan point 7); `currentProject` pairs with `analysis`.
 const project = { id: 'p1', name: 'Proj', createdAt: '2026-01-01T00:00:00Z', teamId: null };
-const base = { projects: [], selectedProject: project, apiError: null, days: 14, threshold: 0.05 };
+// user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not read by this
+// page, present only so the fixture type-checks against the generated PageData.
+const base = {
+  projects: [],
+  selectedProject: project,
+  apiError: null,
+  days: 14,
+  threshold: 0.05,
+  user: null,
+  teams: [],
+  activeTeam: null,
+};
 
 describe('analysis/+page', () => {
   it('shows "No Project Selected" when analysis is null', async () => {

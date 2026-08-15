@@ -27,21 +27,28 @@
 
   // null = no user's delete confirmation is showing. Only one at a time.
   let confirmingDeleteId = $state<string | null>(null);
+  let confirmEmail = $state('');
 
   function startDelete(userId: string) {
     confirmingDeleteId = userId;
+    confirmEmail = '';
   }
   function cancelDelete() {
     confirmingDeleteId = null;
+    confirmEmail = '';
   }
 
   // A successful delete removes the row entirely, so there's nothing left to
-  // confirm; a rejected/failed delete (e.g. the last-admin 409) leaves the
-  // confirm affordance open so the operator sees the inline error next to
-  // where they were, same idea as admin/teams' enhanceDelete.
+  // confirm; a rejected/failed delete (e.g. the last-admin 409, or a typed
+  // email that doesn't match) leaves the confirm affordance open so the
+  // operator sees the inline error next to where they were, same idea as
+  // admin/teams' enhanceDelete.
   const enhanceDelete: SubmitFunction = () => async ({ result, update }) => {
     await update();
-    if (result.type === 'success') confirmingDeleteId = null;
+    if (result.type === 'success') {
+      confirmingDeleteId = null;
+      confirmEmail = '';
+    }
   };
 </script>
 
@@ -142,15 +149,32 @@
                   <button type="submit" class="pill-btn pill-btn-ghost text-xs">Reset password</button>
                 </form>
                 {#if confirmingDeleteId === u.id}
-                  <form method="POST" action="?/delete" use:enhance={enhanceDelete} class="flex items-center gap-2">
-                    <input type="hidden" name="userId" value={u.id} />
-                    <button type="submit" class="pill-btn bg-red-600 text-white hover:bg-red-700 text-xs">
-                      Confirm delete
-                    </button>
-                    <button type="button" class="pill-btn pill-btn-ghost text-xs" onclick={cancelDelete}>
-                      Cancel
-                    </button>
-                  </form>
+                  <div class="flex flex-col items-end gap-1">
+                    <span class="text-xs text-red-700">
+                      Type <span class="font-mono font-semibold">{u.email}</span> to confirm
+                    </span>
+                    <form method="POST" action="?/delete" use:enhance={enhanceDelete} class="flex items-center gap-2">
+                      <input type="hidden" name="userId" value={u.id} />
+                      <input
+                        name="confirmEmail"
+                        type="text"
+                        autocomplete="off"
+                        bind:value={confirmEmail}
+                        aria-label="Type the email to confirm"
+                        class="border border-subtle rounded-lg px-2 py-1 text-xs"
+                      />
+                      <button
+                        type="submit"
+                        disabled={confirmEmail !== u.email}
+                        class="pill-btn bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                      >
+                        Confirm delete
+                      </button>
+                      <button type="button" class="pill-btn pill-btn-ghost text-xs" onclick={cancelDelete}>
+                        Cancel
+                      </button>
+                    </form>
+                  </div>
                 {:else}
                   <button
                     type="button"

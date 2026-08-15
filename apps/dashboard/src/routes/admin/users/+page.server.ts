@@ -72,8 +72,15 @@ export const actions: Actions = {
     if (!locals.user?.isGlobalAdmin) return fail(403, { error: 'Global admin required.' });
     const form = await request.formData();
     const userId = String(form.get('userId') ?? '');
-    const isGlobalAdmin = String(form.get('isGlobalAdmin') ?? '') === 'true';
+    const raw = String(form.get('isGlobalAdmin') ?? '');
     if (!userId) return fail(400, { error: 'Missing user.' });
+    // Reject anything but the two values the row's own hidden field ever
+    // sends (mirrors admin/teams' setRole's `role !== 'member' && role !==
+    // 'team_admin'` reject branch on the sibling privilege-adjacent field) —
+    // the field is only ever reachable with a hand-crafted request, but this
+    // is the privilege flag, so it doesn't get an implicit fallback.
+    if (raw !== 'true' && raw !== 'false') return fail(400, { error: 'Invalid value.' });
+    const isGlobalAdmin = raw === 'true';
     try {
       await createAdminApi(locals.sessionToken, locals.clientIp).patchUser(userId, { isGlobalAdmin });
       return { success: true };
@@ -88,9 +95,33 @@ export const actions: Actions = {
     if (!locals.user?.isGlobalAdmin) return fail(403, { error: 'Global admin required.' });
     const form = await request.formData();
     const userId = String(form.get('userId') ?? '');
+    const typedEmail = String(form.get('confirmEmail') ?? '');
     if (!userId) return fail(400, { error: 'Missing user.' });
+
+    const api = createAdminApi(locals.sessionToken, locals.clientIp);
+    // Re-fetch the authoritative email server-side and compare there. A
+    // client-submitted "expected email" would let the confirmation gate be
+    // bypassed by editing the DOM — same rule as admin/teams' delete
+    // (+page.server.ts's own comment there), and the same reasoning applies
+    // with more force here: deleting a user is otherwise guarded by nothing
+    // but `isGlobalAdmin` — the same single guard as the fully-reversible
+    // `toggleGlobalAdmin` — and the API's 409 only refuses the *last* global
+    // admin, so deleting the second-to-last, or any team_admin, was
+    // otherwise ungated beyond that one check.
+    let users;
     try {
-      await createAdminApi(locals.sessionToken, locals.clientIp).deleteUser(userId);
+      ({ users } = await api.listUsers());
+    } catch (e) {
+      return toFail(e);
+    }
+    const user = users.find((u) => u.id === userId);
+    if (!user) return fail(404, { error: 'User not found.' });
+    if (typedEmail !== user.email) {
+      return fail(400, { error: `Type the email exactly to confirm: ${user.email}` });
+    }
+
+    try {
+      await api.deleteUser(userId);
       return { success: true };
     } catch (e) {
       // Surfaces the API's own 409 message verbatim — e.g. "Cannot delete

@@ -255,6 +255,16 @@ describe('toggleGlobalAdmin action', () => {
     expect(mockedPatchUser).not.toHaveBeenCalled();
   });
 
+  // M-2: the client's hidden field only ever sends 'true'/'false' — this is
+  // the privilege-flag field, so a hand-crafted request sending anything else
+  // must be refused rather than silently treated as "not true" ⇒ demote
+  // (mirrors admin/teams' setRole rejecting an invalid `role`).
+  it('rejects an invalid isGlobalAdmin value without calling the API', async () => {
+    const result = (await actions.toggleGlobalAdmin(formEvent({ userId: 'u1', isGlobalAdmin: 'maybe' }))) as any;
+    expect(result.status).toBe(400);
+    expect(mockedPatchUser).not.toHaveBeenCalled();
+  });
+
   it('refuses for a non-global-admin without calling the API', async () => {
     const result = (await actions.toggleGlobalAdmin(
       formEvent({ userId: 'u1', isGlobalAdmin: 'true' }, { isGlobalAdmin: false })
@@ -273,9 +283,70 @@ describe('toggleGlobalAdmin action', () => {
 });
 
 describe('delete action', () => {
-  it('deletes a user', async () => {
+  // Fix round 1 (findings-r1, "Also fix"): the delete confirmation is now
+  // server-side, mirroring admin/teams' delete — re-fetch the authoritative
+  // email via listUsers() and compare there, rather than trusting a
+  // client-submitted "expected" value. Before this, the most destructive
+  // action on this page was guarded by nothing but `isGlobalAdmin` — the
+  // same single guard as the fully-reversible `toggleGlobalAdmin` — and the
+  // API's 409 only refuses the *last* global admin, so deleting the
+  // second-to-last, or any team_admin, was otherwise ungated.
+  it('rejects when the typed email does not match', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
+    const result = (await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'wrong@x.test' }))) as any;
+    expect(result.status).toBe(400);
+    expect(mockedDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it('compares the typed email against the freshly-fetched server email, not a submitted one', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'real@x.test' })] });
+
+    // A forged `expectedEmail` field must not be able to substitute for the
+    // live `listUsers()` read — the action has never read that field, but
+    // submitting it alongside a matching `confirmEmail` is exactly the shape
+    // a naive "compare against a submitted expected value" implementation
+    // would accept. Without this field present, a mutant that reads
+    // `form.get('expectedEmail') ?? user.email` instead of `user.email`
+    // behaves identically to the real code under this test (both fall back
+    // to `user.email` when the field is absent) and survives undetected —
+    // this is the exact gap 7a's own review found missing on its first pass.
+    const stale = (await actions.delete(
+      formEvent({ userId: 'u1', confirmEmail: 'stale@x.test', expectedEmail: 'stale@x.test' })
+    )) as any;
+    expect(stale.status).toBe(400);
+    expect(mockedDeleteUser).not.toHaveBeenCalled();
+
     mockedDeleteUser.mockResolvedValue({ success: true });
-    const result = await actions.delete(formEvent({ userId: 'u1' }));
+    const ok = await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'real@x.test' }));
+    expect(mockedDeleteUser).toHaveBeenCalledWith('u1');
+    expect(ok).toEqual({ success: true });
+  });
+
+  it('404s when the user is not found', async () => {
+    mockedListUsers.mockResolvedValue({ users: [] });
+    const result = (await actions.delete(formEvent({ userId: 'missing', confirmEmail: 'x' }))) as any;
+    expect(result.status).toBe(404);
+    expect(mockedDeleteUser).not.toHaveBeenCalled();
+  });
+
+  // The pre-check listUsers() call (fetching the authoritative email to
+  // compare against) is the most reachable of delete's unhandled-error
+  // sites — no outage needed, just an expired session or a 429 while an
+  // operator is on the confirm form — and without its own try/catch it would
+  // leak even a *handled* AdminApiError as a full-page 500 (same class of
+  // gap as admin/teams' delete pre-check).
+  it('surfaces an AdminApiError from the pre-check listUsers() as an inline fail, not a throw', async () => {
+    mockedListUsers.mockRejectedValue(new AdminApiError(429, 'Too many requests'));
+    const result = (await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'x' }))) as any;
+    expect(result.status).toBe(429);
+    expect(result.data.error).toBe('Too many requests');
+    expect(mockedDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it('deletes a user once the typed email matches', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
+    mockedDeleteUser.mockResolvedValue({ success: true });
+    const result = await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'alice@x.test' }));
     expect(mockedDeleteUser).toHaveBeenCalledWith('u1');
     expect(result).toEqual({ success: true });
   });
@@ -283,8 +354,9 @@ describe('delete action', () => {
   // CRITICAL: same as toggleGlobalAdmin above, but for the delete path's
   // distinct 409 wording (admin-users.ts:360).
   it('surfaces the last-global-admin 409 message verbatim', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
     mockedDeleteUser.mockRejectedValue(new AdminApiError(409, 'Cannot delete the last global admin'));
-    const result = (await actions.delete(formEvent({ userId: 'u1' }))) as any;
+    const result = (await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'alice@x.test' }))) as any;
     expect(result.status).toBe(409);
     expect(result.data.error).toBe('Cannot delete the last global admin');
   });
@@ -292,18 +364,25 @@ describe('delete action', () => {
   it('rejects a missing userId without calling the API', async () => {
     const result = (await actions.delete(formEvent({}))) as any;
     expect(result.status).toBe(400);
+    expect(mockedListUsers).not.toHaveBeenCalled();
     expect(mockedDeleteUser).not.toHaveBeenCalled();
   });
 
   it('refuses for a non-global-admin without calling the API', async () => {
-    const result = (await actions.delete(formEvent({ userId: 'u1' }, { isGlobalAdmin: false }))) as any;
+    const result = (await actions.delete(
+      formEvent({ userId: 'u1', confirmEmail: 'x' }, { isGlobalAdmin: false })
+    )) as any;
     expect(result.status).toBe(403);
+    expect(mockedListUsers).not.toHaveBeenCalled();
     expect(mockedDeleteUser).not.toHaveBeenCalled();
   });
 
   it('builds the admin client from the session and client IP', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
     mockedDeleteUser.mockResolvedValue({ success: true });
-    await actions.delete(formEvent({ userId: 'u1' }, { isGlobalAdmin: true }, 'sess-1', '203.0.113.7'));
+    await actions.delete(
+      formEvent({ userId: 'u1', confirmEmail: 'alice@x.test' }, { isGlobalAdmin: true }, 'sess-1', '203.0.113.7')
+    );
     expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });
@@ -328,5 +407,84 @@ describe('authorization', () => {
     expect(mockedPatchUser).not.toHaveBeenCalled();
     expect(mockedResetUserPassword).not.toHaveBeenCalled();
     expect(mockedDeleteUser).not.toHaveBeenCalled();
+    expect(mockedListUsers).not.toHaveBeenCalled();
   });
+});
+
+// findings-r1, IMPORTANT #1: no `fail()` in this file carries a credential
+// today, but nothing STOPPED one from doing so — proven by the reviewer
+// adding `temporaryPassword` to `toFail`'s 502 fallback (450/450 still
+// passed) and then to all 11 `fail()` sites simultaneously (450/450 still
+// passed). Every 403/400 assertion above checks only `result.status`; every
+// 409/502 assertion checks only `result.data.error`. Extra keys were
+// invisible to all of them — and a `fail()` payload is serialized into the
+// page's `__sveltekit_data` and reaches the browser DOM, where `TokenReveal`
+// is gated on `form.success`, so a smuggled password would ship to the
+// client WITHOUT ever being visibly rendered.
+//
+// This guards it two ways, matching the two reproduction mutations above:
+//
+// 1. A fully DERIVED loop over `Object.entries(actions)` for the two
+//    branches every action reaches with NO action-specific knowledge — the
+//    auth guard (empty fields, non-admin) and the first field-validation
+//    check (empty fields, admin). A fifth action added later, with its own
+//    guard/validation fail(), is covered automatically without this file
+//    being touched — the same property that makes the authorization test
+//    above robust to a newly added action, applied to payload SHAPE instead
+//    of status.
+// 2. A small per-action fixture map for the `toFail`-routed branches
+//    (AdminApiError → its own status; an unrecognized throw → 502), which
+//    unavoidably needs to know each action's minimal valid fields and which
+//    mock to reject — the same narrow, per-call-site knowledge the identity
+//    assertions elsewhere in this file already require. `toFail` is shared
+//    code, so exercising it via any action proves its 3 fail() sites; this
+//    exercises it via all four so no action's catch branch is skipped.
+describe('fail() payloads never carry an extra field (findings-r1 I-1)', () => {
+  function assertOnlyErrorKey(result: any) {
+    expect(result).toBeTruthy();
+    expect(Object.keys(result.data ?? {})).toEqual(['error']);
+  }
+
+  for (const [name, action] of Object.entries(actions)) {
+    it(`${name}: the auth-guard fail() carries only { error }`, async () => {
+      const r = await (action as any)(formEvent({}, { isGlobalAdmin: false }));
+      assertOnlyErrorKey(r);
+    });
+
+    it(`${name}: a validation fail() carries only { error }`, async () => {
+      const r = await (action as any)(formEvent({})); // admin, but missing required fields
+      assertOnlyErrorKey(r);
+    });
+  }
+
+  const TOFAIL_FIXTURES: Record<string, { validFields: () => Record<string, string>; primaryMock: ReturnType<typeof vi.fn> }> = {
+    create: { validFields: () => ({ email: 'probe@x.test' }), primaryMock: mockedCreateUser },
+    resetPassword: { validFields: () => ({ userId: 'u1' }), primaryMock: mockedResetUserPassword },
+    toggleGlobalAdmin: {
+      validFields: () => ({ userId: 'u1', isGlobalAdmin: 'true' }),
+      primaryMock: mockedPatchUser,
+    },
+    delete: {
+      validFields: () => ({ userId: 'u1', confirmEmail: 'alice@x.test' }),
+      primaryMock: mockedDeleteUser,
+    },
+  };
+
+  for (const [name, fixture] of Object.entries(TOFAIL_FIXTURES)) {
+    const action = (actions as any)[name];
+
+    it(`${name}: toFail's AdminApiError branch carries only { error }`, async () => {
+      if (name === 'delete') mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
+      fixture.primaryMock.mockRejectedValue(new AdminApiError(409, 'conflict'));
+      const r = await action(formEvent(fixture.validFields()));
+      assertOnlyErrorKey(r);
+    });
+
+    it(`${name}: toFail's unrecognized-throw (502) branch carries only { error }`, async () => {
+      if (name === 'delete') mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
+      fixture.primaryMock.mockRejectedValue(new TypeError('fetch failed'));
+      const r = await action(formEvent(fixture.validFields()));
+      assertOnlyErrorKey(r);
+    });
+  }
 });

@@ -225,6 +225,8 @@
                       </div>
                       <button type="submit" class="pill-btn pill-btn-ghost text-xs">Add</button>
                     </form>
+                  {:else if users.length === 0}
+                    <p class="text-xs text-muted">No users exist yet.</p>
                   {:else}
                     <p class="text-xs text-muted">Every user is already a member of this team.</p>
                   {/if}

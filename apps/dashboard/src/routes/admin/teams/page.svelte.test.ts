@@ -44,11 +44,15 @@ describe('admin teams page', () => {
     await expect.element(page.getByText('No teams yet')).toBeInTheDocument();
   });
 
-  it('renders team rows with member and project counts', async () => {
+  it('renders team rows with member and project counts in the correct columns', async () => {
+    // Minor #4: `getByRole('cell', { name: '3' })` alone doesn't say WHICH
+    // cell — it passed even with the Members/Projects <td>s swapped. Scope by
+    // column position within the row instead (Team, Members, Projects,
+    // Actions — indices 0-3) so a swap actually fails this.
     render(Page, { props: { data: { ...layoutData, teams: [team()], users: [] }, form: null } });
-    await expect.element(page.getByText('Team One')).toBeInTheDocument();
-    await expect.element(page.getByRole('cell', { name: '3', exact: true })).toBeInTheDocument();
-    await expect.element(page.getByRole('cell', { name: '7', exact: true })).toBeInTheDocument();
+    const row = page.getByRole('row', { name: /Team One/ });
+    await expect.element(row.getByRole('cell').nth(1)).toHaveTextContent('3');
+    await expect.element(row.getByRole('cell').nth(2)).toHaveTextContent('7');
   });
 
   it('renders the member list for a team once expanded', async () => {
@@ -87,6 +91,31 @@ describe('admin teams page', () => {
     await expect
       .element(page.getByText('Its 5 projects will become unassigned, not deleted.'))
       .toBeInTheDocument();
+  });
+
+  // IMPORTANT #3: the server test proves the delete action RETURNS
+  // orphanedProjects; nothing proved the operator ever SEES it — deleting the
+  // whole banner block passed 90/90 before this test existed.
+  it('renders the orphaned-projects count after a successful delete', async () => {
+    render(Page, {
+      props: {
+        data: { ...layoutData, teams: [team()], users: [] },
+        form: { success: true, orphanedProjects: 4 },
+      },
+    });
+    const banner = page.getByText('Team deleted.', { exact: false });
+    await expect.element(banner).toBeInTheDocument();
+    await expect.element(banner).toHaveTextContent('4 projects became unassigned.');
+  });
+
+  // Minor #8: "Every user is already a member of this team" is misleading
+  // when the instance has zero users at all — distinguish the two empty
+  // cases.
+  it('distinguishes "no users at all" from "everyone is already a member"', async () => {
+    render(Page, { props: { data: { ...layoutData, teams: [team()], users: [] }, form: null } });
+    await page.getByRole('button', { name: 'Manage members' }).click();
+    await expect.element(page.getByText('No users exist yet.')).toBeInTheDocument();
+    await expect.element(page.getByText('Every user is already a member of this team.')).not.toBeInTheDocument();
   });
 
   it('renders a 409 message in the alert region', async () => {

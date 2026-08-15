@@ -107,6 +107,23 @@ describe('teams load', () => {
     await load(loadEvent({ isGlobalAdmin: true }, 'sess-1', '203.0.113.7'));
     expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
+
+  // CRITICAL #1(c): the `Promise.all` had no error handling at all — a
+  // rejection surfaced as a generic 500 with `status === undefined`, the
+  // only admin load in the repo without this catch (siblings:
+  // admin/+page.server.ts, rules/+page.server.ts). Both branches of the
+  // catch's status mapping are exercised below.
+  it('maps an AdminApiError from listTeams/listUsers to that status, not an unhandled 500', async () => {
+    mockedListTeams.mockRejectedValue(new AdminApiError(503, 'API down'));
+    mockedListUsers.mockResolvedValue({ users: [] });
+    await expect(load(loadEvent())).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('falls back to a 502 for a raw network error from listTeams/listUsers', async () => {
+    mockedListTeams.mockRejectedValue(new TypeError('fetch failed'));
+    mockedListUsers.mockResolvedValue({ users: [] });
+    await expect(load(loadEvent())).rejects.toMatchObject({ status: 502 });
+  });
 });
 
 describe('create action', () => {
@@ -140,6 +157,19 @@ describe('create action', () => {
     mockedCreateTeam.mockRejectedValue(new NotAuthenticatedError());
     const result = (await actions.create(formEvent({ name: 'New Team' }))) as any;
     expect(result.status).toBe(403);
+  });
+
+  // CRITICAL #1(a): `toFail`'s fallback branch. A raw network failure (e.g.
+  // `fetch` to a dead API) rejects with a plain `TypeError`, not an
+  // `AdminApiError`/`NotAuthenticatedError` — this proves it degrades to an
+  // inline `fail(502, ...)` like every other admin console, rather than
+  // rethrowing and letting SvelteKit render a full-page 500 with `form`
+  // never populated.
+  it('maps an unrecognized throw to a 502 fail instead of propagating it', async () => {
+    mockedCreateTeam.mockRejectedValue(new TypeError('fetch failed'));
+    const result = (await actions.create(formEvent({ name: 'New Team' }))) as any;
+    expect(result.status).toBe(502);
+    expect(result.data.error).toBe('Unexpected error contacting the API.');
   });
 
   it('builds the admin client from the session and client IP', async () => {
@@ -194,11 +224,17 @@ describe('delete action', () => {
   it('compares the typed name against the freshly-fetched server name, not a submitted one', async () => {
     mockedListTeams.mockResolvedValue({ teams: [team({ name: 'Real Name' })] });
 
-    // A client-submitted "expected name" cannot be forged around this check —
-    // the action never trusts anything but a fresh listTeams() call, so
-    // typing a stale/wrong name (even one that WAS the name at some point)
-    // still fails.
-    const stale = (await actions.delete(formEvent({ teamId: 't1', confirmName: 'Stale Name' }))) as any;
+    // A forged `expectedName` field must not be able to substitute for the
+    // live `listTeams()` read — the action has never read that field, but
+    // submitting it alongside a matching `confirmName` is exactly the shape
+    // a naive "compare against a submitted expected value" implementation
+    // would accept. Without this field present, a mutant that reads
+    // `form.get('expectedName') ?? team.name` instead of `team.name` behaves
+    // identically to the real code under this test (both fall back to
+    // `team.name` when the field is absent) and survives undetected.
+    const stale = (await actions.delete(
+      formEvent({ teamId: 't1', confirmName: 'Stale Name', expectedName: 'Stale Name' })
+    )) as any;
     expect(stale.status).toBe(400);
     expect(mockedDeleteTeam).not.toHaveBeenCalled();
 
@@ -213,6 +249,20 @@ describe('delete action', () => {
     mockedDeleteTeam.mockResolvedValue({ success: true, orphanedProjects: 4 });
     const result = await actions.delete(formEvent({ teamId: 't1', confirmName: 'Team One' }));
     expect(result).toEqual({ success: true, orphanedProjects: 4 });
+  });
+
+  // CRITICAL #1(b): the pre-check `listTeams()` call (fetching the
+  // authoritative name to compare against) used to sit outside any `try`, so
+  // even a *handled* AdminApiError — an expired session, a 429 from the
+  // admin rate limiter — propagated out of the action as an unhandled throw
+  // instead of degrading to an inline fail. No outage needed to hit this;
+  // it's the most reachable of the three CRITICAL #1 sites.
+  it('surfaces an AdminApiError from the pre-check listTeams() as an inline fail, not a throw', async () => {
+    mockedListTeams.mockRejectedValue(new AdminApiError(429, 'Too many requests'));
+    const result = (await actions.delete(formEvent({ teamId: 't1', confirmName: 'x' }))) as any;
+    expect(result.status).toBe(429);
+    expect(result.data.error).toBe('Too many requests');
+    expect(mockedDeleteTeam).not.toHaveBeenCalled();
   });
 
   it('404s when the team is not found', async () => {
@@ -279,6 +329,22 @@ describe('member actions', () => {
     expect(mockedAddTeamMember).not.toHaveBeenCalled();
   });
 
+  it('addMember refuses an invalid role, without calling the API', async () => {
+    const result = (await actions.addMember(
+      formEvent({ teamId: 't1', userId: 'u1', role: 'superadmin' })
+    )) as any;
+    expect(result.status).toBe(400);
+    expect(mockedAddTeamMember).not.toHaveBeenCalled();
+  });
+
+  it('setRole refuses an invalid role, without calling the API', async () => {
+    const result = (await actions.setRole(
+      formEvent({ teamId: 't1', userId: 'u1', role: 'superadmin' })
+    )) as any;
+    expect(result.status).toBe(400);
+    expect(mockedPatchTeamMember).not.toHaveBeenCalled();
+  });
+
   it('refuses every member action for a non-global-admin, without calling the API', async () => {
     const nonAdmin = { isGlobalAdmin: false };
     const addResult = (await actions.addMember(
@@ -323,18 +389,22 @@ describe('member actions', () => {
 });
 
 describe('authorization', () => {
-  it('refuses every action for a non-global-admin', async () => {
-    const nonAdmin = { isGlobalAdmin: false };
-    const results = (await Promise.all([
-      actions.create(formEvent({ name: 'x' }, nonAdmin)),
-      actions.rename(formEvent({ teamId: 't1', name: 'x' }, nonAdmin)),
-      actions.delete(formEvent({ teamId: 't1', confirmName: 'x' }, nonAdmin)),
-      actions.addMember(formEvent({ teamId: 't1', userId: 'u1', role: 'member' }, nonAdmin)),
-      actions.setRole(formEvent({ teamId: 't1', userId: 'u1', role: 'member' }, nonAdmin)),
-      actions.removeMember(formEvent({ teamId: 't1', userId: 'u1' }, nonAdmin)),
-    ])) as any[];
-
-    for (const r of results) expect(r.status).toBe(403);
+  // IMPORTANT #2: a hand-listed set of six action names cannot see a SEVENTH
+  // action added later with no guard — the new action contributes nothing to
+  // either side of a hand-written comparison, so both stay equal and the test
+  // passes regardless (the repo's own documented lesson from
+  // password-change-coverage.test.ts, one layer up: "the named-inventory
+  // assertions cannot do that job"). Iterating `Object.entries(actions)`
+  // instead makes this test see every CURRENTLY exported action, including
+  // one added after this test was written, without a corresponding update
+  // here. The `{ name, status }` object comparison (not a bare
+  // `expect(r?.status).toBe(403)`) puts the offending action's name in the
+  // failure message.
+  it('every exported action refuses a non-global-admin', async () => {
+    for (const [name, action] of Object.entries(actions)) {
+      const r = (await (action as any)(formEvent({}, { isGlobalAdmin: false }))) as any;
+      expect({ name, status: r?.status }).toEqual({ name, status: 403 });
+    }
     expect(mockedCreateTeam).not.toHaveBeenCalled();
     expect(mockedPatchTeam).not.toHaveBeenCalled();
     expect(mockedListTeams).not.toHaveBeenCalled();

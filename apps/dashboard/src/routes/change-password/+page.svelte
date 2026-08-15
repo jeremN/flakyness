@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
+  import { MIN_PASSWORD_LENGTH } from '$lib/password-form';
 
   // `data` uses the generated PageData; `form` is hand-typed (Global
   // Constraint 3, matches login/+page.svelte) — no field here is ever worth
@@ -56,13 +57,17 @@
       </div>
       <div>
         <label for="newPassword" class="block text-sm font-medium text-gray-700 mb-1">New password</label>
+        <!-- minlength is bound to $lib/password-form.ts's MIN_PASSWORD_LENGTH
+             (not a hardcoded literal) so this can't silently drift from the
+             server-side check — the drift this $lib extraction exists to
+             prevent (Task 5 review, plan 059). -->
         <input
           id="newPassword"
           name="newPassword"
           type="password"
           autocomplete="new-password"
           required
-          minlength="12"
+          minlength={MIN_PASSWORD_LENGTH}
           class="w-full border border-subtle rounded-lg px-3 py-2 text-sm"
         />
       </div>
@@ -76,7 +81,7 @@
           type="password"
           autocomplete="new-password"
           required
-          minlength="12"
+          minlength={MIN_PASSWORD_LENGTH}
           class="w-full border border-subtle rounded-lg px-3 py-2 text-sm"
         />
       </div>

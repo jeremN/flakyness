@@ -73,8 +73,14 @@ export const actions: Actions = {
       // the caller is already an authenticated, identified user.
       let message = 'Could not change your password.';
       try {
-        const body = (await res.json()) as { error?: string };
-        if (body.error) message = body.error;
+        const body = (await res.json()) as { error?: unknown };
+        // Not a `string` cast: @hono/zod-validator's own 400s (a
+        // malformed body that reaches the API despite local validation)
+        // answer `{ error: <ZodError object>, ... }`, not a string. Without
+        // this guard, `message = body.error` would assign an object and the
+        // user would see the literal text "[object Object]" instead of a
+        // sensible fallback.
+        if (typeof body.error === 'string') message = body.error;
       } catch {
         // Non-JSON body: fall through to the generic message rather than 500.
       }

@@ -3,6 +3,7 @@ vi.mock('$app/forms', () => ({ enhance: () => ({ destroy() {} }) }));
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
+import { MIN_PASSWORD_LENGTH } from '$lib/password-form';
 
 // PageData for this route is the root +layout.server.ts's data merged with
 // this page's own { forced }, per SvelteKit's load-data merging — matches
@@ -51,6 +52,22 @@ describe('change-password/+page', () => {
     await expect.element(confirm).toHaveAttribute('type', 'password');
 
     await expect.element(page.getByRole('button', { name: 'Change password' })).toBeInTheDocument();
+  });
+
+  it('pins new/confirm password minlength to $lib/password-form.ts\'s MIN_PASSWORD_LENGTH, not a hardcoded literal', async () => {
+    // Guards against exactly the drift the $lib extraction exists to
+    // prevent (I-3, Task 5 review): if MIN_PASSWORD_LENGTH changes here
+    // without the markup following, the browser would accept a password
+    // the server rejects. `toHaveAttribute` compares the DOM attribute
+    // string, so this also catches a stray non-numeric binding.
+    render(Page, { props: { data: { ...base, forced: false }, form: null } });
+
+    await expect
+      .element(page.getByLabelText('New password', { exact: true }))
+      .toHaveAttribute('minlength', String(MIN_PASSWORD_LENGTH));
+    await expect
+      .element(page.getByLabelText('Confirm new password'))
+      .toHaveAttribute('minlength', String(MIN_PASSWORD_LENGTH));
   });
 
   it('shows no alert region when there is no error', async () => {

@@ -202,29 +202,122 @@ describe('change-password action', () => {
     expect(event.cookies.set).not.toHaveBeenCalled();
   });
 
-  it('never puts any password in the returned form data on a local validation failure', async () => {
-    const event = formEvent(validFields({ newPassword: 'too-short', confirmPassword: 'too-short' }));
-
-    const result = (await actions.default(event as any)) as any;
-
-    expect(result.data).not.toHaveProperty('currentPassword');
-    expect(result.data).not.toHaveProperty('newPassword');
-    expect(result.data).not.toHaveProperty('confirmPassword');
-    expect(JSON.stringify(result.data)).not.toContain('current-secret-1');
-    expect(JSON.stringify(result.data)).not.toContain('too-short');
-  });
-
-  it('never puts any password in the returned form data on an API failure', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ error: 'Current password is incorrect' }, 401));
+  it('falls back to a generic message when the API returns a non-string error (e.g. a serialised ZodError)', async () => {
+    // @hono/zod-validator answers a malformed body with `{ error: <ZodError
+    // object>, ... }`, not a string. Without the `typeof body.error ===
+    // 'string'` guard, `message = body.error` assigns an object and the
+    // fail() payload's `error` field stringifies to the literal text
+    // "[object Object]" instead of a sensible fallback (I-2, Task 5 review).
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: { name: 'ZodError', issues: [{ message: 'Too long' }] } }, 400)
+    );
     const event = formEvent(validFields());
 
     const result = (await actions.default(event as any)) as any;
 
-    expect(result.data).not.toHaveProperty('currentPassword');
-    expect(result.data).not.toHaveProperty('newPassword');
-    expect(result.data).not.toHaveProperty('confirmPassword');
-    expect(JSON.stringify(result.data)).not.toContain('current-secret-1');
-    expect(JSON.stringify(result.data)).not.toContain('brand-new-secret-1');
+    expect(result.status).toBe(400);
+    expect(result.data.error).toBe('Could not change your password.');
+  });
+
+  // I-1 (Task 5 review): the two tests this block replaced only exercised
+  // TWO of the six fail() call sites in +page.server.ts (local validation,
+  // and the generic !res.ok branch) — the other four (missing session token,
+  // 503, 429, 502) could have a password smuggled into their payload and
+  // every existing assertion would stay green. This drives all six branches
+  // with the same three tracked secret values and checks each one.
+  describe('never echoes any submitted password value, across every fail() branch', () => {
+    const SECRET_CURRENT = 'never-echo-current-000';
+    const SECRET_NEW = 'never-echo-new-111111';
+    const SECRET_MISMATCH = 'never-echo-new-222222';
+
+    function assertNoLeak(data: unknown, secrets: string[]) {
+      const dump = JSON.stringify(data);
+      for (const secret of secrets) {
+        expect(dump).not.toContain(secret);
+      }
+    }
+
+    it('local validation failure — mismatched confirmation (400)', async () => {
+      const event = formEvent({
+        currentPassword: SECRET_CURRENT,
+        newPassword: SECRET_NEW,
+        confirmPassword: SECRET_MISMATCH,
+      });
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW, SECRET_MISMATCH]);
+    });
+
+    it('missing session token (401)', async () => {
+      const event = formEvent(
+        { currentPassword: SECRET_CURRENT, newPassword: SECRET_NEW, confirmPassword: SECRET_NEW },
+        { sessionToken: null }
+      );
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(401);
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW]);
+    });
+
+    it('unreachable API (503)', async () => {
+      fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+      const event = formEvent({
+        currentPassword: SECRET_CURRENT,
+        newPassword: SECRET_NEW,
+        confirmPassword: SECRET_NEW,
+      });
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(503);
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW]);
+    });
+
+    it('rate limited (429) — the branch a smuggled newPassword previously survived in', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ error: 'Too Many Requests' }, 429));
+      const event = formEvent({
+        currentPassword: SECRET_CURRENT,
+        newPassword: SECRET_NEW,
+        confirmPassword: SECRET_NEW,
+      });
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(429);
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW]);
+    });
+
+    it('API rejects the request — wrong current password (401)', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ error: 'Current password is incorrect' }, 401));
+      const event = formEvent({
+        currentPassword: SECRET_CURRENT,
+        newPassword: SECRET_NEW,
+        confirmPassword: SECRET_NEW,
+      });
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(401);
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW]);
+    });
+
+    it('API ok but no re-issued cookie (502)', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ success: true }, 200));
+      const event = formEvent({
+        currentPassword: SECRET_CURRENT,
+        newPassword: SECRET_NEW,
+        confirmPassword: SECRET_NEW,
+      });
+
+      const result = (await actions.default(event as any)) as any;
+
+      expect(result.status).toBe(502);
+      assertNoLeak(result.data, [SECRET_CURRENT, SECRET_NEW]);
+    });
   });
 
   it('fails closed with a 401 rather than sending a request when there is no session token', async () => {

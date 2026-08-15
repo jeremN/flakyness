@@ -1088,6 +1088,19 @@ rationale. Items 5–7 remain unplanned.
     the shape is recorded so a future reader knows it was measured. Related: mutation floors
     for the four new `$lib` modules (`permissions.ts`, `password-form.ts`, `project-groups.ts`,
     `team-members.ts`) still cannot be set without a real CI Stryker baseline.
+41. **[OPEN — 2026-08-15] Sessions do not satisfy `readAuth` at all, and the `flaky/:id` route
+    pair is inconsistent about it.** On a deployment with `READ_TOKEN` set,
+    `GET /api/v1/tests/flaky/:id` mounts `readAuth()` (`routes/tests.ts:301`) and so `401`s a
+    session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts only `resolveAccess()`
+    (`:338`) — so a `team_admin` can mute a test they cannot read. Write-without-read is
+    incoherent. The root cause is systemic to plan 041 and predates per-team access control;
+    only the asymmetry on this route pair is new. **Plan 059 did NOT fix this** — it made the
+    dashboard forward the session cookie and `READ_TOKEN` together (see item 29's neighbour,
+    the C1 fix in `02777fc`), which removes the dashboard's own exposure but leaves the API
+    contract unchanged for any other session-only client. Moved here from
+    `docs/API.md:339-347`, which previously said "tracked as scope for plan 059" — false the
+    moment 059 merged. The real fix is to give `readAuth` a session path so the two credentials
+    stop being mutually exclusive at the middleware.
 
 ## Findings considered and rejected
 

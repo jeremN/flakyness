@@ -45,10 +45,9 @@ openssl rand -hex 32
 ADMIN_TOKEN=your-generated-token-here
 ```
 
-Optionally, also set `DASHBOARD_PASSWORD` (any non-empty value) to require
-HTTP Basic Auth on the dashboard even in local dev. It's safe to leave unset
-on `localhost` — but **not** once you expose the dashboard beyond your own
-machine; see [Production Deployment](#production-deployment) below.
+There is no dashboard password to set — the dashboard authenticates real user
+accounts (see [Create Your First User Account](#create-your-first-user-account)
+below), and you'll create your first one right after starting the servers.
 
 ### 3. Start Database
 
@@ -82,6 +81,12 @@ You now have:
 ---
 
 ## Create Your First User Account
+
+> **Upgrading from an older version?** As of plan 059, `DASHBOARD_PASSWORD`
+> is gone — the dashboard authenticates real user accounts, so you MUST
+> complete this section (creating a global admin below) before anyone can
+> sign in at all; see "Upgrading an existing instance" further down this
+> section for what else changes.
 
 After running the migrations, create the first global admin with your
 `ADMIN_TOKEN`. There is no seeded account and no self-signup — deliberately:
@@ -127,9 +132,10 @@ temporary one** — reusing it is refused with
 the "rotation" is not rotated at all. On success the flag clears, every
 session for that user is revoked, and a fresh cookie is issued to you.
 
-What does **not** exist yet, so you are not left looking for it: there is no
-dashboard sign-in screen. That arrives with the dashboard accounts work (plan
-059); until then this account is usable only against the API directly.
+This same account signs in to the dashboard's own `/login` screen (plan 059)
+with the identical email/password — the dashboard forwards your session to
+the API rather than holding a separate credential, so there is nothing extra
+to set up here.
 
 `ADMIN_TOKEN` remains valid as a break-glass machine credential; user
 accounts do not replace it. It carries no session, so it is never subject to
@@ -332,12 +338,15 @@ cd flackyness
 
 # Create production .env
 cat > .env << EOF
+# Required: docker-compose.yml declares this with \`:?\`, so compose refuses to
+# even parse its config without it — the stack will not start.
+DB_PASSWORD=$(openssl rand -hex 32)
 DATABASE_URL=postgres://postgres:secure-password@db:5432/flackyness
 ADMIN_TOKEN=$(openssl rand -hex 32)
-DASHBOARD_PASSWORD=$(openssl rand -hex 32)
 READ_TOKEN=$(openssl rand -hex 32)
 PUBLIC_API_URL=https://your-domain.com
 ORIGIN=https://your-domain.com
+COOKIE_SECURE=true
 EOF
 
 # Start production stack
@@ -345,6 +354,9 @@ docker compose --profile production up -d
 
 # Run migrations
 docker compose exec api pnpm db:migrate
+
+# Create your first user — see "Create Your First User Account" above.
+# Nobody can sign in to the dashboard until you do this.
 ```
 
 > ⚠️ **Set `ORIGIN` to the dashboard's externally visible URL, or every admin
@@ -358,21 +370,26 @@ docker compose exec api pnpm db:migrate
 > the proxy's `https` URL, not this container's own port) once you expose
 > the dashboard beyond `localhost`.
 
-> ⚠️ **If you set `ADMIN_TOKEN`, also set `DASHBOARD_PASSWORD` — this is not
-> optional once the dashboard is reachable by anyone other than you.** The
-> dashboard's mutating actions — mute/unmute a flaky test, and the full
-> `/admin` console (create/edit/rotate/prune/delete a project) — hold
-> `ADMIN_TOKEN` and spend it on behalf of *whoever submits the form* — they
-> do not themselves check that the requester is who they claim. Without
-> `DASHBOARD_PASSWORD`, any visitor who can load the dashboard can mute a
-> test or delete a project; a muted test also feeds the CI quarantine
-> skip-list (see
-> [Get Quarantine List](API.md#get-quarantine-list-ci-consumable)), which
-> makes a *downstream* pipeline silently stop running that test. Setting
-> `DASHBOARD_PASSWORD` gates **every** dashboard route behind HTTP Basic Auth
-> (`apps/dashboard/src/hooks.server.ts`); leaving it unset is only a safe
-> choice for a dashboard that is genuinely reachable only on a trusted,
-> network-isolated segment.
+> ⚠️ **There is no `DASHBOARD_PASSWORD` to set — the dashboard authenticates
+> real user accounts instead (plan 059), and this is not optional.** Every
+> dashboard route redirects an anonymous visitor to `/login`
+> (`apps/dashboard/src/hooks.server.ts`), and every mutating action — mute/
+> unmute a flaky test, the full `/admin` console (create/edit/rotate/prune/
+> delete a project, manage teams and users) — runs as *whoever is signed in*,
+> forwarding their session to the API rather than spending a shared
+> `ADMIN_TOKEN` on their behalf. **You must create the first global-admin
+> account before anyone can use the dashboard at all** — see [Create Your
+> First User Account](#create-your-first-user-account) above; skipping it
+> doesn't leave the dashboard open, it leaves it unusable.
+
+> ⚠️ **Set `COOKIE_SECURE=true` once the dashboard is served over https.**
+> The dashboard's own session cookie (set at `/login`) is the only session
+> cookie a browser ever holds — the API's `Set-Cookie` is consumed
+> server-side and never reaches the browser. Left unset (or `false`), the
+> cookie is not marked `Secure`, which is the correct *default* for a
+> plain-http deployment (setting it while serving over http makes the
+> browser silently drop the cookie and breaks sign-in) but should be turned
+> on as soon as you're behind TLS, as in the `.env` block above.
 
 > 💡 **Also set `READ_TOKEN` once the API is reachable by anyone other than
 > you.** Unset, all 11 read endpoints (`/projects/*`, `/tests/*`) are open,
@@ -385,6 +402,27 @@ docker compose exec api pnpm db:migrate
 > page (dashboard unset). A project's own token also works for its own
 > project's reads — this is how the GitHub Action fetches its quarantine
 > list without a second secret.
+
+> ⚠️ **`TRUSTED_PROXY_IPS` matters as soon as the dashboard is your login
+> path — set to the wrong thing, or left unset, every user shares one
+> rate-limit bucket.** The dashboard is a confidential client: the browser
+> never calls the API directly, the dashboard *server* does, on behalf of
+> everyone who uses it. Without `TRUSTED_PROXY_IPS`, the API can't tell those
+> requests apart from one another and rate-limits them all by the same
+> socket address — `apiRateLimit` (100/min) and `authRateLimit` (10/min, the
+> login throttle) collapse into one shared bucket for the **whole
+> installation**, not per user. `docker-compose.yml` sets this for you
+> automatically: the `flackyness` network is pinned to `172.28.0.0/16` and
+> the `dashboard` service gets the fixed address `172.28.0.10`, which the
+> `api` service trusts by default (`TRUSTED_PROXY_IPS=172.28.0.10`). If you
+> run behind your own reverse proxy instead, set `TRUSTED_PROXY_IPS` to
+> *that* proxy's address — and **never** a whole subnet: with a published
+> port, Docker's userland proxy can present external traffic as a bridge
+> address, so trusting the range would let an internet client spoof
+> `X-Forwarded-For` and evade the login throttle entirely. Unset (or
+> misconfigured), the API only logs a warning at boot rather than refusing
+> to start, since an unset value is still correct for a genuinely
+> network-isolated deployment.
 
 ### Option 2: Kubernetes / Cloud Run
 

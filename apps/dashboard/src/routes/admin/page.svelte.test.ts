@@ -20,6 +20,7 @@ const proj = (over: Partial<AdminProject> = {}): AdminProject => ({
   quarantineThreshold: null,
   quarantineMinRuns: null,
   quarantineTtlDays: null,
+  teamId: null,
   stats: { totalRuns: 7, totalTests: 42, activeFlakyTests: 2 },
   ...over,
 });
@@ -28,14 +29,19 @@ const proj = (over: Partial<AdminProject> = {}): AdminProject => ({
 // layout load's { projects, selectedProject, apiError } with the page-load keys.
 const layout = {
   projects: [],
-  selectedProject: { id: 'p1', name: 'Project One', createdAt: '2026-01-01T00:00:00Z' },
+  selectedProject: { id: 'p1', name: 'Project One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
+  // user/teams/activeTeam: added by plan 059 Task 6's +layout.server.ts — not
+  // read by this page, present only so the fixture type-checks.
+  user: null,
+  teams: [],
+  activeTeam: null,
 };
 
 describe('admin/+page (list)', () => {
   it('shows the disabled notice when adminEnabled is false', async () => {
     render(Page, { props: { data: { ...layout, adminProjects: [], adminEnabled: false } } });
-    await expect.element(page.getByText('Admin actions are disabled')).toBeInTheDocument();
+    await expect.element(page.getByText('Admin actions are unavailable')).toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'New project' })).not.toBeInTheDocument();
   });
 

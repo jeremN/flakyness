@@ -303,7 +303,7 @@ un plan de conception (spec séparée dans `docs/superpowers/specs/`), parce que
 | 057 | Roadmap #5+#6 Phase B: teams & membership — `teams` + `team_members` + `projects.team_id` (migration `0012`, Default-team backfill so nothing goes invisible on upgrade), admin team/membership CRUD, user provisioning with show-once temp passwords, last-global-admin protection, real `teams` in `GET /auth/me`. **Still no read-scoping change** | P2 | M | **056 (hard — needs `users`; migration-serial)** | DONE (merged via PR #120, squash `e65c3dc`) |
 | 058 | Roadmap #5+#6 Phase C: authorization enforcement — pure `services/auth/access.ts` decision table, `resolveAccess()` scope guard on every read route (404 existence-hiding), role-gated mutations (403), filtered project lists, global-admin sessions accepted on the admin API, coverage guard extended to demand `resolveAccess`. **Anonymous stays unscoped** so an open deployment is unchanged | P2 | M–L | **057 (hard)** | DONE (merged via PR #129, squash `3d09576`) |
 | 058b | `mustChangePassword` enforcement: `Access.mustChangePassword` + four predicate short-circuits (layer 1), `passwordChangeGate()` mounted per-router after each rate limiter with a four-path recovery allowlist (layer 2), uniform `403 password_change_required`. Settles the decision plan 058 deferred | P2 | S–M | **058 (hard)** | DONE (merged via PR #133, squash `e689af0`) |
-| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — login/logout/change-password UI, session-scoped views, per-team project lists (incl. an explicit **"Unassigned"** grouping for `team_id IS NULL`, global-admin only), and the accounts/teams admin console. Removes `DASHBOARD_PASSWORD` (the chain's one breaking change) | P2 | M–L | **058 (hard)** | TODO — last of the A–D chain; the mustChangePassword contract it consumes is settled by 058b |
+| 059 | Roadmap #5+#6 Phase D: dashboard accounts & teams — `/login`, session gate in `hooks.server.ts`, forced first-login reset, team switcher, global-admin teams/users console, project team assignment. **Breaking: `DASHBOARD_PASSWORD` removed** (operators must create a user first); the dashboard also stops holding `ADMIN_TOKEN` and acts as the signed-in user | P2 | M–L | **058 (hard)** | TODO |
 
 **Follow-up noticed during 056 (no plan yet): the pre-existing schema is uniformly
 timezone-naive.** Plan 056's `users`/`sessions` columns are `timestamptz` — the design
@@ -338,6 +338,32 @@ out; a strictly-cheaper partial improvement is to **swap the order** so sessions
 revoked before the password `UPDATE` commits — a failure then logs everyone out with the
 password intact, which is recoverable, rather than leaving the password changed while the
 caller is told it failed.
+
+**Follow-up noticed during 059 (no plan yet): four new `$lib` modules have no
+`scripts/mutation-gate.mjs` floor.** `permissions.ts` (Task 2b),
+`password-form.ts` (Task 5), `project-groups.ts` (Task 6), and
+`team-members.ts` (Task 7a) are pure, mutation-testable helpers exactly like
+the existing hardened set (`format.ts`, `status.ts`, `error-page.ts`,
+`href.ts`) but were not added to it. A floor has to be calibrated against a
+real CI Stryker baseline, not guessed at plan-write time — run the dashboard's
+`$lib`-scoped nightly Stryker job once these modules exist on `main`, read
+the actual mutation score each one lands at, and set the floor from that.
+
+**Follow-up noticed during 059 (no plan yet): should `vitest.browser.config.ts`
+register `tailwindcss()`?** Browser-mode component tests currently render with
+**no Tailwind CSS at all** — `vitest.browser.config.ts` registers only
+`sveltekit()`, not the `tailwindcss()` plugin `vite.config.ts` also registers
+(measured: `class="flex"` computes `display: block`, `sticky` computes
+`position: static`; 36 CSS rules present versus Tailwind's thousands) — so no
+browser-mode test can honestly assert a computed style, which is exactly why
+the codebase's `toHaveClass` convention exists. Registering `tailwindcss()`
+would fix that, but it is **not a trivial flip**: with real CSS applied, some
+elements currently treated as present-and-inert could become
+`display: none`/zero-size, and `vitest-browser-svelte`'s locators check
+visibility before matching — so today's green assertions could start failing
+for a reason unrelated to the component under test. Wants its own pass:
+register the plugin, run the full browser suite, and triage every new
+failure individually rather than assuming they're all Tailwind-CSS-shaped.
 
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
@@ -947,6 +973,134 @@ rationale. Items 5–7 remain unplanned.
     `buildGateCoverage`'s existing self-test suite with an out-of-order case. Deferred from the
     merge deliberately rather than rushed; the guard's own comment now documents this limit
     instead of claiming a completeness it does not have.
+
+29. **🔴 SECURITY — [OPEN — found 2026-08-15 by the Codex adversarial pass during plan 059's
+    final review] Session revocation is not atomic with login (TOCTOU). Worth a plan of its
+    own, not a one-line cleanup.** Pre-existing: this is inherited from the 058/058b auth work,
+    plan 059 did not introduce it and was not blocked by it (verified, not assumed —
+    `git diff --name-only d2ec769..HEAD -- apps/api/src` shows plan 059 changed exactly two
+    non-test API source files, `index.ts` and `middleware/rate-limit.ts`; `routes/auth.ts`,
+    `middleware/session.ts` and `routes/admin-users.ts` are untouched).
+
+    `POST /api/v1/auth/login` (`routes/auth.ts`) reads the user row, runs `verifyPassword` —
+    scrypt, **deliberately expensive** — and only then calls `issueSession`.
+    `POST /api/v1/auth/change-password` updates `passwordHash` and *then* calls
+    `revokeAllUserSessions`; the admin reset path (`routes/admin-users.ts`) has the same shape.
+    A login that reads the old hash **before** the `UPDATE` commits and inserts its session
+    **after** the `DELETE` mints a session from a revoked password that survives the
+    revocation. The window is a scrypt verify plus network — not microscopic, and the attacker
+    chooses when to fire it. `authRateLimit` (10/min/IP) constrains hammering but does not
+    close it.
+
+    Two things make it worse than it first looks. The surviving session is **ungated**: the
+    password-change gate reads live DB state and `mustChangePassword` is `false` by then, so
+    the session is fully privileged rather than trapped at `/change-password`. And it is a
+    **second path to the exact outcome** the NIST-citing comment in `routes/auth.ts` was
+    written to prevent — converting a leaked temporary secret into silent standing access.
+    That comment closes the rotate-to-itself path; this walks around it.
+
+    Direction for whoever picks it up: the robust fix is a **session epoch** — stamp sessions
+    with a password version and have `sessionAuth` reject stale ones — which closes the race
+    without serialising logins. Re-checking `passwordHash` inside the insert transaction also
+    works and is smaller.
+30. **[OPEN — 2026-08-15] Operator-documentation debt: the documented production deployment
+    does not work end to end. One plan should cover all of it.** `docker-compose.yml:76`
+    hardcodes `PUBLIC_API_URL: http://localhost:8080` on the **dashboard** service with no
+    `${…}` interpolation, overriding the Dockerfile's correct `http://api:8080`
+    (`apps/dashboard/Dockerfile:55`) — nothing listens on 8080 inside that container, so
+    `fetchMe` always fails and every request redirects to `/login`.
+    `docs/GETTING_STARTED.md`'s `docker compose exec api pnpm db:migrate` cannot run in that
+    image (`tsx` and `drizzle-kit` are devDependencies pruned by `--prod`, and there is no root
+    manifest at `WORKDIR /app`) — newly load-bearing, because without migrations `0011`/`0012`
+    there is no `users` table and the instance is opaquely locked out. `README.md`'s env table
+    omits `COOKIE_SECURE`, `ORIGIN` and `TRUSTED_PROXY_IPS`, its quick start never mentions
+    that an account must be created first, and it still asserts every admin endpoint needs
+    `Authorization: Bearer $ADMIN_TOKEN`. (Plan 059 fixed only the single missing
+    `DB_PASSWORD` line, which blocked compose from parsing at all.)
+31. **[OPEN — 2026-08-15] Per-user rate limiting does not work in either documented
+    deployment.** `GETTING_STARTED.md` claims compose solves the shared-bucket problem via
+    `TRUSTED_PROXY_IPS`, but `hooks.server.ts`'s `event.getClientAddress()` only returns the
+    real client when adapter-node's `ADDRESS_HEADER` is set — and that appears **only** in
+    `apps/dashboard/playwright.config.ts`, never in `docker-compose.yml`, `.env.example` or
+    `docs/`. The documented nginx block forwards no `X-Forwarded-For` to the dashboard at all.
+    Net: every user forwards the same address and `authRateLimit` collapses to 10 sign-ins/min
+    for the whole install — the exact failure the section claims to solve. Fixing it means
+    shipping `ADDRESS_HEADER` **and** the proxy guidance together (it is only safe behind a
+    proxy that *overwrites* `X-Forwarded-For`; on a directly-reachable dashboard it lets every
+    client choose its own rate-limit bucket), which is why this is a plan and not a one-liner.
+    See the `ADDRESS_HEADER` warning in `AGENTS.md`.
+32. **[OPEN — 2026-08-15] `docs/GETTING_STARTED.md` uses `$ADMIN_TOKEN` before the `export`
+    that defines it.** Following the bootstrap literally sends `Bearer ` and gets a 401 that
+    reads like a curl-syntax error. Small, but it is the *first* command a new operator runs.
+33. **[OPEN — 2026-08-15] No documented recovery when the last global admin forgets their
+    password and `ADMIN_TOKEN` is lost.** The instance is unrecoverable without direct DB
+    access. Worth either a documented break-glass procedure or an explicit statement that none
+    exists — silence currently reads as the former.
+34. **[OPEN — 2026-08-15] `fetchMe` casts the `/auth/me` body with `as` and no shape check.**
+    A 200 answering `{"user":{},"teams":[]}` renders a page with a half-populated
+    `locals.user`. Fails **safe** on privilege today (`isGlobalAdmin` / `mustChangePassword`
+    both `undefined` ⇒ falsy) and the real API never answers that way, so this is hardening,
+    not a live bug. Fix is to zod-parse the body.
+35. **[OPEN — 2026-08-15] `admin/[projectId]`'s `teams: []` shadows the layout's `teams`** for
+    a team_admin. Harmless now — layout components receive `LayoutData`, not the merged
+    `PageData` — but a future component *inside* that page reading `data.teams` would silently
+    get an empty list. A trap, not a defect.
+36. **[OPEN — 2026-08-15] `createApi`'s `READ_TOKEN` fallback fails OPEN, and its failure mode
+    is escalation rather than denial.** Unreachable from any route today (past the session
+    gate, `locals.sessionToken` and `locals.user` are set together and cannot diverge, and
+    `+layout.server.ts` guards the one anonymous route), and it is deliberately retained. But a
+    future route — or a gate regression — calling `createApi(null, ip)` silently authenticates
+    as the `read-token` principal, which `scopesProjectList` (`services/auth/access.ts`) leaves
+    **unscoped**; measured returning every project across both teams. Recorded because
+    "escalation when it breaks" deserves a note even when nothing reaches it.
+37. **[OPEN — 2026-08-15] Console-consistency gaps between the two admin screens** — none
+    Critical, all unreasoned rather than deliberate. Teams' `delete`/`rename` skip the
+    id-presence check that users and the `rules` precedent both perform, spending an admin
+    round-trip before 404ing against a budget this codebase deliberately economises. The
+    `temporaryPassword` reveal is **page-global and unattributed** (`users/+page.svelte`), fed
+    by both `create` and `resetPassword`, labelled only "Temporary password" and naming no
+    user — so running several resets in a row, the workflow the screen exists for, yields
+    identical panels with no way to tell them apart. Teams' server test lacks users' two
+    derived safety nets (no `fail()` payload-shape assertion, no derived validation-branch
+    check) and its hand-listed malformed-input tests are already incomplete. `resetPassword`
+    has no consequence prose or confirmation despite revoking every session. Neither console
+    guards self-demotion or self-deletion (bounded today by the API's last-admin 409). Teams'
+    rename path is untested at every level.
+38. **[OPEN — 2026-08-15] The pre-existing project-delete confirmation is bypassable.**
+    `admin/[projectId]/+page.server.ts` compares `confirmName` against `form.get('name')` —
+    **both client-controlled** — and the comment claiming "this is the real check" is false.
+    Confirmed pre-existing (`d2ec769`), and confirmed **not** a privilege escalation: a
+    non-admin POSTing it gets `403 "Admin access required"` from the API. So it is a footgun
+    guard, not a hole. Worth a row because both new consoles independently identified this
+    class and fixed it properly, each citing plan 055 — the branch now ships two files
+    documenting why the third one is wrong.
+39. **[OPEN — 2026-08-15] adapter-node and the API disagree on `X-Forwarded-For` convention.**
+    `@sveltejs/adapter-node@5.5.7/files/handler.js` selects `addresses[length - depth]` — the
+    **last** entry — while the API's `getClientIp` takes `.split(',')[0]`, the first. Benign
+    today because the dashboard always sends a single-value header; the two conventions
+    disagree the moment a real proxy chain appends. Pairs naturally with item 31.
+40. **[OPEN — 2026-08-15] Mutation-coverage note for the client-IP threading, recorded as
+    measured-and-accepted rather than missed.** Hardcoding the test fixture literal in place of
+    `locals.clientIp` survives at all **13** route files; only `hooks.server.ts`, `login`,
+    `logout` and `change-password` catch it. Replacing `locals.clientIp` with `null` produces
+    **36** failures, so the realistic regressions are genuinely covered and the surviving
+    mutant needs an implausible hardcode of the exact test fixture. Judgment upheld in review;
+    the shape is recorded so a future reader knows it was measured. Related: mutation floors
+    for the four new `$lib` modules (`permissions.ts`, `password-form.ts`, `project-groups.ts`,
+    `team-members.ts`) still cannot be set without a real CI Stryker baseline.
+41. **[OPEN — 2026-08-15] Sessions do not satisfy `readAuth` at all, and the `flaky/:id` route
+    pair is inconsistent about it.** On a deployment with `READ_TOKEN` set,
+    `GET /api/v1/tests/flaky/:id` mounts `readAuth()` (`routes/tests.ts:301`) and so `401`s a
+    session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts only `resolveAccess()`
+    (`:338`) — so a `team_admin` can mute a test they cannot read. Write-without-read is
+    incoherent. The root cause is systemic to plan 041 and predates per-team access control;
+    only the asymmetry on this route pair is new. **Plan 059 did NOT fix this** — it made the
+    dashboard forward the session cookie and `READ_TOKEN` together (see item 29's neighbour,
+    the C1 fix in `02777fc`), which removes the dashboard's own exposure but leaves the API
+    contract unchanged for any other session-only client. Moved here from
+    `docs/API.md:339-347`, which previously said "tracked as scope for plan 059" — false the
+    moment 059 merged. The real fix is to give `readAuth` a session path so the two credentials
+    stop being mutually exclusive at the middleware.
 
 ## Findings considered and rejected
 

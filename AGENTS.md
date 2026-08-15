@@ -29,21 +29,28 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   environment. `docker compose` also refuses to even parse its config
   unless `DB_PASSWORD` and `ADMIN_TOKEN` have values (from `.env` or the
   shell).
-- **`pnpm --filter dashboard check` reports 3 phantom errors if you exported
-  `.env` in that shell.** `svelte-kit sync` generates the `$env/dynamic/private`
-  `env` type from **the ambient environment at sync time**, declaring every
-  variable it happens to find as a *required* `string` (the generated
-  `.svelte-kit/ambient.d.ts` will contain your unrelated shell vars too). With
-  `ADMIN_TOKEN` exported it becomes non-optional, so
-  `adminApi.test.ts`'s `delete privateEnv.ADMIN_TOKEN` becomes TS2790
-  *"The operand of a 'delete' operator must be optional"* — ×3. In a clean
-  shell the property falls through to the index signature and the same 479
-  files report **0 errors**. CI never sees this: its Type Check job does not
-  export `.env` (only the Tests job does), so PRs are green and correctly so.
-  The trap is that this guide tells you to export `.env` for the API suites,
-  and the typecheck command then fails for reasons unrelated to your change —
-  run it in a clean shell (`env -u ADMIN_TOKEN pnpm --filter dashboard check`)
-  before believing it. Verified 2026-08-14 by toggling only the export.
+- **`pnpm --filter dashboard check` can, in principle, report phantom errors
+  if you exported `.env` in that shell — but no test file currently triggers
+  it.** `svelte-kit sync` generates the `$env/dynamic/private` `env` type from
+  **the ambient environment at sync time**, declaring every variable it
+  happens to find as a *required* `string` (verified 2026-08-15: exporting
+  `ADMIN_TOKEN` or `COOKIE_SECURE` still bakes both into
+  `.svelte-kit/ambient.d.ts` as non-optional). A `delete privateEnv.X` on a
+  key the ambient scan found used to fail as TS2790 *"The operand of a
+  'delete' operator must be optional"* — this bit `adminApi.test.ts`'s
+  `delete privateEnv.ADMIN_TOKEN` (×3) until plan 059 Task 2 removed that
+  import entirely, and the pattern is now further insulated: the tests that
+  still `delete` an env var (`login/page.server.test.ts`,
+  `change-password/page.server.test.ts`, both on `COOKIE_SECURE`) import a
+  dedicated `tests/env-private-stub.ts` (`Record<string, string |
+  undefined>`) instead of the real `$env/dynamic/private`, so their types
+  never depend on the ambient scan at all. Confirmed 2026-08-15 with both
+  `ADMIN_TOKEN` and `COOKIE_SECURE` exported: same 521 files, **0 errors**.
+  The underlying mechanism is unchanged, though, so a *future* test file that
+  imports `$env/dynamic/private` directly and `delete`s a key present in your
+  shell could still trip this — run typechecks in a clean shell (`env -u
+  ADMIN_TOKEN pnpm --filter dashboard check`) before trusting a failure that
+  looks unrelated to your change.
 - **TypeScript is split across the workspace**: `apps/api` is on **TS 7**;
   `apps/dashboard` is pinned to **TS 6** because `svelte-check` 4.x crashes
   under TS 7 (it reads `ts.default.sys`, which the native rewrite removed).
@@ -79,7 +86,19 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   (`Chart.stub.svelte`) in these tests, so a rendered assertion still cannot
   catch the chart-registration no-op — that stays guarded by
   `chart-registration.test.ts`. See plans 045 (extraction) and 046 (render
-  tests).
+  tests). **Browser-mode tests apply NO Tailwind CSS**, found while writing
+  plan 059 Task 8: `vitest.browser.config.ts` registers only `sveltekit()`,
+  not the `tailwindcss()` plugin `vite.config.ts` also registers (with a
+  comment that the order matters) — so `@import "tailwindcss"` is never
+  expanded and no utility classes are generated. Measured: `class="flex"`
+  computes `display: block` and `sticky` computes `position: static`, with
+  36 CSS rules present versus Tailwind's thousands. Consequence: **no
+  browser-mode test can honestly assert a computed style** — the codebase's
+  `toHaveClass` convention is a necessity here, not a style preference.
+  Whether to register `tailwindcss()` too is an open follow-up (see
+  `plans/README.md`); it is not a trivial flip, since real CSS could hide
+  elements that `vitest-browser-svelte`'s visibility-checking locators
+  currently find.
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under
@@ -112,13 +131,15 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   NOT add `active`/`flaky` to `grepInvert`, so the `projects.ts:191-193`
   invariant holds. Threshold comparison is done in JS (fetch active rows,
   compare `Number(flakeRate)`) to dodge Postgres `numeric >= text`.
-- **The dashboard `/admin` console spends `ADMIN_TOKEN` server-side (plan
-  053).** Reads/writes go through `$lib/server/adminApi.ts` (server-only) and
-  SvelteKit form actions — the token never reaches the browser. The console is
-  gated by the same `hooks.server.ts` `DASHBOARD_PASSWORD` Basic Auth as every
-  other route; the API admin endpoints stay `ADMIN_TOKEN`-gated as the real
-  boundary (roadmap #6 owns per-user auth). Delete requires server-side typed
-  name confirmation; prune uses the API's two-phase dry-run→confirm.
+- **The dashboard authenticates users, not a shared password (plan 059).**
+  `DASHBOARD_PASSWORD` is **gone**; `hooks.server.ts` validates the `fk_session`
+  cookie against `GET /auth/me` and redirects anonymous traffic to `/login`.
+  The dashboard **no longer holds `ADMIN_TOKEN`** — `$lib/server/adminApi.ts`
+  forwards the signed-in user's session, and the API authorizes per user
+  (plan 058). `ADMIN_TOKEN` remains a valid API credential for operators and
+  scripts. On upgrade an operator MUST create their first global admin via
+  `POST /api/v1/admin/users` with `ADMIN_TOKEN` before they can sign in — see
+  `docs/GETTING_STARTED.md`.
 - **The dashboard needs `ORIGIN` (or `PROTOCOL_HEADER`) set for any admin
   form action to work, found while writing plan 053's E2E spec — the first
   test in the suite to exercise a POST.** `@sveltejs/adapter-node`'s CSRF
@@ -223,6 +244,45 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `isGlobalAdmin` shortcut — without that, a mid-reset *global admin* took the
   unfiltered branch and layer 1 never ran at all for the highest-privilege
   caller on the instance.
+- **The E2E suite needs `TRUSTED_PROXY_IPS` set on the API process, or every
+  Playwright worker shares one rate-limit bucket again (plan 059 Task 8 fix
+  round 1).** `hooks.server.ts` calls `GET /api/v1/auth/me` on every
+  server-rendered page view, and the dashboard's `webServer.env` in
+  `playwright.config.ts` sets `ADDRESS_HEADER=x-forwarded-for` plus
+  `apps/dashboard/e2e/fixtures.ts` gives every worker its own
+  `X-Forwarded-For` value — but the API only *trusts* that header from a
+  socket address listed in `TRUSTED_PROXY_IPS`. Without it, `getClientIp`
+  falls back to the (identical, loopback) socket address for every worker,
+  and the whole suite's traffic goes back to sharing one `apiRateLimit`
+  bucket (100/fixed-60s-window), intermittently 429ing `GET /auth/me` and
+  spuriously signing out whichever request lost the race — reproduced and
+  root-caused during this fix round (see the Task 8 report). CI sets it in
+  `.github/workflows/ci.yml`'s `e2e` job env; running the suite locally
+  needs it set wherever the API process is started (`TRUSTED_PROXY_IPS=127.0.0.1`
+  when both processes are on localhost, which is the normal case — see
+  `docs/GETTING_STARTED.md`'s explanation of the same variable for real
+  deployments). **A missing `ADDRESS_HEADER`-supplied header 500s**: verified
+  directly against a built dashboard that a request with no
+  `x-forwarded-for` fails once `ADDRESS_HEADER` is set, so this is not a
+  silent degrade for the dashboard's OWN requests — only for the API's trust
+  decision, which fails silently back to one shared bucket. Every browser
+  context this suite creates (every Playwright worker, and
+  `global-setup.ts`'s own seeding login) must send the header for this
+  reason — both already do.
+  **`ADDRESS_HEADER` is a test-harness setting here — do NOT carry it into a
+  deployment just because this sharp edge presents it as the fix.** The
+  shared-rate-limit-bucket symptom above reappears in production the moment
+  the dashboard sits behind a reverse proxy, so the trail is tempting.
+  `ADDRESS_HEADER` makes adapter-node trust whatever `X-Forwarded-For` it is
+  handed, and it is safe in production **only** behind a proxy that
+  *overwrites* that header (nginx `proxy_set_header X-Forwarded-For
+  $remote_addr`) — never one that *appends* to a client-supplied value. Set it
+  on a dashboard that is directly reachable and every client picks its own
+  `authRateLimit` bucket by choosing its own address, which defeats the login
+  brute-force throttle outright. It is deliberately absent from
+  `docker-compose.yml`, `.env.example` and `docs/`; shipping it needs the
+  proxy guidance shipped with it (recorded as a follow-up in
+  `plans/README.md`).
 
 ## Conventions
 

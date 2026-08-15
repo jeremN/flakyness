@@ -2,16 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, ProjectStats, FlakyTest, TestRun } from '../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getProjectStats: vi.fn(),
-  getFlakyTests: vi.fn(),
-  getProjectRuns: vi.fn(),
-  getFlakeTrend: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
-const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01' };
+const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };
 
 const stats: ProjectStats = {
   project: { id: 'p1', name: 'Project A' },
@@ -54,20 +51,35 @@ const recentRuns: TestRun[] = [
 
 const trendData = { days: ['2024-01-01'], rates: [0.1] };
 
-const mockedGetProjectStats = vi.mocked(getProjectStats);
-const mockedGetFlakyTests = vi.mocked(getFlakyTests);
-const mockedGetProjectRuns = vi.mocked(getProjectRuns);
-const mockedGetFlakeTrend = vi.mocked(getFlakeTrend);
+const mockedGetProjectStats = vi.fn();
+const mockedGetFlakyTests = vi.fn();
+const mockedGetProjectRuns = vi.fn();
+const mockedGetFlakeTrend = vi.fn();
+
+vi.mocked(createApi).mockReturnValue({
+  getProjectStats: mockedGetProjectStats,
+  getFlakyTests: mockedGetFlakyTests,
+  getProjectRuns: mockedGetProjectRuns,
+  getFlakeTrend: mockedGetFlakeTrend,
+} as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetProjectStats.mockReset();
   mockedGetFlakyTests.mockReset();
   mockedGetProjectRuns.mockReset();
   mockedGetFlakeTrend.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
 });
 
 function makeEvent(selectedProject: Project | null) {
-  return { parent: async () => ({ selectedProject }) } as any;
+  return {
+    parent: async () => ({ selectedProject }),
+    locals: { sessionToken: null, clientIp: null },
+  };
 }
 
 describe('routes/+page.server load', () => {
@@ -113,5 +125,22 @@ describe('routes/+page.server load', () => {
       trendData: null,
     });
     expect(mockedGetProjectStats).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetProjectStats.mockResolvedValue(stats);
+    mockedGetFlakyTests.mockResolvedValue(flakyTests);
+    mockedGetProjectRuns.mockResolvedValue(recentRuns);
+    mockedGetFlakeTrend.mockResolvedValue(trendData);
+
+    await load({
+      parent: async () => ({ selectedProject: project }),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });

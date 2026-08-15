@@ -30,11 +30,44 @@ export const ADMIN_RATE_LIMIT = { windowMs: 60 * 1000, limit: 5 };
 export const AUTH_RATE_LIMIT = { windowMs: 60 * 1000, limit: 10 };
 
 /**
+ * Strip the IPv4-mapped IPv6 prefix so a socket address and a configured one
+ * compare equal.
+ *
+ * Node reports an IPv4 connection on a dual-stack listener as
+ * '::ffff:172.28.0.10' (measured on this Node version, not assumed). This app
+ * sets API_HOST='0.0.0.0' by default (index.ts) and in docker-compose.yml, and
+ * a listener bound to an explicit IPv4 host reports a BARE address — so this is
+ * forward-compatible hardening, not a fix for a live failure. It becomes
+ * load-bearing if API_HOST is ever unset (Node's dual-stack default) or set to
+ * '::': there, without this, TRUSTED_PROXY_IPS could never be set to a value
+ * that matches, the trust check would silently fail, and every caller behind
+ * the proxy would share one bucket.
+ *
+ * The prefix test is case-insensitive on the OPERATOR's side of the comparison,
+ * not Node's: Node only ever emits lowercase, so this fails closed rather than
+ * open today. But TRUSTED_PROXY_IPS is hand-typed, and a pasted '::FFFF:…'
+ * would otherwise fail to establish trust with no warning anywhere — the same
+ * silent shared-bucket outcome, arrived at from the config side.
+ */
+function normalizeIp(ip: string): string {
+  const MAPPED_PREFIX = '::ffff:';
+  // Slice the ORIGINAL, not the lowercased copy: only the prefix is matched
+  // case-insensitively, and what follows it is a dotted-quad IPv4 with no case
+  // to preserve or destroy.
+  return ip.toLowerCase().startsWith(MAPPED_PREFIX) ? ip.slice(MAPPED_PREFIX.length) : ip;
+}
+
+/**
  * Extract the client IP using a reliable strategy:
  * 1. If TRUSTED_PROXY_IPS is set, trust x-forwarded-for only when the
  *    connecting socket IP is itself trusted.
  * 2. Otherwise use the socket remote address (not spoofable).
  * 3. Last resort: 'unknown' (all unknown clients share one bucket).
+ *
+ * Both the socket IP and TRUSTED_PROXY_IPS are normalized (IPv4-mapped
+ * IPv6 prefix stripped) before comparing, and the return value is normalized
+ * too, so one client always occupies exactly one rate-limit bucket regardless
+ * of which form the listener reports.
  */
 export function getClientIp(c: Context): string {
   const trustedProxies = process.env.TRUSTED_PROXY_IPS?.split(',').map((s) => s.trim());
@@ -45,12 +78,17 @@ export function getClientIp(c: Context): string {
       : undefined
     : undefined;
 
-  if (trustedProxies && socketIp && trustedProxies.includes(socketIp)) {
-    const forwarded = c.req.header('x-forwarded-for')?.split(',')[0].trim();
-    if (forwarded) return forwarded;
+  const normalizedSocketIp = socketIp ? normalizeIp(socketIp) : undefined;
+
+  if (trustedProxies && normalizedSocketIp) {
+    const trusted = trustedProxies.map(normalizeIp);
+    if (trusted.includes(normalizedSocketIp)) {
+      const forwarded = c.req.header('x-forwarded-for')?.split(',')[0].trim();
+      if (forwarded) return normalizeIp(forwarded);
+    }
   }
 
-  return socketIp || 'unknown';
+  return normalizedSocketIp || 'unknown';
 }
 
 /**
@@ -200,3 +238,26 @@ export const adminRateLimit = createRateLimit(
   'Admin rate limit exceeded.',
   hasAdminStanding
 );
+
+/**
+ * The boot warning for an unconfigured trusted proxy, or null when configured.
+ *
+ * A pure function rather than an inline `if` in index.ts so it is unit-testable
+ * and mutation-provable — the same extraction the dashboard's $lib helpers use.
+ * Without TRUSTED_PROXY_IPS the API ignores X-Forwarded-For (correctly — it is
+ * spoofable from an untrusted socket), which means a server-mediated dashboard
+ * puts every user in one rate-limit bucket. That degrades at a threshold rather
+ * than failing outright, so it must be announced rather than discovered.
+ */
+export function trustedProxyWarning(trustedProxyIps: string | undefined): string | null {
+  if (trustedProxyIps && trustedProxyIps.trim() !== '') return null;
+  return (
+    'TRUSTED_PROXY_IPS is not set — X-Forwarded-For is ignored and every ' +
+    'request is rate-limited by its socket address. If the dashboard reaches ' +
+    'this API server-side (the default docker-compose deployment), ALL users ' +
+    'share one bucket: ~100 API calls and 10 sign-ins per minute for the whole ' +
+    'installation, regardless of how many people are using it. Set ' +
+    'TRUSTED_PROXY_IPS to the dashboard container\'s address so each browser ' +
+    'gets its own bucket. See docs/GETTING_STARTED.md.'
+  );
+}

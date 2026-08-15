@@ -1,4 +1,4 @@
-import { getRunDetail } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { isHttpError } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 
@@ -10,9 +10,10 @@ interface PageServerLoadEvent {
   parent: () => Promise<{ selectedProject: Project | null }>;
   params: { runId: string };
   url: URL;
+  locals: { sessionToken: string | null; clientIp: string | null };
 }
 
-export async function load({ parent, params, url }: PageServerLoadEvent) {
+export async function load({ parent, params, url, locals }: PageServerLoadEvent) {
   const { selectedProject } = await parent();
 
   if (!selectedProject) {
@@ -24,10 +25,11 @@ export async function load({ parent, params, url }: PageServerLoadEvent) {
   // it validates and falls back safely on its own.
   const statusFilter = url.searchParams.get('status') ?? undefined;
 
+  const api = createApi(locals.sessionToken, locals.clientIp);
   let runDetail: RunDetail | null = null;
   let loadFailed = false;
   try {
-    runDetail = await getRunDetail(selectedProject.id, params.runId, statusFilter);
+    runDetail = await api.getRunDetail(selectedProject.id, params.runId, statusFilter);
   } catch (err) {
     // A 404 (the run was pruned, or the id is simply wrong) is a legitimate,
     // permanent outcome — let it propagate so SvelteKit's own +error.svelte

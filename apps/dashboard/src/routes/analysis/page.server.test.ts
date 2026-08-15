@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, AnalysisResponse } from '../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getAnalysis: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getAnalysis } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
-const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01' };
+const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };
 
 const analysis: AnalysisResponse = {
   windowDays: 30,
@@ -29,17 +29,24 @@ const analysis: AnalysisResponse = {
   ],
 };
 
-const mockedGetAnalysis = vi.mocked(getAnalysis);
+const mockedGetAnalysis = vi.fn();
+vi.mocked(createApi).mockReturnValue({ getAnalysis: mockedGetAnalysis } as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetAnalysis.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
 });
 
 function makeEvent(selectedProject: Project | null, searchParams = '') {
   return {
     url: new URL(`http://x/analysis${searchParams}`),
     parent: async () => ({ selectedProject }),
-  } as any;
+    locals: { sessionToken: null, clientIp: null },
+  };
 }
 
 describe('routes/analysis/+page.server load', () => {
@@ -127,5 +134,20 @@ describe('routes/analysis/+page.server load', () => {
     expect(result.days).toBe(30);
     expect(result.threshold).toBe(0.1);
     expect(mockedGetAnalysis).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetAnalysis.mockResolvedValue(analysis);
+
+    await load({
+      url: new URL('http://x/analysis'),
+      parent: async () => ({ selectedProject: project }),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });

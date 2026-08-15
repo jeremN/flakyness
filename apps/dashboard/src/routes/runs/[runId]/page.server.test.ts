@@ -3,13 +3,13 @@ import { error } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getRunDetail: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getRunDetail } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
-const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01' };
+const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01', teamId: null };
 
 const runDetail: RunDetail = {
   run: {
@@ -33,10 +33,16 @@ const runDetail: RunDetail = {
   truncated: false,
 };
 
-const mockedGetRunDetail = vi.mocked(getRunDetail);
+const mockedGetRunDetail = vi.fn();
+vi.mocked(createApi).mockReturnValue({ getRunDetail: mockedGetRunDetail } as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetRunDetail.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
 });
 
 // `error(...)` from '@sveltejs/kit' throws immediately (it never returns —
@@ -57,6 +63,7 @@ function makeEvent(selectedProject: Project | null, searchParams = '') {
     parent: async () => ({ selectedProject }),
     params: { runId: 'run-1' },
     url: new URL(`http://x/runs/run-1${searchParams}`),
+    locals: { sessionToken: null, clientIp: null },
   };
 }
 
@@ -113,5 +120,21 @@ describe('routes/runs/[runId]/+page.server load', () => {
 
     expect(result.runDetail).toBeNull();
     expect(result.loadFailed).toBe(true);
+  });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetRunDetail.mockResolvedValue(runDetail);
+
+    await load({
+      parent: async () => ({ selectedProject: project }),
+      params: { runId: 'run-1' },
+      url: new URL('http://x/runs/run-1'),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    });
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });

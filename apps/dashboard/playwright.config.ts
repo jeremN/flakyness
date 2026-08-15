@@ -17,6 +17,21 @@ export default defineConfig({
   // any spec runs; see e2e/global-setup.ts.
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: true,
+  // Plan 059, found while writing auth.spec.ts: hooks.server.ts calls
+  // GET /api/v1/auth/me on EVERY server-rendered page view (the session
+  // gate). A first attempt at fixing the resulting rate-limit pressure tuned
+  // `workers` down — that never eliminated the risk (the API's apiRateLimit
+  // window is FIXED, not sliding, so lowering concurrency only spreads the
+  // same total request volume across more wall-clock time without reliably
+  // lowering the peak inside any given 60s slice), it only reduced how often
+  // it bit. Task 8 fix round 1 (BLOCKING #2) replaced that with the real
+  // fix: every worker now presents its own client IP (see ./e2e/fixtures.ts,
+  // and ADDRESS_HEADER below), so the API's per-IP rate limiters key each
+  // worker into a separate bucket exactly as they would for separate real
+  // users — the same TRUSTED_PROXY_IPS path production uses, not an E2E-only
+  // workaround. No `workers` override is needed for this anymore; the
+  // suite's own request volume no longer competes for one shared bucket at
+  // all, so this is Playwright's own CPU-based default.
   // A test.only left in by accident must fail CI, not silently narrow the run.
   forbidOnly: !!process.env.CI,
   // Non-negotiable: this is a flaky-test tracker. A retry here would hide the
@@ -34,6 +49,15 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: 'retain-on-failure',
+    // Plan 059: every route now sits behind the session gate
+    // (hooks.server.ts), so a spec written before this plan would otherwise
+    // redirect to /login on its first navigation. global-setup.ts signs in
+    // once, through the real dashboard login + forced change-password flow,
+    // and persists the resulting cookie here — every spec starts already
+    // authenticated as that global admin. Specs that need to exercise the
+    // login flow itself (auth.spec.ts) override this per-test with
+    // `test.use({ storageState: { cookies: [], origins: [] } })`.
+    storageState: 'e2e/.auth/user.json',
   },
   // Chromium only — no cross-browser matrix, no sharding. Deferred until the
   // suite has been green for a while (see plan 026 maintenance notes).
@@ -44,7 +68,15 @@ export default defineConfig({
   // is exactly what let the SSR crash in plan 008 slip through undetected.
   webServer: {
     command: 'pnpm run build && node build',
-    url: BASE_URL,
+    // `port`, not `url`: once ADDRESS_HEADER is set below, EVERY request
+    // without an x-forwarded-for header 500s (hooks.server.ts calls
+    // event.getClientAddress() unconditionally) — including Playwright's own
+    // readiness probe, which sends no custom headers. A `url` check demands
+    // a successful response and hangs to its own 120s timeout on that 500;
+    // `port` only waits for the TCP port to accept connections, which is all
+    // "the server is up" needs to mean here. Verified directly: `url` here
+    // reproduces the timeout, `port` doesn't.
+    port: Number(DASHBOARD_PORT),
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
@@ -63,6 +95,32 @@ export default defineConfig({
       // the matching docker-compose.yml fix for the same gap in real
       // deployments.
       ORIGIN: BASE_URL,
+      // Task 8 fix round 1 (BLOCKING #2). Makes event.getClientAddress()
+      // (hooks.server.ts, read on every request) return the value of the
+      // x-forwarded-for header instead of the raw socket address — every
+      // Playwright browser context otherwise looks identical to the
+      // dashboard's Node server (all local loopback). ./e2e/fixtures.ts sets
+      // that header per worker; the API must separately trust it via
+      // TRUSTED_PROXY_IPS (set where the API process is started — see
+      // AGENTS.md and .github/workflows/ci.yml's `e2e` job — not here, this
+      // config does not manage the API process). Verified directly against a
+      // built dashboard: a request with no x-forwarded-for 500s once this is
+      // set, so EVERY browser context this suite creates must send the
+      // header — global-setup.ts's own login flow sets a fixed one for
+      // itself alongside the per-worker ones from fixtures.ts.
+      //
+      // TEST-HARNESS SETTING — do NOT copy this into a Dockerfile, compose
+      // file or .env for a real deployment on the strength of its appearing
+      // here. ADDRESS_HEADER makes the dashboard believe whatever
+      // x-forwarded-for it is handed, and here that is safe only because the
+      // sole client is this test runner. In production it is safe ONLY behind
+      // a reverse proxy that OVERWRITES the header (nginx
+      // `proxy_set_header X-Forwarded-For $remote_addr`), never one that
+      // appends, and never on a directly-reachable dashboard: there any
+      // browser could name its own address and so choose its own
+      // authRateLimit bucket, defeating the login brute-force throttle
+      // outright. See the ADDRESS_HEADER note in AGENTS.md.
+      ADDRESS_HEADER: 'x-forwarded-for',
     },
   },
 });

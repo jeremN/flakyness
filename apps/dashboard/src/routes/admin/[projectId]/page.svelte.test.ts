@@ -21,17 +21,44 @@ const project = (over: Partial<AdminProject> = {}): AdminProject => ({
   quarantineThreshold: null,
   quarantineMinRuns: null,
   quarantineTtlDays: null,
+  teamId: null,
   stats: { totalRuns: 3, totalTests: 9, activeFlakyTests: 1 },
   ...over,
 });
 
 // Layout half of PageData (Global Constraint 1). `data` for this route =
-// { projects, selectedProject, apiError } ∪ { project }.
+// { projects, selectedProject, apiError, user, activeTeam } ∪ { project,
+// teams }. Note the name collision (same pattern as admin/teams' own test):
+// the layout's `teams` (TeamSummary[], the caller's own memberships) is
+// shadowed by this page's own `teams` (AdminTeam[], every team — Task 7b) in
+// the merged PageData, so `teams` below is always this page's own shape.
 const layout = {
   projects: [],
-  selectedProject: { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z' },
+  selectedProject: { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
   apiError: null,
+  user: null,
+  teams: [],
+  activeTeam: null,
 };
+
+const globalAdmin = {
+  id: 'admin1',
+  email: 'admin@x.test',
+  displayName: 'Admin',
+  isGlobalAdmin: true,
+  mustChangePassword: false,
+};
+const teamAdmin = {
+  id: 'ta1',
+  email: 'ta@x.test',
+  displayName: 'Team Admin',
+  isGlobalAdmin: false,
+  mustChangePassword: false,
+};
+const adminTeams = [
+  { id: 't1', name: 'Team One', createdAt: 'x', memberCount: 1, projectCount: 1 },
+  { id: 't2', name: 'Team Two', createdAt: 'x', memberCount: 1, projectCount: 1 },
+];
 
 describe('admin/[projectId]/+page settings', () => {
   it('pre-fills numeric fields and leaves nulls blank', async () => {
@@ -91,5 +118,49 @@ describe('admin/[projectId]/+page lifecycle', () => {
     await expect.element(btn).toBeDisabled();
     await page.getByLabelText('Type the project name to confirm').fill('Proj One');
     await expect.element(btn).toBeEnabled();
+  });
+});
+
+describe('admin/[projectId]/+page team assignment (Task 7b)', () => {
+  it('shows a team select, pre-selected to the project team, for a global admin', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project({ teamId: 't2' }), teams: adminTeams, user: globalAdmin },
+        form: null,
+      },
+    });
+    const select = page.getByLabelText('Team');
+    await expect.element(select).toBeInTheDocument();
+    await expect.element(select).toHaveValue('t2');
+  });
+
+  it('pre-selects "Unassigned" when the project has no team', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project({ teamId: null }), teams: adminTeams, user: globalAdmin },
+        form: null,
+      },
+    });
+    await expect.element(page.getByLabelText('Team')).toHaveValue('');
+  });
+
+  it('hides the team select for a team_admin', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project(), teams: [], user: teamAdmin },
+        form: null,
+      },
+    });
+    await expect.element(page.getByLabelText('Team')).not.toBeInTheDocument();
+  });
+
+  it('hides the team select for an anonymous/absent user', async () => {
+    render(Page, {
+      props: {
+        data: { ...layout, project: project(), teams: [], user: null },
+        form: null,
+      },
+    });
+    await expect.element(page.getByLabelText('Team')).not.toBeInTheDocument();
   });
 });

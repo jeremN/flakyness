@@ -1,15 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { env as privateEnv } from '../../tests/env-private-stub';
-import {
-  getProjects,
-  getFlakyTests,
-  getProjectRuns,
-  getRunDetail,
-  getTestHistory,
-  getTestTrend,
-  getFlakeTrend,
-  getAnalysis,
-} from './api';
+import { createApi } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -31,7 +22,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const projects = await getProjects();
+    const projects = await createApi(null, null).getProjects();
 
     expect(projects).toEqual([{ id: 'a', name: 'x', createdAt: '2024-01-01' }]);
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
@@ -39,12 +30,81 @@ describe('lib/api', () => {
     });
   });
 
+  // Regression guard. This assertion used to demand `Authorization` be ABSENT
+  // whenever a session was present, which pinned a real production defect: the
+  // API's readAuth (middleware/auth.ts:192-229) has no session path, so with
+  // READ_TOKEN set a cookie-only read 401s before team scoping ever runs, and
+  // signing in made the dashboard strictly worse than staying anonymous.
+  //
+  // Sending both is the correct behaviour, not a compromise: the API's
+  // precedence rule at middleware/access.ts:42-43 — "A user session outranks a
+  // bearer token when both are present: the session is the more specific
+  // credential, and the dashboard forwards both" — is what makes the session
+  // win, so scoping is preserved. The bearer only satisfies the readAuth gate
+  // in front of it. Reverting to `else if` must fail here.
+  it("forwards BOTH the caller's session cookie and the READ_TOKEN bearer", async () => {
+    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers.Authorization).toBe('Bearer super-secret-read-token');
+  });
+
+  // The same combination on the one WRITE that shares buildHeaders(). PATCH
+  // /tests/flaky/:id is readAuth-mounted, so a cookie-only mute hits the exact
+  // same 401 as a read; the mute test below covers the no-READ_TOKEN case.
+  it('sends both credentials on setFlakyStatus too, since it shares buildHeaders', async () => {
+    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).setFlakyStatus('ft-1', 'ignored');
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers.Authorization).toBe('Bearer super-secret-read-token');
+  });
+
+  // Delta 2026-08-15 (§D1.2): without these the dashboard puts every user in
+  // one rate-limit bucket. Task 0 made the API able to trust the header; these
+  // prove the dashboard actually sends it.
+  it('forwards the browser IP as X-Forwarded-For so the API keys per user', async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', '203.0.113.7').getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+  });
+
+  it('omits X-Forwarded-For entirely when there is no client IP', async () => {
+    // An empty header is worse than none: getClientIp takes the first
+    // comma-separated hop, so '' would key every such request to the same
+    // empty-string bucket rather than falling back to the socket address.
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect('X-Forwarded-For' in init.headers).toBe(false);
+  });
+
   it('throws a kit HttpError with the upstream status on a non-OK response', async () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 404, statusText: 'Not Found' }));
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(404);
@@ -57,7 +117,7 @@ describe('lib/api', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(502);
@@ -72,7 +132,7 @@ describe('lib/api', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(503);
@@ -80,14 +140,14 @@ describe('lib/api', () => {
     }
   });
 
-  it('sends READ_TOKEN as a Bearer credential when set (proves the header is actually wired up)', async () => {
+  it('sends READ_TOKEN as a Bearer credential when set and there is no session (proves the fallback is actually wired up)', async () => {
     privateEnv.READ_TOKEN = 'super-secret-read-token';
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ projects: [] }), { status: 200 })
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getProjects();
+    await createApi(null, null).getProjects();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
       headers: { Authorization: 'Bearer super-secret-read-token' },
@@ -100,7 +160,7 @@ describe('lib/api', () => {
       vi.fn().mockResolvedValue(new Response('Unauthorized', { status: 401 }))
     );
 
-    await expect(getProjects()).rejects.toMatchObject({
+    await expect(createApi(null, null).getProjects()).rejects.toMatchObject({
       status: 500,
       body: { message: expect.stringContaining('READ_TOKEN') },
     });
@@ -112,7 +172,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ flakyTests: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getFlakyTests('p1', 'resolved');
+    await createApi(null, null).getFlakyTests('p1', 'resolved');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/flaky-tests?status=resolved');
@@ -122,7 +182,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ runs: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getProjectRuns('p1', 7);
+    await createApi(null, null).getProjectRuns('p1', 7);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('?limit=7');
@@ -134,7 +194,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getRunDetail('p1', 'r1');
+    await createApi(null, null).getRunDetail('p1', 'r1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1');
@@ -146,7 +206,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getRunDetail('p1', 'r1', 'all');
+    await createApi(null, null).getRunDetail('p1', 'r1', 'all');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1?status=all');
@@ -156,7 +216,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({}), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestHistory('loads 100% of items', 'p1');
+    await createApi(null, null).getTestHistory('loads 100% of items', 'p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('loads%20100%25%20of%20items');
@@ -171,7 +231,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getAnalysis('p1', 30, 0.1);
+    await createApi(null, null).getAnalysis('p1', 30, 0.1);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/analysis?days=30&threshold=0.1');
@@ -186,7 +246,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getAnalysis('p1');
+    await createApi(null, null).getAnalysis('p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/analysis?days=14&threshold=0.05');
@@ -198,7 +258,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await getFlakeTrend('p1', 7);
+    const result = await createApi(null, null).getFlakeTrend('p1', 7);
 
     // Explicit === null: a fetcher that JSON.parse'd `null` into `0` (or a
     // type cast that silently widened it) would pass a `toEqual` check with
@@ -225,7 +285,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestTrend('loads 100% of items', 'p1', 30);
+    await createApi(null, null).getTestTrend('loads 100% of items', 'p1', 30);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/tests/loads%20100%25%20of%20items/trend?project=p1&days=30');
@@ -240,9 +300,41 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestTrend('t', 'p1');
+    await createApi(null, null).getTestTrend('t', 'p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('&days=30');
+  });
+
+  // `Authorization` is undefined here only because READ_TOKEN is unset in this
+  // test (the afterEach clears it) — this asserts the client never invents an
+  // ADMIN_TOKEN of its own, NOT that a bearer is never sent. When READ_TOKEN is
+  // set one IS sent; that is the `setFlakyStatus` test near the top of the file.
+  it('sends the mute as a PATCH carrying the session cookie, never an ADMIN_TOKEN', async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', '203.0.113.7').setFlakyStatus('ft-1', 'ignored');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8080/api/v1/tests/flaky/ft-1');
+    expect(init.method).toBe('PATCH');
+    expect(init.body).toBe(JSON.stringify({ status: 'ignored' }));
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  it('surfaces a mute rejection as an APIError carrying the status', async () => {
+    // The action maps this to fail(); it must NOT become a thrown error page,
+    // which would replace the form with a 500 screen instead of an inline message.
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response('{}', { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createApi('s', null).setFlakyStatus('ft-1', 'ignored')).rejects.toMatchObject({
+      name: 'APIError',
+      statusCode: 403,
+    });
   });
 });

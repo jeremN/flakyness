@@ -5,6 +5,7 @@ export interface Project {
   id: string;
   name: string;
   createdAt: string;
+  teamId: string | null;
 }
 
 export interface ProjectStats {
@@ -153,6 +154,7 @@ export interface AdminProject {
   quarantineThreshold: number | null;
   quarantineMinRuns: number | null;
   quarantineTtlDays: number | null;
+  teamId: string | null;
   stats: {
     totalRuns: number;
     totalTests: number;
@@ -199,4 +201,46 @@ export interface PruneResult {
   resultsToDelete?: number;
   runsDeleted?: number;
   resultsDeleted?: number;
+}
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  role: 'team_admin' | 'member';
+}
+
+export interface SessionUser {
+  id: string;
+  email: string;
+  displayName: string | null;
+  isGlobalAdmin: boolean;
+  mustChangePassword: boolean;
+}
+
+export interface AdminUser extends SessionUser {
+  createdAt: string;
+  lastLoginAt: string | null;
+  teams: TeamSummary[];
+}
+
+export interface AdminTeam {
+  id: string;
+  name: string;
+  createdAt: string;
+  memberCount: number;
+  projectCount: number;
+}
+
+declare global {
+  namespace App {
+    interface Locals {
+      user: SessionUser | null;
+      teams: TeamSummary[];
+      sessionToken: string | null;
+      // The browser's address, forwarded to the API as X-Forwarded-For so its
+      // rate limiters key per user instead of per dashboard container
+      // (Task 0). Populated in Task 3 from event.getClientAddress().
+      clientIp: string | null;
+    }
+  }
 }

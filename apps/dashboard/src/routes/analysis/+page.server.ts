@@ -1,4 +1,4 @@
-import { getAnalysis } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import type { Project } from '../../app.d';
 
 // Mirror the API's own clamps (apps/api/src/routes/projects.ts `GET /:id/analysis`)
@@ -18,9 +18,10 @@ function parseThreshold(raw: string | null): number {
 interface PageServerLoadEvent {
   url: URL;
   parent: () => Promise<{ selectedProject: Project | null }>;
+  locals: { sessionToken: string | null; clientIp: string | null };
 }
 
-export async function load({ url, parent }: PageServerLoadEvent) {
+export async function load({ url, parent, locals }: PageServerLoadEvent) {
   const { selectedProject } = await parent();
 
   const days = parseDays(url.searchParams.get('days'));
@@ -30,7 +31,8 @@ export async function load({ url, parent }: PageServerLoadEvent) {
     return { analysis: null, currentProject: null, days, threshold };
   }
 
-  const analysis = await getAnalysis(selectedProject.id, days, threshold);
+  const api = createApi(locals.sessionToken, locals.clientIp);
+  const analysis = await api.getAnalysis(selectedProject.id, days, threshold);
 
   return {
     analysis,

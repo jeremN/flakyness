@@ -1,44 +1,68 @@
-import type { Handle } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { checkBasicAuth } from '$lib/server/basicAuth';
+import { redirect, type Handle } from '@sveltejs/kit';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, redirectTargetFor } from '$lib/session';
+import { fetchMe } from '$lib/server/session';
 
-// See plan 031: the dashboard holds ADMIN_TOKEN and spends it on behalf of
-// whoever submits the `flaky` page's mute/unmute form action. Without a gate
-// here, `if (!env.ADMIN_TOKEN)` in that route only proves the *server* has a
-// token — not that the *requester* presented one — so anyone who can load
-// the dashboard can mute a test, and muted tests feed the CI quarantine
-// skip-list (plan 020). This hook is the entire fix: it runs in front of
-// EVERY route by construction, so no per-route check is needed or wanted.
-const DASHBOARD_PASSWORD = env.DASHBOARD_PASSWORD;
-
-// Fires once, at server start (this module is evaluated once per server
-// process), not per-request — loud enough that an operator can't miss it in
-// the boot log, but doesn't spam every request. A missing DASHBOARD_PASSWORD
-// is still a valid choice for a genuinely single-operator, network-isolated
-// deployment (see design decision 2 in plan 031) — this warns without
-// hard-failing.
-if (!DASHBOARD_PASSWORD && env.ADMIN_TOKEN) {
-  console.warn(
-    '[flackyness] SECURITY WARNING: ADMIN_TOKEN is set but DASHBOARD_PASSWORD is not. ' +
-      'This dashboard exposes an unauthenticated privileged write path (mute/unmute a ' +
-      'flaky test, which feeds the CI quarantine skip-list) to anyone who can reach it. ' +
-      'Set DASHBOARD_PASSWORD to require HTTP Basic Auth on every dashboard route, or ' +
-      'confirm this deployment is genuinely network-isolated. See docs/GETTING_STARTED.md.'
-  );
-}
-
+/**
+ * The single authentication gate for the dashboard (plan 059).
+ *
+ * Replaces the shared DASHBOARD_PASSWORD Basic Auth from plan 031. That hook
+ * existed to close a confused deputy — an anonymous POST could mute a test,
+ * and a muted test feeds the CI quarantine skip-list. The same property holds
+ * here and is now stronger: the API itself authorizes per user (plan 058), so
+ * the dashboard is no longer the only thing standing in the way.
+ *
+ * Runs in front of EVERY route by construction, so no per-route check is
+ * needed or wanted.
+ */
 export const handle: Handle = async ({ event, resolve }) => {
-  // Unset DASHBOARD_PASSWORD means "no gate" — unchanged behavior from
-  // before this plan (see design decision 1 in plan 031).
-  if (!DASHBOARD_PASSWORD) return resolve(event);
+  const token = event.cookies.get(SESSION_COOKIE) ?? null;
 
-  const authHeader = event.request.headers.get('authorization');
-  if (!checkBasicAuth(authHeader, DASHBOARD_PASSWORD)) {
-    return new Response('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': 'Basic realm="Flackyness"' },
-    });
+  // Delta §D1.2. Read once here and thread it through locals: this is the only
+  // place the browser's address is available. adapter-node derives it from
+  // ADDRESS_HEADER/XFF_DEPTH when the dashboard is itself behind a proxy —
+  // those are the operator's existing knobs and this does not change them.
+  const clientIp = event.getClientAddress();
+
+  const me = token ? await fetchMe(token, clientIp) : null;
+
+  // Task 8 fix round 1: the cookie is only deleted when the API positively
+  // REJECTED it (401/403 — expired, revoked; me.rejected === true). A 429,
+  // 5xx, or unreachable API (me.rejected === false) means "no answer", not
+  // "dead credential" — deleting the cookie there would sign a user out for
+  // a transient failure and leave them signed out even after the API
+  // recovers, since the credential is now gone from the browser. Both cases
+  // still fail closed for THIS request (locals.user stays null below,
+  // unchanged) — only the cookie's survival differs.
+  if (token && me && !me.ok && me.rejected) {
+    event.cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
   }
 
-  return resolve(event);
+  event.locals.user = me?.ok ? me.user : null;
+  event.locals.teams = me?.ok ? me.teams : [];
+  event.locals.sessionToken = me?.ok ? token : null;
+  event.locals.clientIp = clientIp;
+
+  const target = redirectTargetFor(event.locals.user, event.url.pathname);
+  if (target) throw redirect(303, target);
+
+  const response = await resolve(event);
+
+  // Task 8 fix round 1: without this, Chromium's back-forward cache (bfcache)
+  // can restore an authenticated page verbatim after sign-out on a back
+  // navigation — this hook never re-runs for a bfcache restore, since it
+  // replays the frozen page rather than issuing a new request. Scoped to HTML
+  // document responses via Content-Type, not by path, and static assets are
+  // doubly safe: adapter-node's sirv middleware serves `_app/immutable/*` and
+  // returns BEFORE this hook runs at all — its handler is
+  // `sequence([serve(client, true), serve_prerendered(), ssr])`
+  // (@sveltejs/adapter-node/files/handler.js:240-242) and this hook lives
+  // inside `ssr`, the last link. So a static asset never reaches this code,
+  // and the Content-Type test would exclude it even if it did. Applied
+  // uniformly to every document response (not just while signed in) so
+  // there's one rule to reason about; /login gets it too, which is harmless.
+  if (response.headers.get('content-type')?.startsWith('text/html')) {
+    response.headers.set('Cache-Control', 'no-store');
+  }
+
+  return response;
 };

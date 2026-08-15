@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Context } from 'hono';
-import { getClientIp } from './rate-limit';
+import { getClientIp, trustedProxyWarning } from './rate-limit';
 
 // Build the minimal shape getClientIp reads: c.env.incoming.socket.remoteAddress
 // and c.req.header('x-forwarded-for').
@@ -61,11 +61,79 @@ describe('getClientIp', () => {
   });
 
   it('falls back to the socket IP when a trusted proxy sends an empty X-Forwarded-For', () => {
-    // Task-1 finding: `if (forwarded)` (rate-limit.ts:41) had no present-but-blank
+    // Task-1 finding: `if (forwarded)` (rate-limit.ts:72) had no present-but-blank
     // XFF test. An empty header must be treated as absent → return the socket IP,
     // not ''. Mutating the guard to `if (true)` would return '' here.
     process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
     expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '' }))).toBe('1.2.3.4');
+  });
+
+  it('matches a trusted proxy when the socket reports an IPv4-mapped address', () => {
+    // MEASURED, not assumed: Node reports an IPv4 connection on a dual-stack
+    // listener as '::ffff:127.0.0.1' — but ONLY on a dual-stack one. A listener
+    // bound to an explicit IPv4 host reports a bare address, and this app sets
+    // API_HOST='0.0.0.0' both in the code default (index.ts) and in
+    // docker-compose.yml. So this normalization is forward-compatible
+    // hardening, NOT a fix for a deployment that was already broken: today's
+    // documented deployments never present the '::ffff:' form at all.
+    //
+    // It becomes load-bearing the moment API_HOST is unset (Node's dual-stack
+    // default) or set to '::'. There the failure is silent: the operator sets
+    // TRUSTED_PROXY_IPS=172.28.0.10, the socket says '::ffff:172.28.0.10', the
+    // exact-string match fails, and every caller quietly shares one bucket with
+    // no error anywhere.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('matches when TRUSTED_PROXY_IPS itself is written in the IPv4-mapped form', () => {
+    // Normalize BOTH sides: an operator who copies the address out of a log
+    // will paste the ::ffff: form, and that must work too.
+    process.env.TRUSTED_PROXY_IPS = '::ffff:172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('matches an IPv4-mapped TRUSTED_PROXY_IPS written in uppercase', () => {
+    // Node only ever emits the prefix lowercase, so this cannot be reached from
+    // the socket side — TRUSTED_PROXY_IPS is the hand-typed half, and a pasted
+    // or hand-typed '::FFFF:' previously failed to establish trust silently.
+    // The failure had no signal: no boot warning fires, the trust check simply
+    // returns false and every caller behind the proxy shares one bucket.
+    process.env.TRUSTED_PROXY_IPS = '::FFFF:172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('still ignores a spoofed X-Forwarded-For from an untrusted IPv4-mapped socket', () => {
+    // The normalization must not become a bypass: '::ffff:9.9.9.9' is still
+    // not the trusted proxy, so its XFF stays ignored.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9', xff: '1.1.1.1' }))).toBe('9.9.9.9');
+  });
+
+  it('returns the socket IP normalized, so one client occupies one bucket', () => {
+    // Without normalizing the RETURN value, the same client could be keyed as
+    // both '::ffff:9.9.9.9' and '9.9.9.9' depending on the listener, splitting
+    // its bucket and doubling its effective limit.
+    delete process.env.TRUSTED_PROXY_IPS;
+    expect(getClientIp(fakeCtx({ socketIp: '::ffff:9.9.9.9' }))).toBe('9.9.9.9');
+  });
+});
+
+describe('trustedProxyWarning', () => {
+  it('warns when TRUSTED_PROXY_IPS is unset', () => {
+    const msg = trustedProxyWarning(undefined);
+    expect(msg).toContain('TRUSTED_PROXY_IPS');
+    expect(msg).toContain('X-Forwarded-For');
+  });
+
+  it('warns when TRUSTED_PROXY_IPS is set but empty or blank', () => {
+    // `TRUSTED_PROXY_IPS=` in a .env file yields '' — configured in name only.
+    expect(trustedProxyWarning('')).not.toBeNull();
+    expect(trustedProxyWarning('   ')).not.toBeNull();
+  });
+
+  it('stays silent when a proxy is genuinely configured', () => {
+    expect(trustedProxyWarning('172.28.0.10')).toBeNull();
   });
 });
 
@@ -169,6 +237,61 @@ describe('rate limiter enforcement', () => {
       expect(codes[10]).toBe(429);
     } finally {
       __setRateLimitEnabled(false);
+    }
+  });
+
+  it('authRateLimit keys by client IP, so two users behind one proxy get separate buckets', async () => {
+    // Delta §D1.2 / plan 059 Task 0. Every earlier authRateLimit test above
+    // sends requests with no socket at all, so getClientIp falls back to the
+    // constant 'unknown' bucket for all of them — that proves the LIMIT, not
+    // the KEY. This test drives it through TWO distinct client IPs behind the
+    // SAME trusted proxy (the real dashboard-container shape) and proves each
+    // gets its own full allowance. A test that only sends one request per IP
+    // would pass against the very shared-bucket bug this work exists to
+    // eliminate (see the DoD's own warning) — so B's request below runs only
+    // AFTER A's bucket is already exhausted.
+    const { Hono } = await import('hono');
+    const { authRateLimit, AUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    const prevTrusted = process.env.TRUSTED_PROXY_IPS;
+    // getClientIp only honours X-Forwarded-For when the SOCKET ip is itself
+    // trusted (see 'honours X-Forwarded-For when the socket IP is a trusted
+    // proxy' above) — mirror that setup so this test proves the key
+    // generator, not a misconfigured trust boundary.
+    process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.use('*', authRateLimit);
+      app.get('/x', (c) => c.json({ ok: true }));
+
+      // app.request()'s third argument becomes c.env — the same shape
+      // getClientIp reads via c.env.incoming.socket.remoteAddress (see the
+      // fakeCtx() helper at the top of this file). Both A and B connect from
+      // the SAME trusted-proxy socket and are distinguished only by their own
+      // X-Forwarded-For — exactly what a server-mediated dashboard behind one
+      // reverse-proxy IP looks like on the wire.
+      const trustedProxySocket = { incoming: { socket: { remoteAddress: '172.28.0.10' } } };
+
+      const codesA: number[] = [];
+      for (let i = 0; i < AUTH_RATE_LIMIT.limit + 1; i++) {
+        const res = await app.request('/x', { headers: { 'x-forwarded-for': '10.0.0.1' } }, trustedProxySocket);
+        codesA.push(res.status);
+      }
+      // A's own bucket behaves exactly like the single-bucket test above:
+      // the 10th request (index 9) passes, the 11th (index 10) is throttled.
+      expect(codesA[AUTH_RATE_LIMIT.limit - 1]).toBe(200);
+      expect(codesA[AUTH_RATE_LIMIT.limit]).toBe(429);
+
+      // B is a DIFFERENT client IP behind the same trusted proxy. Sent AFTER
+      // A's bucket is already exhausted: if the key generator collapsed both
+      // onto one bucket (the bug this work fixes), this would be a 429 too.
+      const resB = await app.request('/x', { headers: { 'x-forwarded-for': '10.0.0.2' } }, trustedProxySocket);
+      expect(resB.status).toBe(200);
+    } finally {
+      __setRateLimitEnabled(false);
+      if (prevTrusted === undefined) delete process.env.TRUSTED_PROXY_IPS;
+      else process.env.TRUSTED_PROXY_IPS = prevTrusted;
     }
   });
 

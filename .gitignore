@@ -40,6 +40,10 @@ coverage/
 playwright-report/
 test-results/
 apps/dashboard/e2e/.artifacts/
+# Signed-in storageState (a live session cookie) written by global-setup.ts —
+# see playwright.config.ts's use.storageState. Never a secret worth keeping:
+# regenerated fresh on every test run against a throwaway E2E database.
+apps/dashboard/e2e/.auth/
 
 # Vitest browser mode (apps/dashboard/*.svelte.test.ts) run artifacts
 .vitest-attachments/

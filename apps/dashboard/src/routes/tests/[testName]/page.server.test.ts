@@ -2,11 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TestHistory, TestTrend } from '../../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getTestHistory: vi.fn(),
-  getTestTrend: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getTestHistory, getTestTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
 const testHistory: TestHistory = {
@@ -27,18 +26,28 @@ const testTrend: TestTrend = {
   ],
 };
 
-const mockedGetTestHistory = vi.mocked(getTestHistory);
-const mockedGetTestTrend = vi.mocked(getTestTrend);
+const mockedGetTestHistory = vi.fn();
+const mockedGetTestTrend = vi.fn();
+vi.mocked(createApi).mockReturnValue({
+  getTestHistory: mockedGetTestHistory,
+  getTestTrend: mockedGetTestTrend,
+} as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetTestHistory.mockReset();
   mockedGetTestTrend.mockReset();
+  // Clears createApi's own call history (mockReturnValue survives mockClear),
+  // so an identity assertion below only sees this test's own call — see the
+  // task-2b review's finding on flaky/page.server.test.ts for why an
+  // un-cleared factory mock can make an argument-swap assertion vacuous.
+  vi.mocked(createApi).mockClear();
 });
 
 function makeEvent(searchParams = '?project=p1') {
   return {
     params: { testName: 'flaky test' },
     url: new URL(`http://x/tests/flaky%20test${searchParams}`),
+    locals: { sessionToken: null, clientIp: null },
   } as any;
 }
 
@@ -101,5 +110,21 @@ describe('routes/tests/[testName]/+page.server load', () => {
     await expect(load(makeEvent(''))).rejects.toMatchObject({ status: 400 });
     expect(mockedGetTestHistory).not.toHaveBeenCalled();
     expect(mockedGetTestTrend).not.toHaveBeenCalled();
+  });
+
+  // Distinct, both non-null: an argument swap (createApi(clientIp, sessionToken))
+  // compiles clean since both are `string | null` — only a call-site assertion
+  // with two distinguishable values catches it.
+  it('builds the client from the request session, not a swapped pair', async () => {
+    mockedGetTestHistory.mockResolvedValue(testHistory);
+    mockedGetTestTrend.mockResolvedValue(testTrend);
+
+    await load({
+      params: { testName: 'flaky test' },
+      url: new URL('http://x/tests/flaky%20test?project=p1'),
+      locals: { sessionToken: 'sess-1', clientIp: '203.0.113.7' },
+    } as any);
+
+    expect(createApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 });

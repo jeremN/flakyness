@@ -1,4 +1,4 @@
-import { getTestHistory, getTestTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { error } from '@sveltejs/kit';
 
 // Mirrors the API's own guard (apps/api/src/routes/tests.ts `/:testName/trend`
@@ -19,9 +19,10 @@ function parseDays(raw: string | null): number {
 interface PageServerLoadEvent {
   params: { testName: string };
   url: URL;
+  locals: { sessionToken: string | null; clientIp: string | null };
 }
 
-export async function load({ params, url }: PageServerLoadEvent) {
+export async function load({ params, url, locals }: PageServerLoadEvent) {
   const testName = params.testName;
   const projectId = url.searchParams.get('project');
 
@@ -31,15 +32,16 @@ export async function load({ params, url }: PageServerLoadEvent) {
 
   const days = parseDays(url.searchParams.get('days'));
 
-  const testHistory = await getTestHistory(testName, projectId);
+  const api = createApi(locals.sessionToken, locals.clientIp);
+  const testHistory = await api.getTestHistory(testName, projectId);
 
   // The trend widget degrades independently of the run-history table above
   // (plan 008's rule; design decision 5 of plan 028): a failed trend fetch
   // must not 500 a page that is otherwise perfectly usable without it.
-  let testTrend: Awaited<ReturnType<typeof getTestTrend>> | null = null;
+  let testTrend: Awaited<ReturnType<typeof api.getTestTrend>> | null = null;
   let trendFailed = false;
   try {
-    testTrend = await getTestTrend(testName, projectId, days);
+    testTrend = await api.getTestTrend(testName, projectId, days);
   } catch {
     trendFailed = true;
   }

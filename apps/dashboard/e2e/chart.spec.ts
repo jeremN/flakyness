@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { readSeed } from './seed';
 
 // What this spec IS: a general client-side crash guard for the one page that

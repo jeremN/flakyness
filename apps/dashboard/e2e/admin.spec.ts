@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('admin console (/admin)', () => {
   test('creates a project, reveals its token once, then deletes it', async ({ page }) => {

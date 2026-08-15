@@ -2,9 +2,9 @@ import type { Actions, PageServerLoad } from './$types';
 import { fail } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { env as publicEnv } from '$env/dynamic/public';
-import { getFlakyTests } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 
-export const load: PageServerLoad = async ({ url, parent }) => {
+export const load: PageServerLoad = async ({ url, parent, locals }) => {
   const { selectedProject } = await parent();
 
   if (!selectedProject) {
@@ -12,7 +12,8 @@ export const load: PageServerLoad = async ({ url, parent }) => {
   }
 
   const status = url.searchParams.get('status') || 'active';
-  const flakyTests = await getFlakyTests(selectedProject.id, status);
+  const api = createApi(locals.sessionToken, locals.clientIp);
+  const flakyTests = await api.getFlakyTests(selectedProject.id, status);
 
   return {
     flakyTests,

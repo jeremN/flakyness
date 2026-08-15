@@ -1,15 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { env as privateEnv } from '../../tests/env-private-stub';
-import {
-  getProjects,
-  getFlakyTests,
-  getProjectRuns,
-  getRunDetail,
-  getTestHistory,
-  getTestTrend,
-  getFlakeTrend,
-  getAnalysis,
-} from './api';
+import { createApi } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -31,7 +22,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const projects = await getProjects();
+    const projects = await createApi(null, null).getProjects();
 
     expect(projects).toEqual([{ id: 'a', name: 'x', createdAt: '2024-01-01' }]);
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
@@ -39,12 +30,53 @@ describe('lib/api', () => {
     });
   });
 
+  it("forwards the caller's session cookie, not a READ_TOKEN", async () => {
+    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers.Authorization).toBeUndefined();
+  });
+
+  // Delta 2026-08-15 (§D1.2): without these the dashboard puts every user in
+  // one rate-limit bucket. Task 0 made the API able to trust the header; these
+  // prove the dashboard actually sends it.
+  it('forwards the browser IP as X-Forwarded-For so the API keys per user', async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', '203.0.113.7').getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers['X-Forwarded-For']).toBe('203.0.113.7');
+  });
+
+  it('omits X-Forwarded-For entirely when there is no client IP', async () => {
+    // An empty header is worse than none: getClientIp takes the first
+    // comma-separated hop, so '' would key every such request to the same
+    // empty-string bucket rather than falling back to the socket address.
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).getProjects();
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect('X-Forwarded-For' in init.headers).toBe(false);
+  });
+
   it('throws a kit HttpError with the upstream status on a non-OK response', async () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 404, statusText: 'Not Found' }));
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(404);
@@ -57,7 +89,7 @@ describe('lib/api', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(502);
@@ -72,7 +104,7 @@ describe('lib/api', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     try {
-      await getProjects();
+      await createApi(null, null).getProjects();
       throw new Error('expected getProjects to reject');
     } catch (err) {
       expect((err as { status: number }).status).toBe(503);
@@ -80,14 +112,14 @@ describe('lib/api', () => {
     }
   });
 
-  it('sends READ_TOKEN as a Bearer credential when set (proves the header is actually wired up)', async () => {
+  it('sends READ_TOKEN as a Bearer credential when set and there is no session (proves the fallback is actually wired up)', async () => {
     privateEnv.READ_TOKEN = 'super-secret-read-token';
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ projects: [] }), { status: 200 })
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getProjects();
+    await createApi(null, null).getProjects();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
       headers: { Authorization: 'Bearer super-secret-read-token' },
@@ -100,7 +132,7 @@ describe('lib/api', () => {
       vi.fn().mockResolvedValue(new Response('Unauthorized', { status: 401 }))
     );
 
-    await expect(getProjects()).rejects.toMatchObject({
+    await expect(createApi(null, null).getProjects()).rejects.toMatchObject({
       status: 500,
       body: { message: expect.stringContaining('READ_TOKEN') },
     });
@@ -112,7 +144,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ flakyTests: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getFlakyTests('p1', 'resolved');
+    await createApi(null, null).getFlakyTests('p1', 'resolved');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/flaky-tests?status=resolved');
@@ -122,7 +154,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ runs: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getProjectRuns('p1', 7);
+    await createApi(null, null).getProjectRuns('p1', 7);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('?limit=7');
@@ -134,7 +166,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getRunDetail('p1', 'r1');
+    await createApi(null, null).getRunDetail('p1', 'r1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1');
@@ -146,7 +178,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getRunDetail('p1', 'r1', 'all');
+    await createApi(null, null).getRunDetail('p1', 'r1', 'all');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toBe('http://localhost:8080/api/v1/projects/p1/runs/r1?status=all');
@@ -156,7 +188,7 @@ describe('lib/api', () => {
     const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({}), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestHistory('loads 100% of items', 'p1');
+    await createApi(null, null).getTestHistory('loads 100% of items', 'p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('loads%20100%25%20of%20items');
@@ -171,7 +203,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getAnalysis('p1', 30, 0.1);
+    await createApi(null, null).getAnalysis('p1', 30, 0.1);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/analysis?days=30&threshold=0.1');
@@ -186,7 +218,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getAnalysis('p1');
+    await createApi(null, null).getAnalysis('p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/projects/p1/analysis?days=14&threshold=0.05');
@@ -198,7 +230,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await getFlakeTrend('p1', 7);
+    const result = await createApi(null, null).getFlakeTrend('p1', 7);
 
     // Explicit === null: a fetcher that JSON.parse'd `null` into `0` (or a
     // type cast that silently widened it) would pass a `toEqual` check with
@@ -225,7 +257,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestTrend('loads 100% of items', 'p1', 30);
+    await createApi(null, null).getTestTrend('loads 100% of items', 'p1', 30);
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('/tests/loads%20100%25%20of%20items/trend?project=p1&days=30');
@@ -240,7 +272,7 @@ describe('lib/api', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await getTestTrend('t', 'p1');
+    await createApi(null, null).getTestTrend('t', 'p1');
 
     const calledUrl = fetchMock.mock.calls[0][0] as string;
     expect(calledUrl).toContain('&days=30');

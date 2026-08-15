@@ -2,11 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TestHistory, TestTrend } from '../../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getTestHistory: vi.fn(),
-  getTestTrend: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getTestHistory, getTestTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
 const testHistory: TestHistory = {
@@ -27,8 +26,12 @@ const testTrend: TestTrend = {
   ],
 };
 
-const mockedGetTestHistory = vi.mocked(getTestHistory);
-const mockedGetTestTrend = vi.mocked(getTestTrend);
+const mockedGetTestHistory = vi.fn();
+const mockedGetTestTrend = vi.fn();
+vi.mocked(createApi).mockReturnValue({
+  getTestHistory: mockedGetTestHistory,
+  getTestTrend: mockedGetTestTrend,
+} as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetTestHistory.mockReset();
@@ -39,6 +42,7 @@ function makeEvent(searchParams = '?project=p1') {
   return {
     params: { testName: 'flaky test' },
     url: new URL(`http://x/tests/flaky%20test${searchParams}`),
+    locals: { sessionToken: null, clientIp: null },
   } as any;
 }
 

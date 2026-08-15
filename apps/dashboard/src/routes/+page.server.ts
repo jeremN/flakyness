@@ -1,4 +1,4 @@
-import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import type { Project } from '../app.d';
 
 // Typed locally (rather than via `./$types`' `PageServerLoad`) so that importing
@@ -6,22 +6,24 @@ import type { Project } from '../app.d';
 // to `PageServerLoad`'s generic default (which includes `void`).
 interface PageServerLoadEvent {
   parent: () => Promise<{ selectedProject: Project | null }>;
+  locals: { sessionToken: string | null; clientIp: string | null };
 }
 
-export async function load({ parent }: PageServerLoadEvent) {
+export async function load({ parent, locals }: PageServerLoadEvent) {
   const { selectedProject } = await parent();
 
   if (!selectedProject) {
     return { stats: null, flakyTests: [], recentRuns: [], trendData: null };
   }
 
+  const api = createApi(locals.sessionToken, locals.clientIp);
   const projectId = selectedProject.id;
 
   const results = await Promise.allSettled([
-    getProjectStats(projectId),
-    getFlakyTests(projectId, 'active', 5),
-    getProjectRuns(projectId, 5),
-    getFlakeTrend(projectId, 7),
+    api.getProjectStats(projectId),
+    api.getFlakyTests(projectId, 'active', 5),
+    api.getProjectRuns(projectId, 5),
+    api.getFlakeTrend(projectId, 7),
   ]);
   const stats = results[0].status === 'fulfilled' ? results[0].value : null;
   const flakyTests = results[1].status === 'fulfilled' ? results[1].value : [];

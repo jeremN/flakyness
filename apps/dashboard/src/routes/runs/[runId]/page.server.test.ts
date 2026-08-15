@@ -3,10 +3,10 @@ import { error } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getRunDetail: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getRunDetail } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project One', createdAt: '2024-01-01', teamId: null };
@@ -33,7 +33,8 @@ const runDetail: RunDetail = {
   truncated: false,
 };
 
-const mockedGetRunDetail = vi.mocked(getRunDetail);
+const mockedGetRunDetail = vi.fn();
+vi.mocked(createApi).mockReturnValue({ getRunDetail: mockedGetRunDetail } as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetRunDetail.mockReset();
@@ -57,6 +58,7 @@ function makeEvent(selectedProject: Project | null, searchParams = '') {
     parent: async () => ({ selectedProject }),
     params: { runId: 'run-1' },
     url: new URL(`http://x/runs/run-1${searchParams}`),
+    locals: { sessionToken: null, clientIp: null },
   };
 }
 

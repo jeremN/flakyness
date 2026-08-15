@@ -2,13 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, ProjectStats, FlakyTest, TestRun } from '../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getProjectStats: vi.fn(),
-  getFlakyTests: vi.fn(),
-  getProjectRuns: vi.fn(),
-  getFlakeTrend: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getProjectStats, getFlakyTests, getProjectRuns, getFlakeTrend } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };
@@ -54,10 +51,17 @@ const recentRuns: TestRun[] = [
 
 const trendData = { days: ['2024-01-01'], rates: [0.1] };
 
-const mockedGetProjectStats = vi.mocked(getProjectStats);
-const mockedGetFlakyTests = vi.mocked(getFlakyTests);
-const mockedGetProjectRuns = vi.mocked(getProjectRuns);
-const mockedGetFlakeTrend = vi.mocked(getFlakeTrend);
+const mockedGetProjectStats = vi.fn();
+const mockedGetFlakyTests = vi.fn();
+const mockedGetProjectRuns = vi.fn();
+const mockedGetFlakeTrend = vi.fn();
+
+vi.mocked(createApi).mockReturnValue({
+  getProjectStats: mockedGetProjectStats,
+  getFlakyTests: mockedGetFlakyTests,
+  getProjectRuns: mockedGetProjectRuns,
+  getFlakeTrend: mockedGetFlakeTrend,
+} as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetProjectStats.mockReset();
@@ -67,7 +71,10 @@ beforeEach(() => {
 });
 
 function makeEvent(selectedProject: Project | null) {
-  return { parent: async () => ({ selectedProject }) } as any;
+  return {
+    parent: async () => ({ selectedProject }),
+    locals: { sessionToken: null, clientIp: null },
+  };
 }
 
 describe('routes/+page.server load', () => {

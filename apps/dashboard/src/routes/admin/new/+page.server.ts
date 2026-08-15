@@ -1,17 +1,10 @@
 import type { Actions } from './$types';
 import { fail } from '@sveltejs/kit';
-import {
-  createProject,
-  adminConfigured,
-  AdminApiError,
-  MissingAdminTokenError,
-} from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
 
 export const actions = {
-  default: async ({ request }) => {
-    if (!adminConfigured()) {
-      return fail(403, { message: 'The dashboard server has no ADMIN_TOKEN configured.' });
-    }
+  default: async ({ request, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const name = String(form.get('name') ?? '').trim();
     const gitlabProjectId = String(form.get('gitlabProjectId') ?? '').trim();
@@ -23,7 +16,7 @@ export const actions = {
     try {
       const body: { name: string; gitlabProjectId?: string } = { name };
       if (gitlabProjectId) body.gitlabProjectId = gitlabProjectId;
-      const result = await createProject(body);
+      const result = await adminApi.createProject(body);
       return {
         created: true,
         token: result.token,
@@ -31,7 +24,7 @@ export const actions = {
         projectName: result.project.name,
       };
     } catch (e) {
-      if (e instanceof MissingAdminTokenError) return fail(403, { message: e.message, name });
+      if (e instanceof NotAuthenticatedError) return fail(403, { message: e.message, name });
       if (e instanceof AdminApiError) return fail(e.statusCode, { message: e.message, name });
       return fail(502, { message: 'Unexpected error contacting the API.', name });
     }

@@ -1,11 +1,12 @@
 import type { ServerLoadEvent } from '@sveltejs/kit';
-import { getProjects } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 
-export async function load({ url }: ServerLoadEvent) {
-  let projects: Awaited<ReturnType<typeof getProjects>> = [];
+export async function load({ url, locals }: ServerLoadEvent) {
+  const api = createApi(locals.sessionToken, locals.clientIp);
+  let projects: Awaited<ReturnType<typeof api.getProjects>> = [];
   let apiError: string | null = null;
   try {
-    projects = await getProjects();
+    projects = await api.getProjects();
   } catch {
     apiError = 'Cannot reach the Flackyness API. Showing an empty dashboard.';
   }

@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, AnalysisResponse } from '../../app.d';
 
 vi.mock('$lib/server/api', () => ({
-  getAnalysis: vi.fn(),
+  createApi: vi.fn(),
 }));
 
-import { getAnalysis } from '$lib/server/api';
+import { createApi } from '$lib/server/api';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };
@@ -29,7 +29,8 @@ const analysis: AnalysisResponse = {
   ],
 };
 
-const mockedGetAnalysis = vi.mocked(getAnalysis);
+const mockedGetAnalysis = vi.fn();
+vi.mocked(createApi).mockReturnValue({ getAnalysis: mockedGetAnalysis } as unknown as ReturnType<typeof createApi>);
 
 beforeEach(() => {
   mockedGetAnalysis.mockReset();
@@ -39,7 +40,8 @@ function makeEvent(selectedProject: Project | null, searchParams = '') {
   return {
     url: new URL(`http://x/analysis${searchParams}`),
     parent: async () => ({ selectedProject }),
-  } as any;
+    locals: { sessionToken: null, clientIp: null },
+  };
 }
 
 describe('routes/analysis/+page.server load', () => {

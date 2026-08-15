@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/server/adminApi', () => ({
-  createProject: vi.fn(),
-  adminConfigured: vi.fn(() => true),
+  createAdminApi: vi.fn(),
   AdminApiError: class AdminApiError extends Error {
     statusCode: number;
     constructor(status: number, message: string) {
@@ -10,18 +9,23 @@ vi.mock('$lib/server/adminApi', () => ({
       this.statusCode = status;
     }
   },
-  MissingAdminTokenError: class MissingAdminTokenError extends Error {},
+  NotAuthenticatedError: class NotAuthenticatedError extends Error {
+    constructor() {
+      super('Not signed in.');
+    }
+  },
 }));
 
-import { createProject } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
 import { actions } from './+page.server';
 
-const mockedCreate = vi.mocked(createProject);
+const mockedCreate = vi.fn();
+vi.mocked(createAdminApi).mockReturnValue({ createProject: mockedCreate } as unknown as ReturnType<typeof createAdminApi>);
 
-function formEvent(fields: Record<string, string>) {
+function formEvent(fields: Record<string, string>, sessionToken: string | null = 'sess-1') {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  return { request: { formData: async () => fd } } as any;
+  return { request: { formData: async () => fd }, locals: { sessionToken, clientIp: null } } as any;
 }
 
 // Braced body: mockReset() returns `this` (the mock itself, a function), and
@@ -63,10 +67,27 @@ describe('admin/new create action', () => {
   });
 
   it('forwards a duplicate-name 409 as a fail', async () => {
-    const { AdminApiError } = await import('$lib/server/adminApi');
     mockedCreate.mockRejectedValue(new AdminApiError(409, 'Project with this name already exists'));
     const result = (await actions.default(formEvent({ name: 'dup' }))) as any;
     expect(result.status).toBe(409);
     expect(result.data.message).toBe('Project with this name already exists');
+  });
+
+  it('maps NotAuthenticatedError from the API to a 403 fail', async () => {
+    const err = new NotAuthenticatedError();
+    mockedCreate.mockRejectedValue(err);
+    const result = (await actions.default(formEvent({ name: 'proj' }, null))) as any;
+    expect(result.status).toBe(403);
+    expect(result.data.message).toBe(err.message);
+  });
+
+  it('builds the admin client from the request session', async () => {
+    mockedCreate.mockResolvedValue({
+      project: { id: 'p1', name: 'proj', gitlabProjectId: null, createdAt: 'x' },
+      token: 't',
+      warning: 'w',
+    });
+    await actions.default(formEvent({ name: 'proj' }, 'sess-42'));
+    expect(createAdminApi).toHaveBeenCalledWith('sess-42', null);
   });
 });

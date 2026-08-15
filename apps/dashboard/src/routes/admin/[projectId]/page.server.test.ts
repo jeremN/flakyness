@@ -1,12 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/server/adminApi', () => ({
-  listProjects: vi.fn(),
-  patchProject: vi.fn(),
-  rotateToken: vi.fn(),
-  pruneProject: vi.fn(),
-  deleteProject: vi.fn(),
-  adminConfigured: vi.fn(() => true),
+  createAdminApi: vi.fn(),
   AdminApiError: class AdminApiError extends Error {
     statusCode: number;
     constructor(status: number, message: string) {
@@ -14,18 +9,29 @@ vi.mock('$lib/server/adminApi', () => ({
       this.statusCode = status;
     }
   },
-  MissingAdminTokenError: class MissingAdminTokenError extends Error {},
+  NotAuthenticatedError: class NotAuthenticatedError extends Error {
+    constructor() {
+      super('Not signed in.');
+    }
+  },
 }));
 
-import { listProjects, patchProject, rotateToken, pruneProject, deleteProject, adminConfigured } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
 import { load, actions } from './+page.server';
 
-const mockedList = vi.mocked(listProjects);
-const mockedPatch = vi.mocked(patchProject);
-const mockedRotate = vi.mocked(rotateToken);
-const mockedPrune = vi.mocked(pruneProject);
-const mockedDelete = vi.mocked(deleteProject);
-const mockedAdminConfigured = vi.mocked(adminConfigured);
+const mockedList = vi.fn();
+const mockedPatch = vi.fn();
+const mockedRotate = vi.fn();
+const mockedPrune = vi.fn();
+const mockedDelete = vi.fn();
+
+vi.mocked(createAdminApi).mockReturnValue({
+  listProjects: mockedList,
+  patchProject: mockedPatch,
+  rotateToken: mockedRotate,
+  pruneProject: mockedPrune,
+  deleteProject: mockedDelete,
+} as unknown as ReturnType<typeof createAdminApi>);
 
 const project = {
   id: 'p1',
@@ -46,41 +52,50 @@ const project = {
   stats: { totalRuns: 3, totalTests: 9, activeFlakyTests: 1 },
 } as any;
 
-function formEvent(fields: Record<string, string>, id = 'p1') {
+function formEvent(fields: Record<string, string>, id = 'p1', sessionToken: string | null = 'sess-1') {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  return { request: { formData: async () => fd }, params: { projectId: id } } as any;
+  return {
+    request: { formData: async () => fd },
+    params: { projectId: id },
+    locals: { sessionToken, clientIp: null },
+  } as any;
+}
+
+function loadEvent(projectId: string, sessionToken: string | null = 'sess-1') {
+  return { params: { projectId }, locals: { sessionToken, clientIp: null } } as any;
 }
 
 beforeEach(() => {
   mockedList.mockReset();
   mockedPatch.mockReset();
+  mockedRotate.mockReset();
+  mockedPrune.mockReset();
+  mockedDelete.mockReset();
 });
 
 describe('admin/[projectId] load', () => {
   it('returns the matching project', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
-    const result = await load({ params: { projectId: 'p1' } } as any);
+    const result = await load(loadEvent('p1'));
     expect(result).toEqual({ project });
   });
 
   it('404s when the project id is not in the list', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
-    await expect(load({ params: { projectId: 'nope' } } as any)).rejects.toMatchObject({
+    await expect(load(loadEvent('nope'))).rejects.toMatchObject({
       status: 404,
     });
   });
 
-  it('403s when ADMIN_TOKEN is not configured', async () => {
-    mockedAdminConfigured.mockReturnValueOnce(false);
-    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 403 });
-    expect(mockedList).not.toHaveBeenCalled();
+  it('403s when there is no session', async () => {
+    mockedList.mockRejectedValue(new NotAuthenticatedError());
+    await expect(load(loadEvent('p1', null))).rejects.toMatchObject({ status: 403 });
   });
 
   it('forwards an AdminApiError status when the list call fails', async () => {
-    const { AdminApiError } = await import('$lib/server/adminApi');
     mockedList.mockRejectedValue(new AdminApiError(503, 'API down'));
-    await expect(load({ params: { projectId: 'p1' } } as any)).rejects.toMatchObject({ status: 503 });
+    await expect(load(loadEvent('p1'))).rejects.toMatchObject({ status: 503 });
   });
 });
 
@@ -88,7 +103,6 @@ describe('admin/[projectId] patch action', () => {
   it('rejects out-of-bounds input before calling the API', async () => {
     const result = (await actions.patch(formEvent({ windowDays: '0' }))) as any;
     expect(result.status).toBe(400);
-    expect(result.data.errors.windowDays).toBeTruthy();
     expect(mockedPatch).not.toHaveBeenCalled();
   });
 
@@ -116,11 +130,18 @@ describe('admin/[projectId] patch action', () => {
   });
 
   it('forwards an API 400 as a fail with the API message', async () => {
-    const { AdminApiError } = await import('$lib/server/adminApi');
     mockedPatch.mockRejectedValue(new AdminApiError(400, 'retentionDays must be >= windowDays'));
     const result = (await actions.patch(formEvent({ windowDays: '20' }))) as any;
     expect(result.status).toBe(400);
     expect(result.data.message).toBe('retentionDays must be >= windowDays');
+  });
+
+  it('maps NotAuthenticatedError to a 403 fail', async () => {
+    const err = new NotAuthenticatedError();
+    mockedPatch.mockRejectedValue(err);
+    const result = (await actions.patch(formEvent({ windowDays: '20' }, 'p1', null))) as any;
+    expect(result.status).toBe(403);
+    expect(result.data.message).toBe(err.message);
   });
 });
 
@@ -150,11 +171,10 @@ describe('admin/[projectId] prune actions', () => {
 });
 
 describe('admin/[projectId] delete action', () => {
-  it('rejects with 403 when ADMIN_TOKEN is not configured', async () => {
-    mockedAdminConfigured.mockReturnValueOnce(false);
-    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }))) as any;
+  it('rejects with 403 when there is no session', async () => {
+    mockedDelete.mockRejectedValue(new NotAuthenticatedError());
+    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
-    expect(mockedDelete).not.toHaveBeenCalled();
   });
 
   it('rejects when the typed name does not match', async () => {

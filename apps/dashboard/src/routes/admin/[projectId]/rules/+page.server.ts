@@ -1,19 +1,10 @@
 import type { PageServerLoad, Actions } from './$types';
 import { error, fail } from '@sveltejs/kit';
-import {
-  listRules,
-  createRule,
-  patchRule,
-  deleteRule,
-  reorderRules,
-  adminConfigured,
-  AdminApiError,
-  MissingAdminTokenError,
-} from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
 import { validateRuleForm, buildRulePayload } from '$lib/rules-validation';
 
-export const load: PageServerLoad = async ({ params, parent }) => {
-  if (!adminConfigured()) throw error(403, 'ADMIN_TOKEN not set.');
+export const load: PageServerLoad = async ({ params, parent, locals }) => {
+  const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
 
   // Reuse the project list the root layout already fetched via the PUBLIC api
   // (+layout.server.ts) instead of spending an admin API call on a second list:
@@ -29,9 +20,9 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 
   let rules;
   try {
-    ({ rules } = await listRules(params.projectId));
+    ({ rules } = await adminApi.listRules(params.projectId));
   } catch (e) {
-    const status = e instanceof AdminApiError ? e.statusCode : 502;
+    const status = e instanceof NotAuthenticatedError ? 403 : e instanceof AdminApiError ? e.statusCode : 502;
     throw error(status, e instanceof Error ? e.message : 'Failed to load rules');
   }
 
@@ -41,7 +32,7 @@ export const load: PageServerLoad = async ({ params, parent }) => {
 // Maps an adminApi throw to the right `fail`, tagged with the action name so
 // the page can route feedback to the correct spot.
 function actionError(action: string, e: unknown) {
-  if (e instanceof MissingAdminTokenError) return fail(403, { action, message: e.message });
+  if (e instanceof NotAuthenticatedError) return fail(403, { action, message: e.message });
   if (e instanceof AdminApiError) return fail(e.statusCode, { action, message: e.message });
   return fail(502, { action, message: 'Unexpected error contacting the API.' });
 }
@@ -61,22 +52,22 @@ function readRuleForm(form: FormData): Record<string, string> {
 }
 
 export const actions = {
-  create: async ({ request, params }) => {
-    if (!adminConfigured()) return fail(403, { action: 'create', message: 'ADMIN_TOKEN not set.' });
+  create: async ({ request, params, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const raw = readRuleForm(form);
     const { valid, errors } = validateRuleForm(raw);
     if (!valid) return fail(400, { action: 'create', errors });
     try {
-      await createRule(params.projectId, buildRulePayload(raw, form.get('enabled') != null));
+      await adminApi.createRule(params.projectId, buildRulePayload(raw, form.get('enabled') != null));
       return { action: 'create', success: true };
     } catch (e) {
       return actionError('create', e);
     }
   },
 
-  update: async ({ request, params }) => {
-    if (!adminConfigured()) return fail(403, { action: 'update', message: 'ADMIN_TOKEN not set.' });
+  update: async ({ request, params, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const ruleId = String(form.get('ruleId') ?? '');
     if (ruleId === '') return fail(400, { action: 'update', message: 'Missing rule id.' });
@@ -84,42 +75,42 @@ export const actions = {
     const { valid, errors } = validateRuleForm(raw);
     if (!valid) return fail(400, { action: 'update', errors });
     try {
-      await patchRule(params.projectId, ruleId, buildRulePayload(raw, form.get('enabled') != null));
+      await adminApi.patchRule(params.projectId, ruleId, buildRulePayload(raw, form.get('enabled') != null));
       return { action: 'update', success: true };
     } catch (e) {
       return actionError('update', e);
     }
   },
 
-  toggle: async ({ request, params }) => {
-    if (!adminConfigured()) return fail(403, { action: 'toggle', message: 'ADMIN_TOKEN not set.' });
+  toggle: async ({ request, params, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const ruleId = String(form.get('ruleId') ?? '');
     if (ruleId === '') return fail(400, { action: 'toggle', message: 'Missing rule id.' });
     const enabled = String(form.get('enabled') ?? '') === 'true';
     try {
-      await patchRule(params.projectId, ruleId, { enabled });
+      await adminApi.patchRule(params.projectId, ruleId, { enabled });
       return { action: 'toggle', success: true };
     } catch (e) {
       return actionError('toggle', e);
     }
   },
 
-  delete: async ({ request, params }) => {
-    if (!adminConfigured()) return fail(403, { action: 'delete', message: 'ADMIN_TOKEN not set.' });
+  delete: async ({ request, params, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const ruleId = String(form.get('ruleId') ?? '');
     if (ruleId === '') return fail(400, { action: 'delete', message: 'Missing rule id.' });
     try {
-      await deleteRule(params.projectId, ruleId);
+      await adminApi.deleteRule(params.projectId, ruleId);
       return { action: 'delete', success: true };
     } catch (e) {
       return actionError('delete', e);
     }
   },
 
-  reorder: async ({ request, params }) => {
-    if (!adminConfigured()) return fail(403, { action: 'reorder', message: 'ADMIN_TOKEN not set.' });
+  reorder: async ({ request, params, locals }) => {
+    const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
     const ruleId = String(form.get('ruleId') ?? '');
     const direction = String(form.get('direction') ?? '');
@@ -131,7 +122,7 @@ export const actions = {
     // current id set, so a stale client order can't be trusted.
     let order: string[];
     try {
-      const { rules } = await listRules(params.projectId);
+      const { rules } = await adminApi.listRules(params.projectId);
       order = rules.map((r) => r.id);
     } catch (e) {
       return actionError('reorder', e);
@@ -147,7 +138,7 @@ export const actions = {
     [order[idx], order[swapWith]] = [order[swapWith], order[idx]];
 
     try {
-      await reorderRules(params.projectId, order);
+      await adminApi.reorderRules(params.projectId, order);
       return { action: 'reorder', success: true };
     } catch (e) {
       return actionError('reorder', e);

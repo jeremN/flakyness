@@ -244,6 +244,31 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `isGlobalAdmin` shortcut — without that, a mid-reset *global admin* took the
   unfiltered branch and layer 1 never ran at all for the highest-privilege
   caller on the instance.
+- **The E2E suite needs `TRUSTED_PROXY_IPS` set on the API process, or every
+  Playwright worker shares one rate-limit bucket again (plan 059 Task 8 fix
+  round 1).** `hooks.server.ts` calls `GET /api/v1/auth/me` on every
+  server-rendered page view, and the dashboard's `webServer.env` in
+  `playwright.config.ts` sets `ADDRESS_HEADER=x-forwarded-for` plus
+  `apps/dashboard/e2e/fixtures.ts` gives every worker its own
+  `X-Forwarded-For` value — but the API only *trusts* that header from a
+  socket address listed in `TRUSTED_PROXY_IPS`. Without it, `getClientIp`
+  falls back to the (identical, loopback) socket address for every worker,
+  and the whole suite's traffic goes back to sharing one `apiRateLimit`
+  bucket (100/fixed-60s-window), intermittently 429ing `GET /auth/me` and
+  spuriously signing out whichever request lost the race — reproduced and
+  root-caused during this fix round (see the Task 8 report). CI sets it in
+  `.github/workflows/ci.yml`'s `e2e` job env; running the suite locally
+  needs it set wherever the API process is started (`TRUSTED_PROXY_IPS=127.0.0.1`
+  when both processes are on localhost, which is the normal case — see
+  `docs/GETTING_STARTED.md`'s explanation of the same variable for real
+  deployments). **A missing `ADDRESS_HEADER`-supplied header 500s**: verified
+  directly against a built dashboard that a request with no
+  `x-forwarded-for` fails once `ADDRESS_HEADER` is set, so this is not a
+  silent degrade for the dashboard's OWN requests — only for the API's trust
+  decision, which fails silently back to one shared bucket. Every browser
+  context this suite creates (every Playwright worker, and
+  `global-setup.ts`'s own seeding login) must send the header for this
+  reason — both already do.
 
 ## Conventions
 

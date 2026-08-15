@@ -25,21 +25,40 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   const me = token ? await fetchMe(token, clientIp) : null;
 
-  if (token && !me) {
-    // The API rejected it (expired, revoked) or was unreachable. Drop the
-    // cookie so the browser stops presenting a dead credential on every
-    // request — otherwise a revoked session costs an API round-trip per page
-    // view, forever.
+  // Task 8 fix round 1: the cookie is only deleted when the API positively
+  // REJECTED it (401/403 — expired, revoked; me.rejected === true). A 429,
+  // 5xx, or unreachable API (me.rejected === false) means "no answer", not
+  // "dead credential" — deleting the cookie there would sign a user out for
+  // a transient failure and leave them signed out even after the API
+  // recovers, since the credential is now gone from the browser. Both cases
+  // still fail closed for THIS request (locals.user stays null below,
+  // unchanged) — only the cookie's survival differs.
+  if (token && me && !me.ok && me.rejected) {
     event.cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
   }
 
-  event.locals.user = me?.user ?? null;
-  event.locals.teams = me?.teams ?? [];
-  event.locals.sessionToken = me ? token : null;
+  event.locals.user = me?.ok ? me.user : null;
+  event.locals.teams = me?.ok ? me.teams : [];
+  event.locals.sessionToken = me?.ok ? token : null;
   event.locals.clientIp = clientIp;
 
   const target = redirectTargetFor(event.locals.user, event.url.pathname);
   if (target) throw redirect(303, target);
 
-  return resolve(event);
+  const response = await resolve(event);
+
+  // Task 8 fix round 1: without this, Chromium's back-forward cache (bfcache)
+  // can restore an authenticated page verbatim after sign-out on a back
+  // navigation — this hook never re-runs for a bfcache restore, since it
+  // replays the frozen page rather than issuing a new request. Scoped to HTML
+  // document responses via Content-Type, not by path: static assets
+  // (including content-hashed `_app/immutable/*`) get a different
+  // content-type and must stay cacheable — this never touches them. Applied
+  // uniformly to every document response (not just while signed in) so
+  // there's one rule to reason about; /login gets it too, which is harmless.
+  if (response.headers.get('content-type')?.startsWith('text/html')) {
+    response.headers.set('Cache-Control', 'no-store');
+  }
+
+  return response;
 };

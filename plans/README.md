@@ -365,35 +365,6 @@ for a reason unrelated to the component under test. Wants its own pass:
 register the plugin, run the full browser suite, and triage every new
 failure individually rather than assuming they're all Tailwind-CSS-shaped.
 
-**Follow-up noticed during 059 Task 8 (no plan yet): the E2E suite's own
-traffic now exceeds the API's `apiRateLimit` (100 req/fixed-60s-window),
-intermittently.** `hooks.server.ts`'s session gate (Task 3) calls
-`GET /api/v1/auth/me` on every server-rendered page view; combined with each
-page's own parallel data fetches, a single project page view now costs
-several requests where it cost zero before this plan (no per-view API call
-existed under `DASHBOARD_PASSWORD`). The whole E2E run (15 specs) makes
-~130-150 total API requests and, per Task 8's measurements (five separate
-runs, at `workers: 1`, `2`, and Playwright's own CPU-based default), 3-5 of
-them intermittently 429 on `GET /api/v1/auth/me` — which `hooks.server.ts`
-fail-closes by deleting the session cookie and redirecting to `/login`,
-spuriously "signing out" mid-test whichever spec's request lost the race.
-**Neither more nor fewer Playwright workers reliably fixes it**: the window
-is fixed, not sliding, so lowering concurrency only spreads the *same* total
-volume across more wall-clock time without lowering the peak inside any
-given 60s slice, and raising concurrency compresses that same volume into a
-shorter window, which measured *worse* (more specs caught). `workers: 2`
-(the current setting) is the least-bad of what was tried, not a fix. There is
-no lever inside Task 8's authorized files (`apps/dashboard/e2e/**`,
-`playwright.config.ts`) that fixes this — `TRUSTED_PROXY_IPS` doesn't help
-either, since every request in this harness genuinely does originate from one
-real address (see `playwright.config.ts`'s own comment). The real fix is
-application-level and needs its own task: either raise `apiRateLimit`'s
-ceiling (`apps/api/src/middleware/rate-limit.ts`) to account for the
-now-heavier per-view cost, or stop paying a `GET /auth/me` round trip on
-every single navigation (e.g. cache the session check for the lifetime of one
-SSR request, or a short TTL) in `hooks.server.ts`. See the Task 8 report for
-the full reproduction data (per-run request counts and 429 timestamps).
-
 ### Batch 7 — test the shipped GitHub Action (planned 2026-07-15 at commit `12bda5b`)
 
 Provenance: the direction audit run mid–batch-5 surfaced three deferred findings beyond the

@@ -1,4 +1,5 @@
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const API_URL = process.env.PUBLIC_API_URL ?? 'http://127.0.0.1:8080';
@@ -93,7 +94,7 @@ test.describe('authentication', () => {
   // requests; chaining the five properties below into one journey keeps the
   // whole file's auth-endpoint cost at 3 requests total, comfortably under
   // budget while still proving each property with its own assertion.
-  test('a forced-reset user: cannot navigate away, reaches / after changing and stays signed in, signs in again directly, then signs out', async ({
+  test('a forced-reset user: cannot navigate away, reaches / after changing and stays signed in, signs in again directly, signs out, and the back button does not restore the session', async ({
     page,
     context,
   }) => {
@@ -135,33 +136,23 @@ test.describe('authentication', () => {
     // about above.
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page).toHaveURL(/\/login$/);
-  });
 
-  // KNOWN GAP, verified 2026-08-15 while writing this suite, NOT covered by
-  // an automated test — deliberately, see below.
-  //
-  // The dashboard sets no Cache-Control header on authenticated pages
-  // (confirmed: `curl` against an authenticated '/' returns 200 with no
-  // cache-control header at all), so Chromium's back-forward cache is free
-  // to restore the pre-sign-out page verbatim on a back navigation — without
-  // hooks.server.ts's session gate running again, since a bfcache restore
-  // replays the frozen page rather than issuing a new request. The fix is a
-  // one-line `Cache-Control: no-store` on authenticated responses, but that
-  // is a hooks.server.ts change, and Task 8's brief authorizes E2E/deploy/
-  // docs changes only — not application code. Reported as a finding in the
-  // Task 8 report instead.
-  //
-  // A `test.fail()`-wrapped reproduction of this WAS written first, and it
-  // is what verified the gap above — but it proved genuinely nondeterministic
-  // across runs (bfcache restoration is a Chromium heuristic, not a
-  // guarantee; one run reproduced the stale page every time, a later run on
-  // the same code passed instead, "Expected to fail, but passed"). A test
-  // whose outcome depends on browser-internal caching heuristics has no
-  // place in this suite — this repo is a flaky-test tracker with zero
-  // tolerance for exactly that class of test (see AGENTS.md / plan 026) — so
-  // it was removed rather than kept as an intermittently-red `test.fail()`.
-  // The property stays documented here in prose; re-add a real assertion
-  // once `Cache-Control: no-store` actually ships.
+    // 5) The back button must NOT restore the pre-sign-out page. This used to
+    // be a genuine gap (the dashboard set no Cache-Control on authenticated
+    // pages, so Chromium's bfcache was free to restore the frozen page
+    // without hooks.server.ts's gate running again — a bfcache restore
+    // replays the frame rather than issuing a new request). A first attempt
+    // at covering this was a `test.fail()` reproduction, but it proved
+    // genuinely nondeterministic across runs (bfcache is a Chromium
+    // heuristic, not a guarantee — one run reproduced the stale page every
+    // time, a later run on identical code passed instead). Task 8 fix round
+    // 1 added `Cache-Control: no-store` on every HTML document response
+    // (hooks.server.ts), which makes this a real, deterministic contract
+    // instead of a heuristic to race — the browser is TOLD not to cache the
+    // page, not merely observed to sometimes not.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/login$/);
+  });
 });
 
 test.describe('temp password reveal (admin console)', () => {

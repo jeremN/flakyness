@@ -1,15 +1,24 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { readSeed } from './seed';
 
 test.describe('overview page (/)', () => {
-  test('renders the seeded project stats, including via SSR', async ({ request, page }) => {
+  test('renders the seeded project stats, including via SSR', async ({ request, page, workerForwardedFor }) => {
     const { projectId, projectName } = readSeed();
 
     // SSR check: the seeded stats must be present in the raw HTML response —
     // before any browser JS runs. A component that only renders correctly
     // after client-side hydration would pass a `page.goto()` assertion but
     // fail this one (this is the class of bug plan 008 found).
-    const ssrResponse = await request.get(`/?project=${projectId}`);
+    //
+    // Unlike `page`/`context` (see ./fixtures.ts), the standalone `request`
+    // fixture is its own independent APIRequestContext, not derived from the
+    // browser context — fixtures.ts's context.setExtraHTTPHeaders() override
+    // does not reach it. The dashboard runs with ADDRESS_HEADER=x-forwarded-for
+    // (playwright.config.ts), so a request with no such header 500s instead
+    // of the 200 this test expects — pass it explicitly on this one call.
+    const ssrResponse = await request.get(`/?project=${projectId}`, {
+      headers: { 'x-forwarded-for': workerForwardedFor },
+    });
     expect(ssrResponse.status()).toBe(200);
     const html = await ssrResponse.text();
     expect(html).toContain(projectName);

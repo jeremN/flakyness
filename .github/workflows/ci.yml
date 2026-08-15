@@ -140,6 +140,14 @@ jobs:
       DATABASE_URL: postgres://postgres:test_password@localhost:5432/flackyness_test
       ADMIN_TOKEN: test-admin-token-for-ci
       PUBLIC_API_URL: http://127.0.0.1:8080
+      # Task 8 fix round 1 (BLOCKING #2): the dashboard and this test runner
+      # both connect to the API from 127.0.0.1 on this same runner. Trusting
+      # that loopback address lets the API honour the per-worker
+      # X-Forwarded-For that apps/dashboard/e2e/fixtures.ts sets, so each
+      # Playwright worker keys into its own apiRateLimit/authRateLimit
+      # bucket instead of all of them sharing one — see playwright.config.ts
+      # and AGENTS.md.
+      TRUSTED_PROXY_IPS: 127.0.0.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 

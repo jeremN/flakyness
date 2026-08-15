@@ -17,38 +17,21 @@ export default defineConfig({
   // any spec runs; see e2e/global-setup.ts.
   globalSetup: './e2e/global-setup.ts',
   fullyParallel: true,
-  // Plan 059, found while writing auth.spec.ts: hooks.server.ts now calls
+  // Plan 059, found while writing auth.spec.ts: hooks.server.ts calls
   // GET /api/v1/auth/me on EVERY server-rendered page view (the session
-  // gate), and this suite runs with no TRUSTED_PROXY_IPS configured for the
-  // API — there is only one real machine originating all of this traffic (in
-  // CI and locally alike), so every request the whole run makes shares ONE
-  // apiRateLimit bucket (100/fixed-60s-window). The whole suite's total
-  // volume (~130-150 requests across 15 specs) exceeds that ceiling on its
-  // own, so GET /api/v1/auth/me 429s intermittently regardless of pacing —
-  // hooks.server.ts fail-closes a failed /auth/me by deleting the cookie and
-  // redirecting to /login, spuriously "signing out" whichever request lost
-  // the race, in specs that never touched auth.spec.ts at all (measured
-  // hitting admin.spec.ts, overview.spec.ts, run-detail.spec.ts,
-  // runs.spec.ts, and auth.spec.ts's own tests, varying by run — see the
-  // Task 8 report for per-run counts). This is the test harness generating
-  // enough legitimate traffic to trip a real, correctly-functioning
-  // anti-abuse control — exactly the scenario TRUSTED_PROXY_IPS exists to
-  // separate for real deployments (see docs/GETTING_STARTED.md) — but E2E
-  // has no equivalent knob, since every request genuinely does originate
-  // from one address here.
-  //
-  // `workers: 2` is the least-bad of what was tried (2, 1, and Playwright's
-  // own CPU-based default were all measured on this machine): because the
-  // window is FIXED, not sliding, cutting workers to 1 only makes the run
-  // take longer without reliably lowering peak in-window volume, and raising
-  // concurrency compresses the same total into a shorter window, which
-  // measured WORSE (more specs caught). None of the three eliminates the
-  // risk; this only reduces how often it bites. The real fix is
-  // application-level (raise apiRateLimit's ceiling, or stop paying a GET
-  // /auth/me on every single page view) and is out of Task 8's authorized
-  // scope (apps/dashboard/e2e/** and this file only) — see the follow-up in
-  // plans/README.md and the Task 8 report.
-  workers: 2,
+  // gate). A first attempt at fixing the resulting rate-limit pressure tuned
+  // `workers` down — that never eliminated the risk (the API's apiRateLimit
+  // window is FIXED, not sliding, so lowering concurrency only spreads the
+  // same total request volume across more wall-clock time without reliably
+  // lowering the peak inside any given 60s slice), it only reduced how often
+  // it bit. Task 8 fix round 1 (BLOCKING #2) replaced that with the real
+  // fix: every worker now presents its own client IP (see ./e2e/fixtures.ts,
+  // and ADDRESS_HEADER below), so the API's per-IP rate limiters key each
+  // worker into a separate bucket exactly as they would for separate real
+  // users — the same TRUSTED_PROXY_IPS path production uses, not an E2E-only
+  // workaround. No `workers` override is needed for this anymore; the
+  // suite's own request volume no longer competes for one shared bucket at
+  // all, so this is Playwright's own CPU-based default.
   // A test.only left in by accident must fail CI, not silently narrow the run.
   forbidOnly: !!process.env.CI,
   // Non-negotiable: this is a flaky-test tracker. A retry here would hide the
@@ -85,7 +68,15 @@ export default defineConfig({
   // is exactly what let the SSR crash in plan 008 slip through undetected.
   webServer: {
     command: 'pnpm run build && node build',
-    url: BASE_URL,
+    // `port`, not `url`: once ADDRESS_HEADER is set below, EVERY request
+    // without an x-forwarded-for header 500s (hooks.server.ts calls
+    // event.getClientAddress() unconditionally) — including Playwright's own
+    // readiness probe, which sends no custom headers. A `url` check demands
+    // a successful response and hangs to its own 120s timeout on that 500;
+    // `port` only waits for the TCP port to accept connections, which is all
+    // "the server is up" needs to mean here. Verified directly: `url` here
+    // reproduces the timeout, `port` doesn't.
+    port: Number(DASHBOARD_PORT),
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
@@ -104,6 +95,20 @@ export default defineConfig({
       // the matching docker-compose.yml fix for the same gap in real
       // deployments.
       ORIGIN: BASE_URL,
+      // Task 8 fix round 1 (BLOCKING #2). Makes event.getClientAddress()
+      // (hooks.server.ts, read on every request) return the value of the
+      // x-forwarded-for header instead of the raw socket address — every
+      // Playwright browser context otherwise looks identical to the
+      // dashboard's Node server (all local loopback). ./e2e/fixtures.ts sets
+      // that header per worker; the API must separately trust it via
+      // TRUSTED_PROXY_IPS (set where the API process is started — see
+      // AGENTS.md and .github/workflows/ci.yml's `e2e` job — not here, this
+      // config does not manage the API process). Verified directly against a
+      // built dashboard: a request with no x-forwarded-for 500s once this is
+      // set, so EVERY browser context this suite creates must send the
+      // header — global-setup.ts's own login flow sets a fixed one for
+      // itself alongside the per-worker ones from fixtures.ts.
+      ADDRESS_HEADER: 'x-forwarded-for',
     },
   },
 });

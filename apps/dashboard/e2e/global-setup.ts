@@ -137,6 +137,15 @@ async function seedAuthenticatedUser(adminToken: string): Promise<void> {
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext({ baseURL: BASE_URL });
+    // Task 8 fix round 1 (BLOCKING #2): the dashboard runs with
+    // ADDRESS_HEADER=x-forwarded-for (playwright.config.ts's webServer.env),
+    // so event.getClientAddress() reads this header on EVERY request and
+    // THROWS if it's absent (verified directly against a built dashboard: a
+    // request with no x-forwarded-for 500s). This context's login flow goes
+    // through the real dashboard, so it needs the header too — a fixed
+    // identity distinct from every per-worker one (see ./fixtures.ts), since
+    // this runs once in the main process, never inside a worker.
+    await context.setExtraHTTPHeaders({ 'x-forwarded-for': '10.99.0.0' });
     const page = await context.newPage();
 
     await page.goto('/login');

@@ -6,17 +6,36 @@ import type { SessionUser, TeamSummary } from '../../app.d';
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
 
 /**
+ * The three possible outcomes of validating a session token against the API.
+ *
+ * `rejected: true` means the API positively refused this credential — it is
+ * dead and re-presenting it will only be refused again, so the caller may
+ * delete the cookie. `rejected: false` means the API gave no answer at all
+ * (rate-limited, erroring, unreachable, timed out) — the credential's
+ * validity is simply unknown, so the caller must NOT delete the cookie: the
+ * same session may well be valid the moment the API answers again. Found
+ * 2026-08-15 (Task 8 fix round 1): collapsing these two into one `null` made
+ * `hooks.server.ts` delete a live session's cookie on a transient 429/5xx,
+ * signing a user out permanently for a problem that would have cleared
+ * itself on the next request.
+ */
+export type MeResult =
+  | { ok: true; user: SessionUser; teams: TeamSummary[] }
+  | { ok: false; rejected: true }
+  | { ok: false; rejected: false };
+
+/**
  * Validate a session token against the API and return who it belongs to.
  *
- * Returns null for an invalid/expired session AND for an unreachable API. The
- * dashboard is not the security boundary — when it cannot confirm an identity
- * it must fail closed, and the caller redirects to /login. A five-second
- * timeout keeps a hung API from hanging every page load.
+ * `ok: false` covers both an invalid/expired session AND an unreachable API —
+ * the dashboard is not the security boundary, so when it cannot confirm an
+ * identity it must fail closed either way, and the caller redirects to
+ * /login for both. `rejected` distinguishes them ONLY for the cookie's own
+ * fate — see `MeResult`. A five-second timeout keeps a hung API from hanging
+ * every page load; a timeout is treated as `rejected: false` (no answer),
+ * same as any other network failure.
  */
-export async function fetchMe(
-  sessionToken: string,
-  clientIp: string | null
-): Promise<{ user: SessionUser; teams: TeamSummary[] } | null> {
+export async function fetchMe(sessionToken: string, clientIp: string | null): Promise<MeResult> {
   try {
     const headers: Record<string, string> = { Cookie: `${SESSION_COOKIE}=${sessionToken}` };
     // Delta §D1.2. This call runs in hooks.server.ts on EVERY request, so it is
@@ -27,10 +46,16 @@ export async function fetchMe(
       headers,
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return null;
-    return (await res.json()) as { user: SessionUser; teams: TeamSummary[] };
+    // Only a positive refusal of THIS credential counts as rejected. Every
+    // other non-2xx (429 rate-limited, 5xx, or anything else) is "no answer",
+    // not "invalid" — see MeResult.
+    if (res.status === 401 || res.status === 403) return { ok: false, rejected: true };
+    if (!res.ok) return { ok: false, rejected: false };
+    const body = (await res.json()) as { user: SessionUser; teams: TeamSummary[] };
+    return { ok: true, user: body.user, teams: body.teams };
   } catch {
-    return null;
+    // Network error or the timeout above — no answer, not a refusal.
+    return { ok: false, rejected: false };
   }
 }
 

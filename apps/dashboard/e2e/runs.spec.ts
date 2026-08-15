@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { readSeed } from './seed';
 
 test.describe('test runs page (/runs)', () => {

@@ -61,7 +61,7 @@ describe('getClientIp', () => {
   });
 
   it('falls back to the socket IP when a trusted proxy sends an empty X-Forwarded-For', () => {
-    // Task-1 finding: `if (forwarded)` (rate-limit.ts:41) had no present-but-blank
+    // Task-1 finding: `if (forwarded)` (rate-limit.ts:72) had no present-but-blank
     // XFF test. An empty header must be treated as absent → return the socket IP,
     // not ''. Mutating the guard to `if (true)` would return '' here.
     process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
@@ -70,11 +70,18 @@ describe('getClientIp', () => {
 
   it('matches a trusted proxy when the socket reports an IPv4-mapped address', () => {
     // MEASURED, not assumed: Node reports an IPv4 connection on a dual-stack
-    // listener as '::ffff:127.0.0.1'. Every other test here uses a bare IPv4
-    // address, so the exact-string match in getClientIp passes them while
-    // silently failing in every real deployment — the operator sets
-    // TRUSTED_PROXY_IPS=172.28.0.10, the socket says '::ffff:172.28.0.10',
-    // the trust check fails, and the shared bucket returns with no error.
+    // listener as '::ffff:127.0.0.1' — but ONLY on a dual-stack one. A listener
+    // bound to an explicit IPv4 host reports a bare address, and this app sets
+    // API_HOST='0.0.0.0' both in the code default (index.ts) and in
+    // docker-compose.yml. So this normalization is forward-compatible
+    // hardening, NOT a fix for a deployment that was already broken: today's
+    // documented deployments never present the '::ffff:' form at all.
+    //
+    // It becomes load-bearing the moment API_HOST is unset (Node's dual-stack
+    // default) or set to '::'. There the failure is silent: the operator sets
+    // TRUSTED_PROXY_IPS=172.28.0.10, the socket says '::ffff:172.28.0.10', the
+    // exact-string match fails, and every caller quietly shares one bucket with
+    // no error anywhere.
     process.env.TRUSTED_PROXY_IPS = '172.28.0.10';
     expect(getClientIp(fakeCtx({ socketIp: '::ffff:172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
   });
@@ -83,6 +90,16 @@ describe('getClientIp', () => {
     // Normalize BOTH sides: an operator who copies the address out of a log
     // will paste the ::ffff: form, and that must work too.
     process.env.TRUSTED_PROXY_IPS = '::ffff:172.28.0.10';
+    expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
+  });
+
+  it('matches an IPv4-mapped TRUSTED_PROXY_IPS written in uppercase', () => {
+    // Node only ever emits the prefix lowercase, so this cannot be reached from
+    // the socket side — TRUSTED_PROXY_IPS is the hand-typed half, and a pasted
+    // or hand-typed '::FFFF:' previously failed to establish trust silently.
+    // The failure had no signal: no boot warning fires, the trust check simply
+    // returns false and every caller behind the proxy shares one bucket.
+    process.env.TRUSTED_PROXY_IPS = '::FFFF:172.28.0.10';
     expect(getClientIp(fakeCtx({ socketIp: '172.28.0.10', xff: '9.9.9.9' }))).toBe('9.9.9.9');
   });
 

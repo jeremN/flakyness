@@ -93,6 +93,18 @@ Add to `apps/api/src/middleware/rate-limit.test.ts`, inside `describe('getClient
 Note every existing test in this file uses a bare IPv4 socket address, which is
 exactly why this gap survived — these MUST use the `::ffff:` form:
 
+> **Corrected 2026-08-15 (final fix wave): the mandated comment below overclaims,
+> and the shipped code says something different on purpose.** "Silently failing in
+> every real deployment" is **false**. A raw-Node experiment confirmed
+> `listen(port, '0.0.0.0')` yields a **bare** IPv4 `remoteAddress`; only Node's
+> no-host dual-stack default yields the `::ffff:` form. This app sets
+> `API_HOST='0.0.0.0'` in the code default (`apps/api/src/index.ts`) and in
+> `docker-compose.yml`, so no documented deployment ever presents that form and
+> the pre-existing exact-match code already worked. The normalization is
+> **forward-compatible hardening** — load-bearing only if `API_HOST` is ever unset
+> or set to `::`. The tests and the code below are correct and were kept; only the
+> claim was wrong. Do not re-copy the wording from this block.
+
 ```ts
   it('matches a trusted proxy when the socket reports an IPv4-mapped address', () => {
     // MEASURED, not assumed: Node reports an IPv4 connection on a dual-stack
@@ -1918,16 +1930,29 @@ git commit -m "feat(dashboard): retire DASHBOARD_PASSWORD in favour of user acco
 - [ ] An anonymous visit to any route redirects to `/login`; there is no redirect loop on `/login` itself.
 - [ ] A provisioned user signs in with their temp password, is forced to `/change-password`, cannot navigate away, and **stays signed in** after changing it.
 - [ ] A member sees only their teams' projects; the team switcher appears only for multi-team users; the Teams/Users nav appears only for global admins.
-- [ ] `grep -rn "DASHBOARD_PASSWORD" --include='*.ts' --include='*.svelte' --include='*.yml' apps/ docker-compose.yml .env.example` returns **no configuration or code reference** — no `env.DASHBOARD_PASSWORD` read, no compose/env entry, no `.env.example` line.
+- [ ] `grep -rn "DASHBOARD_PASSWORD" apps/ docker-compose.yml .env.example --include='*.ts' --include='*.svelte' --include='*.yml' --include='.env.example'` returns **no configuration or code reference** — no `env.DASHBOARD_PASSWORD` read, no compose/env entry, no live `.env.example` assignment. Expect exactly **three** comment matches (listed below).
 
   Amended 2026-08-15: the original wording demanded the grep return *nothing*
-  outside `plans/` and `docs/`, which can never hold. Two **comments**
+  outside `plans/` and `docs/`, which can never hold. Three **comments**
   legitimately name the variable to record what was removed and why —
   `hooks.server.ts`'s gate docstring (which Task 3's brief mandates verbatim,
-  and which explains the confused-deputy problem the old gate solved) and
-  `apps/api/src/index.ts`'s cookie-security warning. Deleting a historical
+  and which explains the confused-deputy problem the old gate solved),
+  `apps/api/src/index.ts`'s cookie-security warning, and `.env.example`'s note
+  that there is no `DASHBOARD_PASSWORD` to set. Deleting a historical
   explanation to satisfy a grep trades a real maintenance aid for a green
   check. Verify the *absence of live reads*, not the absence of the string.
+
+  Corrected 2026-08-15 (final fix wave): the command previously ended
+  `--include='*.ts' --include='*.svelte' --include='*.yml'` and named
+  `.env.example` as a path — but `--include` filters explicitly-named files
+  too, so `.env.example` was silently excluded and the command **could not
+  test the very half of its claim that mentions it**. Proven by planting a
+  `DASHBOARD_PASSWORD=canary` line in `.env.example` and watching the old
+  command still return only the two `.ts` comments; the added
+  `--include='.env.example'` catches it. The property itself always held —
+  this was a false green, not a missed defect. It is the third
+  unsatisfiable-or-blind grep found in this plan, which is why the expected
+  match count is now stated explicitly rather than left as "no reference".
 - [ ] `grep -rn "env.ADMIN_TOKEN\|ADMIN_TOKEN}" apps/dashboard/src` returns
   **nothing** — no code path reads or spends the token. Amended 2026-08-15: the
   original wording was "`grep -rn "ADMIN_TOKEN" apps/dashboard/src` returns

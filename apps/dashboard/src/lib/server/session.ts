@@ -63,10 +63,14 @@ export async function fetchMe(sessionToken: string, clientIp: string | null): Pr
  * The full cookie-options object every session-cookie write must use.
  *
  * Extracted so login's `cookies.set` and change-password's re-issued-cookie
- * `cookies.set` cannot independently drift (Task 5 review, plan 059) — this
- * will be the fourth session-cookie site once Task 6 adds `/logout`. Lives
- * here rather than in the pure `lib/session.ts` because `secure` reads
- * `$env/dynamic/private`, which the browser-safe module must never import.
+ * `cookies.set` cannot independently drift (Task 5 review, plan 059). There are
+ * now FOUR session-cookie sites in total: those two sets, hooks.server.ts's
+ * gate delete, and `/logout`'s delete (Task 6, landed in 1cb3581 — see the
+ * matching comment at logout/+page.server.ts:28). The two deletes take only
+ * `path` and so use `SESSION_COOKIE_PATH` directly rather than this function,
+ * but all four must agree on that path. Lives here rather than in the pure
+ * `lib/session.ts` because `secure` reads `$env/dynamic/private`, which the
+ * browser-safe module must never import.
  */
 export function sessionCookieOptions() {
   return {

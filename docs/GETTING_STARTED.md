@@ -338,6 +338,9 @@ cd flackyness
 
 # Create production .env
 cat > .env << EOF
+# Required: docker-compose.yml declares this with \`:?\`, so compose refuses to
+# even parse its config without it — the stack will not start.
+DB_PASSWORD=$(openssl rand -hex 32)
 DATABASE_URL=postgres://postgres:secure-password@db:5432/flackyness
 ADMIN_TOKEN=$(openssl rand -hex 32)
 READ_TOKEN=$(openssl rand -hex 32)

@@ -108,6 +108,18 @@ export default defineConfig({
       // set, so EVERY browser context this suite creates must send the
       // header — global-setup.ts's own login flow sets a fixed one for
       // itself alongside the per-worker ones from fixtures.ts.
+      //
+      // TEST-HARNESS SETTING — do NOT copy this into a Dockerfile, compose
+      // file or .env for a real deployment on the strength of its appearing
+      // here. ADDRESS_HEADER makes the dashboard believe whatever
+      // x-forwarded-for it is handed, and here that is safe only because the
+      // sole client is this test runner. In production it is safe ONLY behind
+      // a reverse proxy that OVERWRITES the header (nginx
+      // `proxy_set_header X-Forwarded-For $remote_addr`), never one that
+      // appends, and never on a directly-reachable dashboard: there any
+      // browser could name its own address and so choose its own
+      // authRateLimit bucket, defeating the login brute-force throttle
+      // outright. See the ADDRESS_HEADER note in AGENTS.md.
       ADDRESS_HEADER: 'x-forwarded-for',
     },
   },

@@ -30,7 +30,19 @@ describe('lib/api', () => {
     });
   });
 
-  it("forwards the caller's session cookie, not a READ_TOKEN", async () => {
+  // Regression guard. This assertion used to demand `Authorization` be ABSENT
+  // whenever a session was present, which pinned a real production defect: the
+  // API's readAuth (middleware/auth.ts:192-229) has no session path, so with
+  // READ_TOKEN set a cookie-only read 401s before team scoping ever runs, and
+  // signing in made the dashboard strictly worse than staying anonymous.
+  //
+  // Sending both is the correct behaviour, not a compromise: the API's
+  // precedence rule at middleware/access.ts:42-43 — "A user session outranks a
+  // bearer token when both are present: the session is the more specific
+  // credential, and the dashboard forwards both" — is what makes the session
+  // win, so scoping is preserved. The bearer only satisfies the readAuth gate
+  // in front of it. Reverting to `else if` must fail here.
+  it("forwards BOTH the caller's session cookie and the READ_TOKEN bearer", async () => {
     privateEnv.READ_TOKEN = 'super-secret-read-token';
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
@@ -40,7 +52,23 @@ describe('lib/api', () => {
 
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers.Cookie).toBe('fk_session=sess-abc');
-    expect(init.headers.Authorization).toBeUndefined();
+    expect(init.headers.Authorization).toBe('Bearer super-secret-read-token');
+  });
+
+  // The same combination on the one WRITE that shares buildHeaders(). PATCH
+  // /tests/flaky/:id is readAuth-mounted, so a cookie-only mute hits the exact
+  // same 401 as a read; the mute test below covers the no-READ_TOKEN case.
+  it('sends both credentials on setFlakyStatus too, since it shares buildHeaders', async () => {
+    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createApi('sess-abc', null).setFlakyStatus('ft-1', 'ignored');
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Cookie).toBe('fk_session=sess-abc');
+    expect(init.headers.Authorization).toBe('Bearer super-secret-read-token');
   });
 
   // Delta 2026-08-15 (§D1.2): without these the dashboard puts every user in
@@ -278,6 +306,10 @@ describe('lib/api', () => {
     expect(calledUrl).toContain('&days=30');
   });
 
+  // `Authorization` is undefined here only because READ_TOKEN is unset in this
+  // test (the afterEach clears it) — this asserts the client never invents an
+  // ADMIN_TOKEN of its own, NOT that a bearer is never sent. When READ_TOKEN is
+  // set one IS sent; that is the `setFlakyStatus` test near the top of the file.
   it('sends the mute as a PATCH carrying the session cookie, never an ADMIN_TOKEN', async () => {
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));

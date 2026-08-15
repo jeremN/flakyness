@@ -27,8 +27,11 @@ export interface PasswordChangeGateMiddleware extends MiddlewareHandler {
  * to a non-allowlisted path — each still paying the session lookup in
  * sessionAuth (session.ts:45,49) — and never receive a 429. That is precisely
  * the unthrottled-cookie path plan 056's rate-limiter ruling and its regression
- * test (rate-limit.test.ts:341-361) exist to prevent. A short-circuit is never
- * neutral: everything downstream stops running, including the defences.
+ * test exist to prevent — rate-limit.test.ts:464-495, `'an unmatched path under
+ * /api/v1/auth is still rate-limited, not an open DB path'` (cited by name as
+ * well as line: this reference has already been invalidated once by unrelated
+ * growth in that file). A short-circuit is never neutral: everything
+ * downstream stops running, including the defences.
  *
  * Returns c.json rather than throwing HTTPException: the global error handler
  * renders exceptions as `c.json({ error: err.message }, err.status)`

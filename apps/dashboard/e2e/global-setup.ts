@@ -84,8 +84,22 @@ async function waitForActiveFlakyTest(projectId: string, timeoutMs: number): Pro
   const deadline = Date.now() + timeoutMs;
   let lastCount = 0;
 
+  // Carry READ_TOKEN when the API has one. This poll is the only request in
+  // this file that sends no credential at all, which is fine on the default
+  // deployment (readAuth returns early when READ_TOKEN is unset) but 401s
+  // forever on a hardened one — the suite then fails here, in setup, with a
+  // "flakiness detection is broken" message that blames the wrong thing.
+  // Sending it makes `READ_TOKEN=… pnpm --filter dashboard test:e2e` a usable
+  // way to exercise the hardened posture, which is where the dashboard's
+  // send-both-credentials contract ($lib/server/api.ts) actually matters.
+  const readHeaders: Record<string, string> = process.env.READ_TOKEN
+    ? { Authorization: `Bearer ${process.env.READ_TOKEN}` }
+    : {};
+
   while (Date.now() < deadline) {
-    const res = await fetch(`${API_URL}/api/v1/projects/${projectId}/flaky-tests?status=active`);
+    const res = await fetch(`${API_URL}/api/v1/projects/${projectId}/flaky-tests?status=active`, {
+      headers: readHeaders,
+    });
     if (res.ok) {
       const body = (await res.json()) as FlakyTestsResponse;
       lastCount = body.flakyTests.length;

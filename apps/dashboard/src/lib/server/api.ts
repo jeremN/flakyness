@@ -29,9 +29,26 @@ export class APIError extends Error {
 export function createApi(sessionToken: string | null, clientIp: string | null) {
   function buildHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
+    // BOTH credentials, never one or the other. These are two independent
+    // gates and a signed-in user must clear both: readAuth
+    // (api middleware/auth.ts:192-229) decides whether the caller may read at
+    // all, and when READ_TOKEN is set it looks ONLY at the Authorization
+    // header — it has no session path, and it is mounted ahead of
+    // resolveAccess on every read route. Sending the cookie alone therefore
+    // 401s before scoping ever runs, so on a READ_TOKEN-hardened install
+    // signing in would make the dashboard strictly worse than staying
+    // anonymous.
+    //
+    // Sending both does not weaken team scoping: the API resolves the session
+    // first and the bearer only as a fallback, the precedence rule stated at
+    // middleware/access.ts:42-43 — "A user session outranks a bearer token
+    // when both are present: the session is the more specific credential, and
+    // the dashboard forwards both." This function is the "forwards both" half
+    // of that contract.
     if (sessionToken) {
       headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
-    } else if (privateEnv.READ_TOKEN) {
+    }
+    if (privateEnv.READ_TOKEN) {
       headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
     }
     // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key

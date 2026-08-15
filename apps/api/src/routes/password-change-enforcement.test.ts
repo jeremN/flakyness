@@ -791,8 +791,10 @@ describeEnforcement('mustChangePassword enforcement', () => {
     // limiter; because a denial returns without next(), the limiter never
     // counts the request and this test never sees a 429 — an unthrottled path
     // that still pays a session DB lookup per request. Same hazard, same
-    // shape, as rate-limit.test.ts:341-361, which is also where this idiom
-    // (resetModules, enable the flag, build a MINIMAL app) comes from.
+    // shape, as rate-limit.test.ts:464-495 ('an unmatched path under
+    // /api/v1/auth is still rate-limited, not an open DB path'), which is also
+    // where this idiom (resetModules, enable the flag, build a MINIMAL app)
+    // comes from.
     //
     // Provision and log in FIRST, on the outer app: the limiter is a module
     // singleton, and doing this after enabling it would spend real slots.

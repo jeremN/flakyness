@@ -3,11 +3,24 @@ import { readSeed } from './seed';
 
 const API_URL = process.env.PUBLIC_API_URL ?? 'http://127.0.0.1:8080';
 
+// These are the only two places a spec in this suite talks to the API directly
+// rather than through the dashboard, so they are the only ones that must carry
+// their own read credential. Empty on the default deployment (readAuth returns
+// early when READ_TOKEN is unset); required on a hardened one, where the API
+// 401s an anonymous read and these requests would fail for a reason that has
+// nothing to do with what the tests below assert. See global-setup.ts's poll
+// for the same treatment.
+const readHeaders: Record<string, string> = process.env.READ_TOKEN
+  ? { Authorization: `Bearer ${process.env.READ_TOKEN}` }
+  : {};
+
 test.describe('run detail page (/runs/[runId])', () => {
   test('renders the failures table with the seeded failing/flaky test names and an error message', async ({ page, request }) => {
     const { projectId } = readSeed();
 
-    const runsRes = await request.get(`${API_URL}/api/v1/projects/${projectId}/runs?limit=1`);
+    const runsRes = await request.get(`${API_URL}/api/v1/projects/${projectId}/runs?limit=1`, {
+      headers: readHeaders,
+    });
     expect(runsRes.ok()).toBe(true);
     const { runs } = await runsRes.json();
     expect(runs.length).toBeGreaterThan(0);
@@ -63,7 +76,9 @@ test.describe('run detail page (/runs/[runId])', () => {
   test('the "show all results" toggle reveals passed results, and toggling back hides them again', async ({ page, request }) => {
     const { projectId } = readSeed();
 
-    const runsRes = await request.get(`${API_URL}/api/v1/projects/${projectId}/runs?limit=1`);
+    const runsRes = await request.get(`${API_URL}/api/v1/projects/${projectId}/runs?limit=1`, {
+      headers: readHeaders,
+    });
     const { runs } = await runsRes.json();
     const runId = runs[0].id;
 

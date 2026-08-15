@@ -269,6 +269,20 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   context this suite creates (every Playwright worker, and
   `global-setup.ts`'s own seeding login) must send the header for this
   reason — both already do.
+  **`ADDRESS_HEADER` is a test-harness setting here — do NOT carry it into a
+  deployment just because this sharp edge presents it as the fix.** The
+  shared-rate-limit-bucket symptom above reappears in production the moment
+  the dashboard sits behind a reverse proxy, so the trail is tempting.
+  `ADDRESS_HEADER` makes adapter-node trust whatever `X-Forwarded-For` it is
+  handed, and it is safe in production **only** behind a proxy that
+  *overwrites* that header (nginx `proxy_set_header X-Forwarded-For
+  $remote_addr`) — never one that *appends* to a client-supplied value. Set it
+  on a dashboard that is directly reachable and every client picks its own
+  `authRateLimit` bucket by choosing its own address, which defeats the login
+  brute-force throttle outright. It is deliberately absent from
+  `docker-compose.yml`, `.env.example` and `docs/`; shipping it needs the
+  proxy guidance shipped with it (recorded as a follow-up in
+  `plans/README.md`).
 
 ## Conventions
 

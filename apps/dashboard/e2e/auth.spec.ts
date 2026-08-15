@@ -85,15 +85,22 @@ test.describe('authentication', () => {
 
   // One continuous account lifecycle rather than N independent tests each
   // re-provisioning a user and re-authenticating from scratch: authRateLimit
-  // is a real 10-requests-per-60s-per-IP budget (apps/api/src/routes/auth.ts)
-  // shared by EVERY /login and /change-password call this whole E2E run
-  // makes — including global-setup.ts's own sign-in — and this suite runs
-  // with no TRUSTED_PROXY_IPS to separate callers (there is only one real
-  // machine originating all of this traffic, in CI and locally alike). Each
-  // independent test in the original draft of this file cost 1-3 of those
-  // requests; chaining the five properties below into one journey keeps the
-  // whole file's auth-endpoint cost at 3 requests total, comfortably under
-  // budget while still proving each property with its own assertion.
+  // is a deliberately tight 10-requests-per-60s-per-IP budget
+  // (apps/api/src/routes/auth.ts) — tight because it is the login
+  // brute-force throttle, so it is not something to widen for a test suite's
+  // convenience.
+  //
+  // Per-worker IPs (fixtures.ts + ADDRESS_HEADER + the API's
+  // TRUSTED_PROXY_IPS) give each Playwright worker its own bucket rather than
+  // one shared across the run, which is what keeps this suite off the
+  // shared-bucket 429s Task 8 fix round 1 chased. But that separates callers;
+  // it does not raise anyone's limit. Within THIS worker the budget is still
+  // 10/60s, and global-setup.ts's own sign-in spends from its own.
+  //
+  // Each independent test in the original draft of this file cost 1-3
+  // requests; chaining the five properties below into one journey keeps this
+  // file's auth-endpoint cost at 3 requests total, comfortably under budget
+  // while still proving each property with its own assertion.
   test('a forced-reset user: cannot navigate away, reaches / after changing and stays signed in, signs in again directly, signs out, and the back button does not restore the session', async ({
     page,
     context,

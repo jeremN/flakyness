@@ -40,10 +40,24 @@ Tokens are generated per-project and should be stored securely (e.g., GitLab CI/
 
 User accounts (`users`/`sessions`, migration `0011`) sign in with a
 scrypt-hashed password and get back an HttpOnly session cookie (`fk_session`),
-mounted at `/api/v1/auth`. This cookie is a separate credential from the
-Bearer tokens above — it is not accepted in place of a project token,
-`READ_TOKEN`, or `ADMIN_TOKEN`, and (per the Phase A note) none of those
-routes read it yet either.
+mounted at `/api/v1/auth`. Where it is accepted in place of a Bearer token
+differs by credential, and the split is deliberate:
+
+- **In place of `ADMIN_TOKEN`: yes, on the admin API.** `adminOrGlobalAdminAuth`
+  (`middleware/auth.ts:118-124`) admits either a valid `ADMIN_TOKEN` bearer or
+  a session with standing on that surface, and then authorizes per user. An
+  install with no `ADMIN_TOKEN` set at all is a supported — in fact preferred —
+  deployment; the static token is break-glass. The same applies to the mute
+  route, which is why `PATCH /api/v1/tests/flaky/:id` answers `403` rather
+  than `401` to a session that is recognised but lacks the role.
+- **In place of a project token or `READ_TOKEN`: no.** `projectAuth` and
+  `readAuth` read the `Authorization` header only and never look at the cookie.
+  On an install with `READ_TOKEN` set this matters to any client: a session
+  cookie alone is `401`ed by `readAuth` before per-team scoping runs, so a
+  caller must send **both** the cookie and the `READ_TOKEN` bearer. The session
+  still wins where they disagree — see `middleware/access.ts:42-43` — so
+  sending both authenticates as the user, scoped to their teams, rather than as
+  the unscoped `read-token` principal. This is exactly what the dashboard does.
 
 Accounts are provisioned by a global admin via
 [User Provisioning](#user-provisioning) (`/api/v1/admin/users`, `ADMIN_TOKEN`
@@ -291,14 +305,36 @@ to be surprised by if you only read the table above:
 4. **Muting still requires an admin bearer or a `team_admin` session — never
    a project token.** See
    [Mute / Unmute a Flaky Test](#mute--unmute-a-flaky-test).
-5. **Two admin endpoints are global-admin only, not merely
-   `ADMIN_TOKEN`-or-session-gated like the rest of the admin API:**
-   reassigning a project's `teamId` (see
-   [Update Project Flakiness Config](#update-project-flakiness-config)) and
-   [System Health](#system-health). Both return `403` for a `team_admin`
-   session — a team_admin could otherwise grant another team read access
-   one-way, or orphan a project permanently; system health is install-wide
-   telemetry with no team-scope story.
+5. **Part of the admin API is global-admin only, not merely
+   `ADMIN_TOKEN`-or-session-gated like the rest.** Each of the following
+   returns `403 "Global admin required"` for a `team_admin` session. Derived
+   from the guards in the code rather than counted, so it does not go stale by
+   arithmetic — the enforcement points are the router-wide gates in
+   `routes/admin-teams.ts` and `routes/admin-users.ts`, and the per-route
+   `canAdministerTeams()` checks in `routes/admin.ts`:
+
+   - **Every route under `/api/v1/admin/teams`** — team list/create/rename/
+     delete and all membership add/change-role/remove. Team CRUD is never
+     delegated; a team_admin administers *within* a team, not the team set.
+   - **Every route under `/api/v1/admin/users`** — user list, provision,
+     update, reset-password, delete. Same reasoning: provisioning accounts is
+     an operator act.
+   - **`POST /api/v1/admin/projects`** — creating a project is an operator
+     act, not a team act.
+   - **`DELETE /api/v1/admin/projects/:id`** — destructive and irreversible.
+   - **`PATCH /api/v1/admin/projects/:id` when the body carries `teamId`** —
+     *conditional*: a team_admin may patch their own project's flakiness
+     config, but not reassign it. Otherwise they could grant another team read
+     access one-way, or orphan the project permanently. See
+     [Update Project Flakiness Config](#update-project-flakiness-config).
+   - **`GET /api/v1/admin/health`** — install-wide telemetry with no
+     team-scope story.
+
+   Note the direction of the old error here, since it may have been relied
+   on: this list previously read "**two** admin endpoints", naming only the
+   `teamId` reassignment and System Health. That was wrong in the
+   **permissive** direction — a reader would have expected a team_admin to be
+   able to create and delete projects, and to manage teams and users.
 
 **One known asymmetry, recorded rather than fixed here:** on a deployment
 with `READ_TOKEN` set, `GET /api/v1/tests/flaky/:id` mounts `readAuth()` and
@@ -1812,9 +1848,10 @@ Provisions an account with a **show-once** temporary password: the
 plaintext appears in this response and nowhere else — it is never logged,
 never re-fetchable, and only its scrypt hash is stored. The account is
 flagged `mustChangePassword: true`; `POST /api/v1/auth/change-password`
-clears the flag. Note the flag is currently advisory — no route rejects a
-session that has not yet changed its password. Enforcement lands with the
-dashboard accounts work (plan 059).
+clears the flag. **The flag is enforced, not advisory:** a session carrying it
+is refused on every `/api/v1` endpoint except the small recovery allowlist —
+see [Password change required](#password-change-required) for the exact `403
+password_change_required` contract and the allowlisted method/path pairs.
 
 **Body:**
 ```json

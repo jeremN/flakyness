@@ -26,11 +26,14 @@ function toFail(e: unknown) {
   if (e instanceof AdminApiError) return fail(e.statusCode, { error: e.message });
   if (e instanceof NotAuthenticatedError) return fail(403, { error: 'Not signed in.' });
   // Fallback for anything else (e.g. a raw network TypeError from a dead
-  // API) — matches the rules console's actionError fallback byte-for-byte
-  // aside from `message` → `error` (this page renders `form.error`). Without
-  // this, an unrecognized throw propagated past every action and SvelteKit
-  // rendered a full-page 500 instead of the inline banner every sibling
-  // admin screen shows on an outage.
+  // API) — same status and same message text as the rules console's
+  // actionError fallback (rules/+page.server.ts:52), but deliberately NOT the
+  // same payload: that one is `{ action, message }` and this is `{ error }`.
+  // Both differences are intended — this page renders `form.error`, and it has
+  // no multi-action routing to tag. Without this branch an unrecognized throw
+  // propagated past every action and SvelteKit rendered a full-page 500
+  // instead of the inline banner every sibling admin screen shows on an
+  // outage.
   return fail(502, { error: 'Unexpected error contacting the API.' });
 }
 
@@ -71,7 +74,7 @@ export const actions: Actions = {
     // Re-fetch the authoritative name server-side and compare there. A
     // client-submitted "expected name" would let the confirmation gate be
     // bypassed by editing the DOM — same rule as plan 055's reorder. Wrapped
-    // in its own try (matching rules/+page.server.ts:140-144's reorder
+    // in its own try (matching rules/+page.server.ts:139-144's reorder
     // pre-fetch): this is the most reachable of the three unhandled-error
     // sites — no outage needed, just an expired session or a 429 while an
     // operator is on the confirm form — and without the try it leaked even a

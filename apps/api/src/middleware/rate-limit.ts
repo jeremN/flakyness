@@ -34,12 +34,27 @@ export const AUTH_RATE_LIMIT = { windowMs: 60 * 1000, limit: 10 };
  * compare equal.
  *
  * Node reports an IPv4 connection on a dual-stack listener as
- * '::ffff:172.28.0.10' (measured on this Node version, not assumed). Without
- * this, TRUSTED_PROXY_IPS can never be set to a value that matches, the trust
- * check silently fails, and every caller behind the proxy shares one bucket.
+ * '::ffff:172.28.0.10' (measured on this Node version, not assumed). This app
+ * sets API_HOST='0.0.0.0' by default (index.ts) and in docker-compose.yml, and
+ * a listener bound to an explicit IPv4 host reports a BARE address — so this is
+ * forward-compatible hardening, not a fix for a live failure. It becomes
+ * load-bearing if API_HOST is ever unset (Node's dual-stack default) or set to
+ * '::': there, without this, TRUSTED_PROXY_IPS could never be set to a value
+ * that matches, the trust check would silently fail, and every caller behind
+ * the proxy would share one bucket.
+ *
+ * The prefix test is case-insensitive on the OPERATOR's side of the comparison,
+ * not Node's: Node only ever emits lowercase, so this fails closed rather than
+ * open today. But TRUSTED_PROXY_IPS is hand-typed, and a pasted '::FFFF:…'
+ * would otherwise fail to establish trust with no warning anywhere — the same
+ * silent shared-bucket outcome, arrived at from the config side.
  */
 function normalizeIp(ip: string): string {
-  return ip.startsWith('::ffff:') ? ip.slice('::ffff:'.length) : ip;
+  const MAPPED_PREFIX = '::ffff:';
+  // Slice the ORIGINAL, not the lowercased copy: only the prefix is matched
+  // case-insensitively, and what follows it is a dotted-quad IPv4 with no case
+  // to preserve or destroy.
+  return ip.toLowerCase().startsWith(MAPPED_PREFIX) ? ip.slice(MAPPED_PREFIX.length) : ip;
 }
 
 /**

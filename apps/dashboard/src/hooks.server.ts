@@ -51,9 +51,13 @@ export const handle: Handle = async ({ event, resolve }) => {
   // can restore an authenticated page verbatim after sign-out on a back
   // navigation — this hook never re-runs for a bfcache restore, since it
   // replays the frozen page rather than issuing a new request. Scoped to HTML
-  // document responses via Content-Type, not by path: static assets
-  // (including content-hashed `_app/immutable/*`) get a different
-  // content-type and must stay cacheable — this never touches them. Applied
+  // document responses via Content-Type, not by path, and static assets are
+  // doubly safe: adapter-node's sirv middleware serves `_app/immutable/*` and
+  // returns BEFORE this hook runs at all — its handler is
+  // `sequence([serve(client, true), serve_prerendered(), ssr])`
+  // (@sveltejs/adapter-node/files/handler.js:240-242) and this hook lives
+  // inside `ssr`, the last link. So a static asset never reaches this code,
+  // and the Content-Type test would exclude it even if it did. Applied
   // uniformly to every document response (not just while signed in) so
   // there's one rule to reason about; /login gets it too, which is harmless.
   if (response.headers.get('content-type')?.startsWith('text/html')) {

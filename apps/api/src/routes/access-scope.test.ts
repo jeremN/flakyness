@@ -235,6 +235,93 @@ describeScope('per-team read scoping — /tests/:testName/* routes', () => {
   });
 });
 
+/**
+ * The READ_TOKEN-hardened posture, which nothing else in this repo exercises.
+ *
+ * readAuth and resolveAccess are two independent gates, and with READ_TOKEN set
+ * a signed-in dashboard user must clear BOTH. readAuth (middleware/auth.ts) has
+ * no session path — it looks only at the Authorization header — and it is
+ * mounted ahead of resolveAccess on every read route. So a cookie alone 401s
+ * before scoping ever runs, and a bearer alone passes readAuth but classifies
+ * the caller as `read-token`, which is deliberately UNSCOPED.
+ *
+ * That is why the dashboard sends both ($lib/server/api.ts's buildHeaders) and
+ * why middleware/access.ts:42-43 promises it does. This block is the API-side
+ * half of that contract: it asserts each credential ALONE is wrong in its own
+ * distinct way, so a future change that drops either one fails here rather than
+ * only on a hardened production install.
+ *
+ * `process.env.READ_TOKEN` is read per-request (middleware/auth.ts's readAuth),
+ * so setting it inside the test is enough; the finally-restore keeps it out of
+ * the rest of this file — notably the `is unfiltered for a caller with no
+ * session` test below, which short-circuits when READ_TOKEN is set.
+ */
+describeScope('READ_TOKEN posture — the dashboard must send session AND bearer', () => {
+  async function withReadToken<T>(token: string, fn: () => Promise<T>): Promise<T> {
+    const previous = process.env.READ_TOKEN;
+    process.env.READ_TOKEN = token;
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env.READ_TOKEN;
+      else process.env.READ_TOKEN = previous;
+    }
+  }
+
+  it('rejects a session cookie ALONE with 401 — readAuth has no session path', async () => {
+    const f = await fixture('member');
+
+    await withReadToken('read-token-for-posture-test', async () => {
+      const res = await app.request(`/api/v1/projects/${f.project.id}/stats`, as(f.cookie));
+      // 401, not 404: this dies in readAuth, before resolveAccess runs at all.
+      // The user is a legitimate member of this project's team — the cookie is
+      // simply a credential this gate cannot see.
+      expect(res.status).toBe(401);
+    });
+  });
+
+  it('accepts the bearer ALONE but leaves it UNSCOPED — it reads any team\'s project', async () => {
+    const theirs = await fixture('member');
+
+    await withReadToken('read-token-for-posture-test', async () => {
+      const res = await app.request(`/api/v1/projects/${theirs.project.id}/stats`, {
+        headers: { Authorization: 'Bearer read-token-for-posture-test' },
+      });
+      // The failure mode is escalation, not denial: READ_TOKEN classifies as
+      // `read-token`, which carries no team membership to scope against, so it
+      // reads a project belonging to a team it is in no sense a member of.
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it('accepts session + bearer together AND scopes it to the session\'s teams', async () => {
+    const mine = await fixture('member');
+    const theirs = await fixture('member');
+
+    await withReadToken('read-token-for-posture-test', async () => {
+      const both = (cookie: string) => ({
+        headers: {
+          Cookie: `${SESSION_COOKIE}=${cookie}`,
+          Authorization: 'Bearer read-token-for-posture-test',
+        },
+      });
+
+      // Own team: the bearer satisfies readAuth, the session satisfies scoping.
+      const own = await app.request(`/api/v1/projects/${mine.project.id}/stats`, both(mine.cookie));
+      expect(own.status).toBe(200);
+
+      // Cross-team: 404. This is the assertion that proves the session OUTRANKS
+      // the bearer — with the bearer winning, the previous test shows this same
+      // request returns 200.
+      const cross = await app.request(
+        `/api/v1/projects/${theirs.project.id}/stats`,
+        both(mine.cookie)
+      );
+      expect(cross.status).toBe(404);
+    });
+  });
+});
+
 describeScope('flaky-test mute authorization', () => {
   const FLAKY_TEST_NAME = 'always flaky test';
 

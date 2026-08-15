@@ -87,14 +87,25 @@ each closing one distinct failure mode.
 
 `getClientIp` gates on `trustedProxies.includes(socketIp)`, an exact string
 match. **Measured 2026-08-15**, not assumed: Node reports an IPv4 connection on
-a dual-stack listener as `::ffff:127.0.0.1`, not `127.0.0.1`. An operator who
-sets `TRUSTED_PROXY_IPS=172.20.0.5` therefore never matches a socket reporting
+a **dual-stack** listener as `::ffff:127.0.0.1`, not `127.0.0.1` — but a
+listener bound to an explicit IPv4 host reports the **bare** form.
+
+**This is forward-compatible hardening, not a bug fix.** Corrected 2026-08-15
+after an earlier draft of this section claimed the exact-match comparison was
+"silently failing in every real deployment": it was not. This app sets
+`API_HOST='0.0.0.0'` in both the code default (`apps/api/src/index.ts`) and
+`docker-compose.yml`, so no documented deployment ever presents the `::ffff:`
+form and the pre-existing code already worked.
+
+What the normalization buys is the case where `API_HOST` is unset (Node's
+no-host dual-stack default) or set to `::`. There an operator who sets
+`TRUSTED_PROXY_IPS=172.20.0.5` never matches a socket reporting
 `::ffff:172.20.0.5`, the trust check silently fails, and the shared bucket
-returns with no error anywhere.
+returns with no error anywhere. Today it is harmless; then it is load-bearing.
 
 The existing tests (`rate-limit.test.ts:37-60`) use synthetic addresses like
-`1.2.3.4` and never exercise the IPv4-mapped form, so they pass either way. This
-is the single reason the whole approach would not work in practice.
+`1.2.3.4` and never exercise the IPv4-mapped form, so they pass either way —
+which is why the gap was invisible, not why it was breaking anything.
 
 Strip a leading `::ffff:` from the socket address before comparison, and compare
 normalized-to-normalized so a configured value in either form matches. New tests

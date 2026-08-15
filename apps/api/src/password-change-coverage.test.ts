@@ -74,10 +74,12 @@ const gatePaths = new Set(app.routes.filter((r) => isGateHandler(r.handler)).map
 
 // Which rate limiter is expected to precede the gate at each mount, keyed by
 // reference identity — each `*RateLimit` export is a single
-// `createRateLimit(...)` call result (middleware/rate-limit.ts:86,98,110,173),
-// i.e. a module-level singleton, not a factory, so `===` reliably picks out
-// that exact registration in app.routes rather than a different call to the
-// same factory.
+// `createRateLimit(...)` call result, i.e. a module-level singleton, not a
+// factory, so `===` reliably picks out that exact registration in app.routes
+// rather than a different call to the same factory. The four are
+// `reportRateLimit`, `apiRateLimit`, `authRateLimit` and `adminRateLimit`
+// (middleware/rate-limit.ts:124,136,148,235 — named as well as numbered
+// because these line references have drifted twice already).
 const EXPECTED_GATE_ORDER: ReadonlyArray<readonly [string, unknown]> = [
   ['/api/v1/reports/*', reportRateLimit],
   ['/api/v1/projects/*', apiRateLimit],
@@ -368,8 +370,9 @@ describe('password-change gate coverage', () => {
           `the limiter, never before it (see the mount-point comment in ` +
           `middleware/password-change.ts). A gate ahead of its limiter means a denied ` +
           `request returns without calling next(), so the limiter never runs and never ` +
-          `counts the request — the exact hazard rate-limit.test.ts:341-361 guards ` +
-          `against.`
+          `counts the request — the exact hazard rate-limit.test.ts:464-495 ` +
+          `('an unmatched path under /api/v1/auth is still rate-limited, not an ` +
+          `open DB path') guards against.`
       ).toBeLessThan(gateIndex);
     }
   );

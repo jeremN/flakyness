@@ -1754,6 +1754,20 @@ Table of users (email, display name, global-admin flag, teams, last login), plus
 - `create` — email + display name + global-admin checkbox → renders the **show-once temporary password** using the existing `TokenReveal.svelte` component (plan 053 built it for exactly this shape; reuse it rather than writing a second reveal).
 - `resetPassword` — show-once again, with copy warning that all the user's sessions are revoked.
 - `toggleGlobalAdmin`, `delete` — both must surface the API's `409` ("Cannot demote/delete the last global admin") as a readable inline error, not a generic failure.
+- `delete` — **typed-email confirmation, compared server-side**, the same shape
+  as team delete and project delete. *(Added 2026-08-15 during execution: the
+  first implementation used a client-side two-step confirm, which the action
+  table above did not define a field for. The gap is one of kind, not degree —
+  a client-side confirm is defeated by editing the DOM, so the most destructive
+  action on this page would carry exactly one server-side guard,
+  `isGlobalAdmin`, the same as the fully reversible `toggleGlobalAdmin`, while
+  two less destructive deletes carry two. The API's `409` covers only the
+  **last** global admin; deleting the second-to-last, or any team_admin, is
+  ungated.)* Re-fetch from `listUsers()` inside the action and compare the
+  typed value against the authoritative email there — never against a
+  client-submitted expected value. Test it with a forged request that carries a
+  competing client field, or a `?? user.email` fallback bypass survives: that
+  exact mutation went unnoticed in the teams console until its review.
 
 - [ ] **Step 3b: Fix the stale "admin disabled" copy**
 

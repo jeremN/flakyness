@@ -1,7 +1,7 @@
 import { fail, redirect, type Actions } from '@sveltejs/kit';
 import { env } from '$env/dynamic/public';
-import { env as privateEnv } from '$env/dynamic/private';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH, parseSessionCookie } from '$lib/session';
+import { SESSION_COOKIE, parseSessionCookie } from '$lib/session';
+import { sessionCookieOptions } from '$lib/server/session';
 
 const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -75,35 +75,11 @@ export const actions: Actions = {
       return fail(502, { email, error: 'The API returned an unreadable response. Check the API logs.' });
     }
 
-    cookies.set(SESSION_COOKIE, token, {
-      // Load-bearing, and must stay identical to the gate's
-      // `cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH })` in
-      // hooks.server.ts — both now read the same exported constant
-      // (lib/session.ts) instead of independently hand-typed '/' literals,
-      // so they cannot drift apart the way two local literals could. A
-      // cookie deletion only matches a cookie with the same path, so a
-      // mismatch here would silently resurrect the stale-credential loop
-      // that delete exists to break: the API keeps rejecting the dead
-      // session and the browser keeps presenting it, one wasted round-trip
-      // per page view, forever. Noted 2026-08-15 by the Task 3 review.
-      path: SESSION_COOKIE_PATH,
-      httpOnly: true,
-      sameSite: 'lax',
-      // Deliberately two-way (unset → not secure) — this does NOT mirror the
-      // API's isCookieSecure() (apps/api/src/routes/auth.ts), which is
-      // three-way and falls back to NODE_ENV === 'production' when unset.
-      // That fallback is safe for the API's own cookie because it's consumed
-      // server-side by parseSessionCookie and never reaches a browser. This
-      // cookie is the one the browser actually holds: docker-compose.yml
-      // sets NODE_ENV=production with a plain-http ORIGIN, so adopting the
-      // API's default here would mark this cookie Secure over plain http —
-      // the browser silently drops it, and login breaks on that documented
-      // deployment. Read via $env/dynamic/private (not process.env, which
-      // appears nowhere else in src/) so this is stubbable the same way
-      // every other server module's env read is.
-      secure: privateEnv.COOKIE_SECURE === 'true',
-      maxAge: 7 * 24 * 60 * 60,
-    });
+    // Full options object extracted to lib/server/session.ts's
+    // sessionCookieOptions() — see that function's comments for why the path
+    // must match the gate's cookies.delete and why `secure` deliberately does
+    // not mirror the API's own three-way isCookieSecure().
+    cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
 
     throw redirect(303, body.mustChangePassword ? '/change-password' : '/');
   },

@@ -43,7 +43,15 @@ describe('login action', () => {
     // — the full-body assertion below checks for the TRIMMED value, so
     // deleting the .trim() call would leave the untrimmed string in the
     // request body and redden this.
-    const event = formEvent({ email: '  a@b.com  ', password: 'hunter2' }, '203.0.113.7');
+    //
+    // Deliberately distinct from formEvent's default fixture IP
+    // (203.0.113.7 — reused by nearly every other test in this file): if the
+    // action ever hardcoded a literal instead of threading locals.clientIp
+    // through, a fixture-matching literal would pass this assertion by
+    // coincidence. A value unique to this test can only match if the real
+    // wiring is exercised. Mirrors hooks.server.test.ts's identical fix.
+    const clientIp = '198.51.100.9';
+    const event = formEvent({ email: '  a@b.com  ', password: 'hunter2' }, clientIp);
 
     await expect(actions.default(event as any)).rejects.toMatchObject({ status: 303, location: '/' });
 
@@ -55,7 +63,7 @@ describe('login action', () => {
     // .trim() survivor above.
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.7' },
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': clientIp },
       body: JSON.stringify({ email: 'a@b.com', password: 'hunter2' }),
     });
 

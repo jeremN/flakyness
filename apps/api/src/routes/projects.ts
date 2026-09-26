@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { eq, desc, and, gte, inArray, sql } from 'drizzle-orm';
-import { db, projects, flakyTests, testRuns, testResults } from '../db';
+import { db, projects, flakyTests, testRuns, testResults, auditRuns, auditResults } from '../db';
 import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../services/flakiness';
 import { apiRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
 import { readAuth } from '../middleware/auth';
 import { resolveAccess, getAccess } from '../middleware/access';
 import { scopesProjectList, canReadProject } from '../services/auth/access';
+import { compareAuditResults, summarizeScores } from '../services/audits';
+import { findPreviousAuditRun, loadComparableResults } from '../services/audit-store';
 
 const projectsRouter = new Hono();
 
@@ -29,6 +31,15 @@ const QUARANTINE_ROW_CAP = 1000;
 export const RUN_RESULTS_CAP = 2000;
 
 const runResultsStatusSchema = z.enum(['all', 'failed', 'flaky', 'passed', 'skipped']);
+
+// GET /:id/audits page size. Default covers a month of daily scheduled audits.
+export const AUDIT_RUNS_DEFAULT_LIMIT = 30;
+export const AUDIT_RUNS_MAX_LIMIT = 100;
+
+// Safety cap for GET /:id/audits/:runId's `results`. A report holds at most
+// MAX_AUDIT_PAGES pages x 3 categories = 1500 rows, so this is never hit by a
+// valid ingest; it exists so the read path does not depend on that invariant.
+export const AUDIT_RESULTS_CAP = 2000;
 
 // Apply rate limiting
 projectsRouter.use('*', apiRateLimit);
@@ -543,6 +554,172 @@ projectsRouter.get(
     }
 
     return c.json({ days: trendDays, rates });
+  }
+);
+
+/**
+ * GET /api/v1/projects/:id/audits
+ *
+ * Recent quality-audit runs (plan 060), newest first, each with its mean
+ * score per category — the data behind a score-over-time chart. A category
+ * with no scored result in a run is `null`, never `0`.
+ *
+ * Query params:
+ *   - branch: only runs on this branch (default: all branches)
+ *   - limit:  1..AUDIT_RUNS_MAX_LIMIT (default AUDIT_RUNS_DEFAULT_LIMIT);
+ *             an unparseable value falls back to the default.
+ */
+projectsRouter.get(
+  '/:id/audits',
+  readAuth((c) => c.req.param('id')),
+  resolveAccess((c) => c.req.param('id')),
+  async (c) => {
+    const parsed = uuidSchema.safeParse(c.req.param('id'));
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+    const projectId = parsed.data;
+
+    const [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!project) {
+      return c.json({ error: 'Project not found' }, 404);
+    }
+
+    const requested = parseInt(c.req.query('limit') || String(AUDIT_RUNS_DEFAULT_LIMIT), 10);
+    // NaN guard BEFORE the clamp — every comparison against NaN is false.
+    const limit = Number.isNaN(requested)
+      ? AUDIT_RUNS_DEFAULT_LIMIT
+      : Math.min(Math.max(requested, 1), AUDIT_RUNS_MAX_LIMIT);
+    const branchParsed = z.string().min(1).max(255).safeParse(c.req.query('branch'));
+    const branch = branchParsed.success ? branchParsed.data : undefined;
+
+    const runs = await db
+      .select({
+        id: auditRuns.id,
+        branch: auditRuns.branch,
+        commitSha: auditRuns.commitSha,
+        pipelineId: auditRuns.pipelineId,
+        startedAt: auditRuns.startedAt,
+        finishedAt: auditRuns.finishedAt,
+        createdAt: auditRuns.createdAt,
+        pageCount: auditRuns.pageCount,
+        failedPages: auditRuns.failedPages,
+      })
+      .from(auditRuns)
+      .where(
+        and(eq(auditRuns.projectId, projectId), branch ? eq(auditRuns.branch, branch) : undefined)
+      )
+      .orderBy(desc(auditRuns.createdAt))
+      .limit(limit);
+
+    if (runs.length === 0) {
+      return c.json({ runs: [] });
+    }
+
+    const scoreRows = await db
+      .select({
+        auditRunId: auditResults.auditRunId,
+        category: auditResults.category,
+        score: auditResults.score,
+      })
+      .from(auditResults)
+      .where(inArray(auditResults.auditRunId, runs.map((r) => r.id)));
+
+    const byRun = new Map<string, { category: string; score: string | null }[]>();
+    for (const row of scoreRows) {
+      const list = byRun.get(row.auditRunId) ?? [];
+      list.push(row);
+      byRun.set(row.auditRunId, list);
+    }
+
+    return c.json({
+      runs: runs.map((run) => ({ ...run, scores: summarizeScores(byRun.get(run.id) ?? []) })),
+    });
+  }
+);
+
+/**
+ * GET /api/v1/projects/:id/audits/:runId
+ *
+ * One audit run with every check result, plus `regressions` against the
+ * previous run on the same branch (`previousRunId`, null when this is the
+ * first). Scoped by BOTH ids in one WHERE — a runId from another project 404s
+ * (same confused-deputy shape as GET /:id/runs/:runId; plan 031).
+ */
+projectsRouter.get(
+  '/:id/audits/:runId',
+  readAuth((c) => c.req.param('id')),
+  resolveAccess((c) => c.req.param('id')),
+  async (c) => {
+    const parsedProjectId = uuidSchema.safeParse(c.req.param('id'));
+    if (!parsedProjectId.success) {
+      return c.json({ error: 'Invalid project ID format' }, 400);
+    }
+    const parsedRunId = uuidSchema.safeParse(c.req.param('runId'));
+    if (!parsedRunId.success) {
+      return c.json({ error: 'Invalid run ID format' }, 400);
+    }
+
+    const [run] = await db
+      .select({
+        id: auditRuns.id,
+        projectId: auditRuns.projectId,
+        branch: auditRuns.branch,
+        commitSha: auditRuns.commitSha,
+        pipelineId: auditRuns.pipelineId,
+        startedAt: auditRuns.startedAt,
+        finishedAt: auditRuns.finishedAt,
+        createdAt: auditRuns.createdAt,
+        pageCount: auditRuns.pageCount,
+        failedPages: auditRuns.failedPages,
+        pageErrors: auditRuns.pageErrors,
+        toolName: auditRuns.toolName,
+        toolVersion: auditRuns.toolVersion,
+      })
+      .from(auditRuns)
+      .where(and(eq(auditRuns.id, parsedRunId.data), eq(auditRuns.projectId, parsedProjectId.data)))
+      .limit(1);
+
+    if (!run) {
+      return c.json({ error: 'Audit run not found' }, 404);
+    }
+
+    const rows = await db
+      .select({
+        url: auditResults.url,
+        device: auditResults.device,
+        category: auditResults.category,
+        score: auditResults.score,
+        metrics: auditResults.metrics,
+        issues: auditResults.issues,
+      })
+      .from(auditResults)
+      .where(eq(auditResults.auditRunId, run.id))
+      // Worst first, so a truncated response keeps what needs attention.
+      // NULL scores (unmeasured) sort after real ones.
+      .orderBy(sql`${auditResults.score} ASC NULLS LAST`, auditResults.url, auditResults.category)
+      .limit(AUDIT_RESULTS_CAP + 1);
+
+    const truncated = rows.length > AUDIT_RESULTS_CAP;
+    const results = truncated ? rows.slice(0, AUDIT_RESULTS_CAP) : rows;
+
+    const previous = await findPreviousAuditRun(run.projectId, run.branch, run.createdAt);
+    const regressions = previous
+      ? compareAuditResults(await loadComparableResults(previous.id), results)
+      : [];
+
+    const { projectId: _projectId, ...runBody } = run;
+    return c.json({
+      run: { ...runBody, scores: summarizeScores(results) },
+      results,
+      truncated,
+      previousRunId: previous?.id ?? null,
+      regressions,
+    });
   }
 );
 

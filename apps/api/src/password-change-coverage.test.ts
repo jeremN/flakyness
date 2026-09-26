@@ -7,10 +7,11 @@ import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './
  * Fail-loud guard: every /api/v1 route is covered by a passwordChangeGate()
  * mount, and every mount sits after its router's rate limiter.
  *
- * Layer 2 is EIGHT mounts rather than one global one — seven routers plus a
- * route-level mount on `GET /api/v1` (see the mount-point comment in
- * middleware/password-change.ts for why a global mount is wrong). Eight places
- * to forget is seven more than one, so the forgetting is what gets automated
+ * Layer 2 is NINE mounts rather than one global one — eight routers (plan 060
+ * added /api/v1/audits) plus a route-level mount on `GET /api/v1` (see the
+ * mount-point comment in middleware/password-change.ts for why a global mount
+ * is wrong). Nine places to forget is eight more than one, so the forgetting is
+ * what gets automated
  * away here.
  *
  * This file holds two DIFFERENT kinds of assertion, and conflating them is how
@@ -35,7 +36,7 @@ import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './
  * its subtree.
  */
 
-// The complete set of gate mounts: the seven app.route('/api/v1/...') routers
+// The complete set of gate mounts: the eight app.route('/api/v1/...') routers
 // in index.ts, plus the one route-level mount on GET /api/v1 itself.
 //
 // This list is a NAMED INVENTORY, not the completeness check. Listing a mount
@@ -51,6 +52,7 @@ import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './
 // the live app and every gate assertion here passed.)
 const EXPECTED_GATE_MOUNTS = [
   '/api/v1/reports/*',
+  '/api/v1/audits/*',
   '/api/v1/projects/*',
   '/api/v1/tests/*',
   '/api/v1/admin/users/*',
@@ -82,6 +84,8 @@ const gatePaths = new Set(app.routes.filter((r) => isGateHandler(r.handler)).map
 // because these line references have drifted twice already).
 const EXPECTED_GATE_ORDER: ReadonlyArray<readonly [string, unknown]> = [
   ['/api/v1/reports/*', reportRateLimit],
+  // Plan 060: audit ingest is a CI/cron upload, so it shares the ingest limiter.
+  ['/api/v1/audits/*', reportRateLimit],
   ['/api/v1/projects/*', apiRateLimit],
   ['/api/v1/tests/*', apiRateLimit],
   ['/api/v1/admin/users/*', adminRateLimit],
@@ -310,9 +314,9 @@ describe('password-change gate coverage', () => {
           'would iterate an empty surface and pass vacuously. Fix this test.'
       );
     }
-    if (wildcardMountCount !== 7) {
+    if (wildcardMountCount !== 8) {
       throw new Error(
-        `Expected 7 wildcard ('/*') gate mounts — one per /api/v1 router — but ` +
+        `Expected 8 wildcard ('/*') gate mounts — one per /api/v1 router — but ` +
           `found ${wildcardMountCount}. If a router was genuinely added or removed, ` +
           `update this number AND EXPECTED_GATE_MOUNTS/EXPECTED_GATE_ORDER together. ` +
           `If it dropped to 0, the mount paths are no longer being read correctly ` +

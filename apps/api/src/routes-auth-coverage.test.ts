@@ -57,7 +57,8 @@ const HANDLER_SCOPED = ['/api/v1/tests/flaky/:id'];
 // by adminOrGlobalAdminAuth, plan 058 Task 5) and the static /api/v1 index.
 // Bumping this is the point: a new read route forces a deliberate edit here,
 // which forces a reviewer to ask whether readAuth was mounted.
-const EXPECTED_READ_ROUTE_COUNT = 11;
+// Plan 060 added GET /projects/:id/audits and /projects/:id/audits/:runId (11 -> 13).
+const EXPECTED_READ_ROUTE_COUNT = 13;
 
 function isReadAuthHandler(handler: unknown): boolean {
   return typeof handler === 'function' && (handler as { isReadAuth?: boolean }).isReadAuth === true;

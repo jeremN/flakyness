@@ -260,6 +260,72 @@ export const teamMembers = pgTable('team_members', {
   userIdIdx: index('team_members_user_id_idx').on(table.userId),
 }));
 
+// ---------------------------------------------------------------------------
+// Quality audits (plan 060): a11y / SEO / perf checks over a list of URLs,
+// produced by `apps/auditor` and ingested via POST /api/v1/audits. Deliberately
+// SEPARATE from test_runs/test_results — an audit is not a test execution, has
+// no pass/fail/flaky status, and must never feed flakiness detection.
+//
+// Both tables are new, so they follow the timestamptz rule (plan 056 review):
+// new tables use `withTimezone` while they are still empty.
+// ---------------------------------------------------------------------------
+
+/** One page that failed to load, recorded on the run (no check rows exist for it). */
+export interface AuditPageError {
+  url: string;
+  device: string;
+  error: string;
+}
+
+/** One finding inside a check. `id` is stable across runs (axe rule id, SEO check id, perf metric id). */
+export interface AuditIssue {
+  id: string;
+  severity: 'critical' | 'serious' | 'moderate' | 'minor' | 'info';
+  message: string;
+  count?: number;
+}
+
+// One audit execution (scheduled job or CI step) for a project.
+export const auditRuns = pgTable('audit_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  branch: varchar('branch', { length: 255 }).notNull(),
+  // NULLABLE, unlike test_runs.commit_sha: a scheduled audit of production has
+  // no commit to attribute it to.
+  commitSha: varchar('commit_sha', { length: 40 }),
+  pipelineId: varchar('pipeline_id', { length: 100 }),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  pageCount: integer('page_count').notNull(),
+  failedPages: integer('failed_pages').notNull().default(0),
+  // Pages that never loaded. Capped at ingest (MAX_AUDIT_PAGES).
+  pageErrors: jsonb('page_errors').$type<AuditPageError[]>(),
+  toolName: varchar('tool_name', { length: 100 }),
+  toolVersion: varchar('tool_version', { length: 50 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  // "Latest runs for a project" and "previous run on this branch" both walk this.
+  projectCreatedIdx: index('audit_runs_project_created_idx').on(table.projectId, table.createdAt),
+}));
+
+// One (url, device, category) check inside a run.
+export const auditResults = pgTable('audit_results', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  auditRunId: uuid('audit_run_id').references(() => auditRuns.id, { onDelete: 'cascade' }).notNull(),
+  url: varchar('url', { length: 2048 }).notNull(),
+  device: varchar('device', { length: 16 }).notNull(), // mobile | desktop
+  category: varchar('category', { length: 16 }).notNull(), // a11y | seo | perf
+  // 0.0000–1.0000; NULL when the check ran but could not produce a score.
+  // Decimal → string on read: compare via Number(...), write via .toFixed(4).
+  score: decimal('score', { precision: 5, scale: 4 }),
+  // Raw measurements (perf: lcp/fcp/cls/tbt/ttfb). NULL when none.
+  metrics: jsonb('metrics').$type<Record<string, number>>(),
+  issues: jsonb('issues').$type<AuditIssue[]>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  auditRunIdIdx: index('audit_results_audit_run_id_idx').on(table.auditRunId),
+}));
+
 // Type exports for use in application
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -281,3 +347,7 @@ export type Team = typeof teams.$inferSelect;
 export type NewTeam = typeof teams.$inferInsert;
 export type TeamMember = typeof teamMembers.$inferSelect;
 export type NewTeamMember = typeof teamMembers.$inferInsert;
+export type AuditRun = typeof auditRuns.$inferSelect;
+export type NewAuditRun = typeof auditRuns.$inferInsert;
+export type AuditResult = typeof auditResults.$inferSelect;
+export type NewAuditResult = typeof auditResults.$inferInsert;

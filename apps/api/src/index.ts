@@ -17,6 +17,7 @@ import { renderMetrics } from './metrics';
 
 // Routes
 import reports from './routes/reports';
+import auditsRouter from './routes/audits';
 import projectsRouter from './routes/projects';
 import testsRouter from './routes/tests';
 import adminRouter from './routes/admin';
@@ -104,7 +105,7 @@ app.use('*', sessionAuth());
 // The gate is mounted as ROUTE-LEVEL middleware, not `app.use('/api/v1', ...)`.
 // A path-scoped `app.use` here would match every path BELOW /api/v1 too, and
 // being registered on the root app it would run ahead of every per-router rate
-// limiter — starving all seven of them, which is exactly the hazard the
+// limiter — starving all eight of them, which is exactly the hazard the
 // mount-point comment in middleware/password-change.ts describes. Route-level
 // middleware runs only for this one exact route.
 //
@@ -163,6 +164,7 @@ if (proxyWarning) logger.warn(proxyWarning);
 
 // Mount routes
 app.route('/api/v1/reports', reports);
+app.route('/api/v1/audits', auditsRouter);
 app.route('/api/v1/projects', projectsRouter);
 app.route('/api/v1/tests', testsRouter);
 // Mounted BEFORE /api/v1/admin so the more specific path is matched first —

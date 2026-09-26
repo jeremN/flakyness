@@ -17,6 +17,7 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 | Tests | `pnpm test` (API route suites need `DATABASE_URL` + `ADMIN_TOKEN`, else they self-skip; dashboard suite always runs) |
 | E2E (Playwright, real Postgres + built dashboard) | `pnpm --filter dashboard test:e2e` — see `apps/dashboard/e2e/` |
 | Build | `pnpm build` |
+| Auditor (a11y/SEO/perf runner, plan 060) | `pnpm --filter auditor test` (browser suite needs Chromium: `AUDIT_CHROMIUM_PATH=…` or `pnpm --filter auditor exec playwright install chromium`) · `pnpm --filter auditor fixture:api` regenerates the API's real-output fixture |
 
 ## Sharp edges
 
@@ -202,7 +203,7 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
 - **`mustChangePassword` is enforced in TWO places, and the gate's mount
   position is load-bearing.** `passwordChangeGate()`
   (`middleware/password-change.ts`) is mounted `use('*')` inside **each** of
-  the seven `/api/v1` routers, immediately **after** that router's rate
+  the eight `/api/v1` routers, immediately **after** that router's rate
   limiter — never as a global `app.use()`. A denial returns without calling
   `next()`, so a global mount would run ahead of every per-router limiter and
   starve it: a mid-reset session could then hammer any non-allowlisted path
@@ -212,7 +213,7 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   stub in `index.ts` — takes the gate as **route-level** middleware
   (`app.get('/api/v1', passwordChangeGate(), handler)`), never
   `app.use('/api/v1', ...)`, which would match the whole subtree from the root
-  app and starve all seven limiters. Guarded by
+  app and starve all eight limiters. Guarded by
   `password-change-coverage.test.ts`: named mounts in the right order, the
   auth-route decision list, and — the assertion that actually catches a NEW
   ungated router — a completeness check that derives the `/api/v1` surface
@@ -307,6 +308,21 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   (an ignored incident does not reopen on new occurrences, which is what
   actually stops the recurring PR noise) — and because the sync runs that
   direction, doing it there also covers `ggshield` if it is ever added.
+
+- **Audits are not tests (plan 060).** `audit_runs`/`audit_results` are a
+  separate ingest path (`POST /api/v1/audits`) and must never feed
+  `updateFlakyTests`, quarantine, or `test_runs`. Regressions are computed by
+  the pure `compareAuditResults` (`services/audits.ts`), and "previous run"
+  is defined once in `services/audit-store.ts` (same project **and branch**).
+  Ingest and read both go through those two modules. Don't re-derive either
+  in a route.
+- **Code that runs inside an audited page must be a plain-JS string**
+  (`apps/auditor/src/in-page.ts`), never a TS function passed to
+  `page.evaluate`/`addInitScript`: tsx/esbuild's `keepNames` injects a
+  `__name(...)` helper that doesn't exist in the page, and the call dies with
+  `ReferenceError: __name is not defined`. Measured on the auditor's first run.
+  It lost every SEO check and LCP/CLS/TBT silently (the runner degrades to
+  `null` + an `info` issue by design, so nothing crashes to tell you).
 
 ## Conventions
 

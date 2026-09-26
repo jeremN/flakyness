@@ -16,6 +16,8 @@ updates:
       # workspace package dir is missing here.
       - "/"
       - "/apps/api"
+      # Plan 060. On TS 7 like apps/api; no svelte-check, so no TS pin needed.
+      - "/apps/auditor"
     schedule:
       interval: "weekly"
       day: "monday"

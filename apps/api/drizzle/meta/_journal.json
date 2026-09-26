@@ -92,6 +92,13 @@
       "when": 1785261911584,
       "tag": "0012_even_jack_power",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790454451156,
+      "tag": "0013_rare_doorman",
+      "breakpoints": true
     }
   ]
 }

@@ -66,6 +66,9 @@ jobs:
       - name: Type check API (tsc)
         run: pnpm --filter api exec tsc --noEmit
 
+      - name: Type check Auditor (tsc)
+        run: pnpm --filter auditor exec tsc --noEmit
+
       - name: Type check Dashboard (svelte-check)
         run: pnpm --filter dashboard check
 
@@ -114,6 +117,15 @@ jobs:
 
       - name: Run Dashboard tests
         run: pnpm --filter dashboard test
+
+      # Plan 060. The auditor's browser suite drives a real Chromium against
+      # apps/auditor/fixtures/site; it self-skips without one, so the browser
+      # MUST be installed here or that suite silently proves nothing.
+      - name: Install Chromium for the auditor
+        run: pnpm --filter auditor exec playwright install --with-deps chromium
+
+      - name: Run Auditor tests
+        run: pnpm --filter auditor test
 
   # ============================================================
   # End-to-end tests (Playwright, real Postgres + built dashboard)
@@ -294,6 +306,9 @@ jobs:
 
       - name: Build Dashboard
         run: pnpm --filter dashboard build
+
+      - name: Build Auditor
+        run: pnpm --filter auditor build
 
   # ============================================================
   # Docker build verification (no push)

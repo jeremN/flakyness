@@ -905,6 +905,163 @@ the timeout, same as the default path.
 
 ---
 
+### Audits
+
+Quality audits (plan 060): accessibility, SEO and performance checks over a
+list of URLs, produced by [`apps/auditor`](../apps/auditor/README.md). Audits
+are stored apart from test runs — they never feed flakiness detection.
+
+#### Upload an Audit Report
+
+```http
+POST /api/v1/audits?branch=main&commit=abc123&pipeline=12345
+```
+
+Authenticated like `POST /reports`: the project is identified by its Bearer
+ingest token. Shares the ingest rate limiter — and, because it is the same
+limiter instance, the same **60 requests/minute per token** budget as
+`POST /reports`.
+
+**Query Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `branch` | string | No | Branch the audit belongs to; defaults to `main`; max 255 chars. Regression baselines are **per branch**. |
+| `commit` | string | No | Commit SHA, max 40 chars. Optional, unlike `/reports`: a scheduled audit of production has no commit. |
+| `pipeline` | string | No | CI pipeline ID; max 100 chars |
+
+**Body:** an AuditReport v1 (JSON):
+
+```json
+{
+  "version": 1,
+  "tool": { "name": "flackyness-auditor", "version": "0.0.1" },
+  "startedAt": "2026-09-26T08:00:00.000Z",
+  "finishedAt": "2026-09-26T08:01:10.000Z",
+  "pages": [
+    {
+      "url": "https://www.example.com/",
+      "device": "mobile",
+      "checks": [
+        { "category": "a11y", "score": 0.93,
+          "issues": [{ "id": "color-contrast", "severity": "serious", "message": "Elements must meet minimum color contrast ratio thresholds", "count": 3 }] },
+        { "category": "seo", "score": 1, "issues": [] },
+        { "category": "perf", "score": 0.78,
+          "metrics": { "lcp": 2900, "fcp": 1400, "cls": 0.02, "tbt": 180, "ttfb": 320 },
+          "issues": [{ "id": "lcp-needs-improvement", "severity": "moderate", "message": "Largest Contentful Paint is 2900 ms (good: <= 2500 ms)" }] }
+      ]
+    },
+    { "url": "https://www.example.com/down", "device": "mobile", "error": "net::ERR_CONNECTION_REFUSED", "checks": [] }
+  ]
+}
+```
+
+| Field | Constraint |
+|-------|------------|
+| `pages` | 1–500 entries. Over the cap is `400`, never truncated. |
+| `pages[].device` | `mobile` \| `desktop` |
+| `pages[].error` | Set when the page never loaded; stored on the run (`pageErrors`), not as result rows. |
+| `checks[].category` | `a11y` \| `seo` \| `perf`, each at most once per page |
+| `checks[].score` | `0`–`1`, or `null` when the check ran but could not score (**not** `0`) |
+| `checks[].issues` | ≤ 200. `id` is stable across runs — regressions key on it. `severity`: `critical` \| `serious` \| `moderate` \| `minor` \| `info` |
+| `checks[].metrics` | ≤ 20 finite numbers. Perf uses `lcp`, `fcp`, `tbt`, `ttfb` (ms) and `cls`. |
+
+**Response** `201`:
+
+```json
+{
+  "success": true,
+  "auditRun": {
+    "id": "…", "project": "my-app", "branch": "main", "commit": "abc123", "pipeline": "12345",
+    "summary": { "pages": 2, "failedPages": 1, "checks": 3, "scores": { "a11y": 0.93, "seo": 1, "perf": 0.78 } }
+  },
+  "previousRunId": "…",
+  "regressions": [
+    { "kind": "new_issue", "url": "https://www.example.com/", "device": "mobile", "category": "a11y",
+      "issueId": "color-contrast", "severity": "serious", "message": "…" },
+    { "kind": "score", "url": "…", "device": "mobile", "category": "perf", "previous": 0.91, "current": 0.78 },
+    { "kind": "metric", "url": "…", "device": "mobile", "category": "perf", "metric": "lcp", "previous": 2100, "current": 2900 }
+  ]
+}
+```
+
+`summary.scores` is the mean per category; a category with no scored result
+is `null`, never `0`.
+
+##### Regressions
+
+Computed synchronously against the **previous audit run on the same branch**
+(`previousRunId`; `null` and `regressions: []` for the first run on a branch),
+so a CI job can fail on them without a second request. Only
+`(url, device, category)` triples present in both runs are compared — a new
+page has no baseline. Ordered: new issues (by severity), then score drops, then
+metrics.
+
+| Kind | Rule |
+|------|------|
+| `new_issue` | An issue `id` absent from the baseline. `info` issues never count. A higher `count` on an existing id is **not** a regression. |
+| `score` | Dropped by **≥ 0.05**. Skipped when either side is `null`. |
+| `metric` | `lcp`/`fcp`: grew ≥ 20% **and** ≥ 250 ms. `ttfb`/`tbt`: ≥ 20% **and** ≥ 100 ms. `cls`: grew ≥ 0.05. Both arms are required so jitter on a fast page and a wobble on a slow one are both ignored. |
+
+**Errors:** `400` for a non-JSON body or an invalid report (`{ "error": "Invalid audit report: <path>: <reason>" }`), `401` for a missing/invalid token.
+
+#### List Audit Runs
+
+```http
+GET /api/v1/projects/:id/audits?branch=main&limit=30
+```
+
+Read-authenticated like every project read (`readAuth` + team scope). Newest
+first, each run with its per-category mean `scores` (`null` = unmeasured) —
+the data behind a score-over-time chart.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `branch` | string | Only runs on this branch (default: all) |
+| `limit` | number | 1–100, default 30; unparseable falls back to 30 |
+
+```json
+{
+  "runs": [
+    { "id": "…", "branch": "main", "commitSha": null, "pipelineId": "991",
+      "startedAt": "…", "finishedAt": "…", "createdAt": "…",
+      "pageCount": 40, "failedPages": 0,
+      "scores": { "a11y": 0.94, "seo": 0.97, "perf": 0.71 } }
+  ]
+}
+```
+
+`400` for a malformed project id, `404` for an unknown (or not-yours) project.
+
+#### Get an Audit Run
+
+```http
+GET /api/v1/projects/:id/audits/:runId
+```
+
+The run (with `pageErrors`, tool name/version and mean `scores`), every check
+result **worst score first** (`null` scores last), and `regressions` against
+the previous run on the same branch — the same rules as the upload response.
+Scoped by both ids: a `runId` from another project is a `404`. `results` is
+capped at 2000 with `truncated: true` (a valid report holds at most 1500).
+
+```json
+{
+  "run": { "id": "…", "branch": "main", "pageCount": 2, "failedPages": 0, "pageErrors": null,
+           "toolName": "flackyness-auditor", "toolVersion": "0.0.1", "scores": { "a11y": 0.67, "seo": 0.75, "perf": 0.95 }, "…": "…" },
+  "results": [
+    { "url": "…", "device": "mobile", "category": "a11y", "score": "0.3462", "metrics": null, "issues": [ … ] }
+  ],
+  "truncated": false,
+  "previousRunId": "…",
+  "regressions": [ … ]
+}
+```
+
+`results[].score` is the stored decimal as a **string** (`"0.3462"`), like
+every decimal column in this API; `run.scores` means are numbers.
+
+---
+
 ### Tests
 
 #### Get Test History
@@ -2369,7 +2526,7 @@ and it differs in the safe direction.
 
 | Endpoint | Limit |
 |----------|-------|
-| `POST /api/v1/reports` | 60 requests/minute per token |
+| `POST /api/v1/reports`, `POST /api/v1/audits` | 60 requests/minute per token, **shared** between the two |
 | Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no session) | 5 requests/minute per IP |
 | Admin endpoints (valid `ADMIN_TOKEN`, **or** any signed-in session) | not limited by the admin brute-force limiter |
 | Admin endpoints (session pending a forced password change) | 5 requests/minute per IP — **not** exempt, even with a valid `ADMIN_TOKEN` alongside |

@@ -448,6 +448,18 @@ describe('JUnit Parser', () => {
       expect(parsed.results[0].errorMessage).toBe('m: t');
     });
 
+    it('concatenates messages from multiple <failure> elements, in report order', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="a" time="0.01">' +
+        '<failure message="first">one</failure><failure message="second">two</failure>' +
+        '</testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].status).toBe('failed');
+      expect(parsed.results[0].errorMessage).toBe('first: one\nsecond: two');
+    });
+
     it('ignores a numeric-only #text when @_message is present (fast-xml-parser auto-numbers digit-only text)', () => {
       // fast-xml-parser parses bare-digit tag text into a JS number, so
       // `obj['#text']` is `42` (not `'42'`) here. The `typeof … === 'string'`

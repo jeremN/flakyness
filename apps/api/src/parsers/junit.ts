@@ -82,6 +82,9 @@ function parseTimestamp(raw: unknown): Date | null {
  */
 function extractIssueMessage(node: unknown): string {
   if (node == null) return '';
+  if (Array.isArray(node)) {
+    return node.map(extractIssueMessage).filter(Boolean).join('\n');
+  }
   if (typeof node === 'string') return node;
   if (typeof node !== 'object') return '';
   const obj = node as Record<string, unknown>;

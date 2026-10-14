@@ -22,6 +22,28 @@ const MAX_ERROR_LENGTH = 10_000;
 /** Truncate a string to at most `n` characters. */
 const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 
+const XML_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
+
+function decodeXmlEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (match, entity: string) => {
+    if (entity.startsWith('#x')) {
+      const codePoint = Number.parseInt(entity.slice(2), 16);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    if (entity.startsWith('#')) {
+      const codePoint = Number.parseInt(entity.slice(1), 10);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    return Object.prototype.hasOwnProperty.call(XML_ENTITIES, entity) ? XML_ENTITIES[entity] : match;
+  });
+}
+
 /** Normalize a fast-xml-parser child that may be a single object or an array of objects. */
 function toArray<T>(value: T | T[] | undefined | null): T[] {
   if (value === undefined || value === null) return [];
@@ -85,11 +107,11 @@ function extractIssueMessage(node: unknown): string {
   if (Array.isArray(node)) {
     return node.map(extractIssueMessage).filter(Boolean).join('\n');
   }
-  if (typeof node === 'string') return node;
+  if (typeof node === 'string') return decodeXmlEntities(node);
   if (typeof node !== 'object') return '';
   const obj = node as Record<string, unknown>;
-  const message = typeof obj['@_message'] === 'string' ? obj['@_message'] : '';
-  const text = typeof obj['#text'] === 'string' ? obj['#text'] : '';
+  const message = typeof obj['@_message'] === 'string' ? decodeXmlEntities(obj['@_message']) : '';
+  const text = typeof obj['#text'] === 'string' ? decodeXmlEntities(obj['#text']) : '';
   if (message && text) return `${message}: ${text}`;
   return message || text;
 }
@@ -142,8 +164,11 @@ function flattenSuites(node: unknown): { testcases: FlatTestCase[]; suiteMetas: 
 
 /** Build a single ParsedTestResult from a flattened testcase. */
 function buildResult({ raw, suiteFile }: FlatTestCase): ParsedTestResult {
-  const classname = typeof raw['@_classname'] === 'string' && raw['@_classname'] ? raw['@_classname'] : undefined;
-  const name = raw['@_name'] as string;
+  const classname =
+    typeof raw['@_classname'] === 'string' && raw['@_classname']
+      ? decodeXmlEntities(raw['@_classname'])
+      : undefined;
+  const name = decodeXmlEntities(raw['@_name'] as string);
   const testName = classname ? `${classname} › ${name}` : name;
   const testFile = (raw['@_file'] as string | undefined) || suiteFile || classname || '';
 

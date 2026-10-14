@@ -297,6 +297,25 @@ describe('JUnit Parser', () => {
     });
   });
 
+  describe('XML entity decoding', () => {
+    it('decodes predefined and numeric entities once in names, classnames, and messages', () => {
+      const xml = `<testsuites>
+        <testsuite name="s">
+          <testcase classname="suite &lt; one" name="a &lt; b &gt; c &amp; d &#60; e &#x3C; f &quot;q&quot; &apos;s&apos;" time="0.01">
+            <failure message="x &amp;amp; y">c &gt; d</failure>
+          </testcase>
+          <testcase classname="safe" name="one &amp;lt; two" time="0.01"/>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe(`suite < one › a < b > c & d < e < f "q" 's'`);
+      expect(parsed.results[0].errorMessage).toBe('x &amp; y: c > d');
+      expect(parsed.results[1].testName).toBe('safe › one &lt; two');
+    });
+  });
+
   describe('payload guard', () => {
     it('rejects reports with more than 50,000 testcases', () => {
       const testcases = Array.from(

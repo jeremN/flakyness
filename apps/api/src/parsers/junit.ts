@@ -80,10 +80,19 @@ const RawTestSuiteSchema = z
 type RawTestCase = Record<string, unknown>;
 type RawTestSuite = Record<string, unknown>;
 
+// Recognizes a thousands separator only when digits are grouped in exactly
+// 3s (standard "1,234,567.89" shape): 1-3 digits, then at least one ",ddd"
+// group, then an optional decimal part. Any other comma shape (e.g. "1,5",
+// "1,23") is treated as ambiguous and therefore invalid -> undefined, rather
+// than guessing the emitter's locale.
+const THOUSANDS_SEPARATED = /^\d{1,3}(,\d{3})+(\.\d+)?$/;
+
 /** Parse a JUnit `time` attribute (seconds, as a string) into whole milliseconds. Absent/unparsable -> undefined. */
 function parseTimeMs(raw: unknown): number | undefined {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined;
-  const seconds = Number(raw);
+  const trimmed = raw.trim();
+  const normalized = THOUSANDS_SEPARATED.test(trimmed) ? trimmed.replace(/,/g, '') : trimmed;
+  const seconds = Number(normalized);
   if (!Number.isFinite(seconds)) return undefined;
   return Math.max(0, Math.round(seconds * 1000));
 }

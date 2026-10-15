@@ -387,6 +387,29 @@ describe('JUnit Parser', () => {
     });
   });
 
+  describe('parseTimeMs guards (thousands separator)', () => {
+    const oneTestXml = (time: string) =>
+      `<testsuites><testsuite name="s"><testcase classname="c" name="a" time="${time}"/></testsuite></testsuites>`;
+
+    it('parses a time attribute with a thousands separator into milliseconds', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,234.500'));
+
+      expect(parsed.results[0].durationMs).toBe(1234500);
+    });
+
+    it('treats a regularly-grouped comma (no decimal part) as a thousands separator', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,234'));
+
+      expect(parsed.results[0].durationMs).toBe(1234000);
+    });
+
+    it('treats an irregularly-grouped comma as invalid, defaulting duration to 0', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,5'));
+
+      expect(parsed.results[0].durationMs).toBe(0);
+    });
+  });
+
   describe('parseTimestamp guards (suite timestamp attribute)', () => {
     it('treats an empty timestamp attribute as absent', () => {
       const xml =

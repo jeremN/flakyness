@@ -97,10 +97,14 @@ function parseTimeMs(raw: unknown): number | undefined {
   return Math.max(0, Math.round(seconds * 1000));
 }
 
-/** Parse a JUnit `timestamp` attribute into a Date. Absent/unparsable -> null. */
+const TIMEZONE_LESS_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+/** Parse a JUnit `timestamp` attribute into a Date, defaulting to UTC. Absent/unparsable -> null. */
 function parseTimestamp(raw: unknown): Date | null {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
-  const date = new Date(raw);
+  const trimmed = raw.trim();
+  const normalized = TIMEZONE_LESS_DATETIME.test(trimmed) ? `${trimmed}Z` : trimmed;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 

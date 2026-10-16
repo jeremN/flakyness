@@ -411,6 +411,32 @@ describe('JUnit Parser', () => {
   });
 
   describe('parseTimestamp guards (suite timestamp attribute)', () => {
+    it.each([
+      ['2026-10-16T10:00:00', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00.123', '2026-10-16T10:00:00.123Z'],
+      [' 2026-10-16T10:00:00 ', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00Z', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00+02:00', '2026-10-16T08:00:00.000Z'],
+      ['2026-10-16T10:00:00-04:00', '2026-10-16T14:00:00.000Z'],
+      ['2026-10-16', '2026-10-16T00:00:00.000Z'],
+    ])('parses %s independently of the process timezone', (timestamp, expected) => {
+      const xml = `<testsuites><testsuite name="s" timestamp="${timestamp}" time="1"><testcase name="a"/></testsuite></testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe(expected);
+      expect(parsed.finishedAt?.getTime()).toBe(new Date(expected).getTime() + 1000);
+    });
+
+    it('defaults a root timestamp without a timezone to UTC', () => {
+      const xml = '<testsuites timestamp="2026-10-16T10:00:00" time="1"><testsuite name="s"><testcase name="a"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe('2026-10-16T10:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-10-16T10:00:01.000Z');
+    });
+
     it('treats an empty timestamp attribute as absent', () => {
       const xml =
         '<testsuites><testsuite name="s" timestamp=""><testcase classname="c" name="a" time="0.01"/></testsuite></testsuites>';

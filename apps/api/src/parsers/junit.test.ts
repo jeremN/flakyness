@@ -297,6 +297,25 @@ describe('JUnit Parser', () => {
     });
   });
 
+  describe('XML entity decoding', () => {
+    it('decodes predefined and numeric entities once in names, classnames, and messages', () => {
+      const xml = `<testsuites>
+        <testsuite name="s">
+          <testcase classname="suite &lt; one" name="a &lt; b &gt; c &amp; d &#60; e &#x3C; f &quot;q&quot; &apos;s&apos;" time="0.01">
+            <failure message="x &amp;amp; y">c &gt; d</failure>
+          </testcase>
+          <testcase classname="safe" name="one &amp;lt; two" time="0.01"/>
+        </testsuite>
+      </testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].testName).toBe(`suite < one › a < b > c & d < e < f "q" 's'`);
+      expect(parsed.results[0].errorMessage).toBe('x &amp; y: c > d');
+      expect(parsed.results[1].testName).toBe('safe › one &lt; two');
+    });
+  });
+
   describe('payload guard', () => {
     it('rejects reports with more than 50,000 testcases', () => {
       const testcases = Array.from(
@@ -368,7 +387,56 @@ describe('JUnit Parser', () => {
     });
   });
 
+  describe('parseTimeMs guards (thousands separator)', () => {
+    const oneTestXml = (time: string) =>
+      `<testsuites><testsuite name="s"><testcase classname="c" name="a" time="${time}"/></testsuite></testsuites>`;
+
+    it('parses a time attribute with a thousands separator into milliseconds', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,234.500'));
+
+      expect(parsed.results[0].durationMs).toBe(1234500);
+    });
+
+    it('treats a regularly-grouped comma (no decimal part) as a thousands separator', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,234'));
+
+      expect(parsed.results[0].durationMs).toBe(1234000);
+    });
+
+    it('treats an irregularly-grouped comma as invalid, defaulting duration to 0', () => {
+      const parsed = parseJUnitReport(oneTestXml('1,5'));
+
+      expect(parsed.results[0].durationMs).toBe(0);
+    });
+  });
+
   describe('parseTimestamp guards (suite timestamp attribute)', () => {
+    it.each([
+      ['2026-10-16T10:00:00', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00.123', '2026-10-16T10:00:00.123Z'],
+      [' 2026-10-16T10:00:00 ', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00Z', '2026-10-16T10:00:00.000Z'],
+      ['2026-10-16T10:00:00+02:00', '2026-10-16T08:00:00.000Z'],
+      ['2026-10-16T10:00:00-04:00', '2026-10-16T14:00:00.000Z'],
+      ['2026-10-16', '2026-10-16T00:00:00.000Z'],
+    ])('parses %s independently of the process timezone', (timestamp, expected) => {
+      const xml = `<testsuites><testsuite name="s" timestamp="${timestamp}" time="1"><testcase name="a"/></testsuite></testsuites>`;
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe(expected);
+      expect(parsed.finishedAt?.getTime()).toBe(new Date(expected).getTime() + 1000);
+    });
+
+    it('defaults a root timestamp without a timezone to UTC', () => {
+      const xml = '<testsuites timestamp="2026-10-16T10:00:00" time="1"><testsuite name="s"><testcase name="a"/></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.startedAt?.toISOString()).toBe('2026-10-16T10:00:00.000Z');
+      expect(parsed.finishedAt?.toISOString()).toBe('2026-10-16T10:00:01.000Z');
+    });
+
     it('treats an empty timestamp attribute as absent', () => {
       const xml =
         '<testsuites><testsuite name="s" timestamp=""><testcase classname="c" name="a" time="0.01"/></testsuite></testsuites>';
@@ -446,6 +514,18 @@ describe('JUnit Parser', () => {
       const parsed = parseJUnitReport(xml);
 
       expect(parsed.results[0].errorMessage).toBe('m: t');
+    });
+
+    it('concatenates messages from multiple <failure> elements, in report order', () => {
+      const xml =
+        '<testsuites><testsuite name="s"><testcase classname="c" name="a" time="0.01">' +
+        '<failure message="first">one</failure><failure message="second">two</failure>' +
+        '</testcase></testsuite></testsuites>';
+
+      const parsed = parseJUnitReport(xml);
+
+      expect(parsed.results[0].status).toBe('failed');
+      expect(parsed.results[0].errorMessage).toBe('first: one\nsecond: two');
     });
 
     it('ignores a numeric-only #text when @_message is present (fast-xml-parser auto-numbers digit-only text)', () => {

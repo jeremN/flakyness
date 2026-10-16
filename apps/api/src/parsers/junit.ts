@@ -22,6 +22,28 @@ const MAX_ERROR_LENGTH = 10_000;
 /** Truncate a string to at most `n` characters. */
 const clamp = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 
+const XML_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
+
+function decodeXmlEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (match, entity: string) => {
+    if (entity.startsWith('#x')) {
+      const codePoint = Number.parseInt(entity.slice(2), 16);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    if (entity.startsWith('#')) {
+      const codePoint = Number.parseInt(entity.slice(1), 10);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+    }
+    return Object.prototype.hasOwnProperty.call(XML_ENTITIES, entity) ? XML_ENTITIES[entity] : match;
+  });
+}
+
 /** Normalize a fast-xml-parser child that may be a single object or an array of objects. */
 function toArray<T>(value: T | T[] | undefined | null): T[] {
   if (value === undefined || value === null) return [];
@@ -58,18 +80,31 @@ const RawTestSuiteSchema = z
 type RawTestCase = Record<string, unknown>;
 type RawTestSuite = Record<string, unknown>;
 
+// Recognizes a thousands separator only when digits are grouped in exactly
+// 3s (standard "1,234,567.89" shape): 1-3 digits, then at least one ",ddd"
+// group, then an optional decimal part. Any other comma shape (e.g. "1,5",
+// "1,23") is treated as ambiguous and therefore invalid -> undefined, rather
+// than guessing the emitter's locale.
+const THOUSANDS_SEPARATED = /^\d{1,3}(,\d{3})+(\.\d+)?$/;
+
 /** Parse a JUnit `time` attribute (seconds, as a string) into whole milliseconds. Absent/unparsable -> undefined. */
 function parseTimeMs(raw: unknown): number | undefined {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined;
-  const seconds = Number(raw);
+  const trimmed = raw.trim();
+  const normalized = THOUSANDS_SEPARATED.test(trimmed) ? trimmed.replace(/,/g, '') : trimmed;
+  const seconds = Number(normalized);
   if (!Number.isFinite(seconds)) return undefined;
   return Math.max(0, Math.round(seconds * 1000));
 }
 
-/** Parse a JUnit `timestamp` attribute into a Date. Absent/unparsable -> null. */
+const TIMEZONE_LESS_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+/** Parse a JUnit `timestamp` attribute into a Date, defaulting to UTC. Absent/unparsable -> null. */
 function parseTimestamp(raw: unknown): Date | null {
   if (typeof raw !== 'string' || raw.trim() === '') return null;
-  const date = new Date(raw);
+  const trimmed = raw.trim();
+  const normalized = TIMEZONE_LESS_DATETIME.test(trimmed) ? `${trimmed}Z` : trimmed;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
@@ -82,11 +117,14 @@ function parseTimestamp(raw: unknown): Date | null {
  */
 function extractIssueMessage(node: unknown): string {
   if (node == null) return '';
-  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) {
+    return node.map(extractIssueMessage).filter(Boolean).join('\n');
+  }
+  if (typeof node === 'string') return decodeXmlEntities(node);
   if (typeof node !== 'object') return '';
   const obj = node as Record<string, unknown>;
-  const message = typeof obj['@_message'] === 'string' ? obj['@_message'] : '';
-  const text = typeof obj['#text'] === 'string' ? obj['#text'] : '';
+  const message = typeof obj['@_message'] === 'string' ? decodeXmlEntities(obj['@_message']) : '';
+  const text = typeof obj['#text'] === 'string' ? decodeXmlEntities(obj['#text']) : '';
   if (message && text) return `${message}: ${text}`;
   return message || text;
 }
@@ -139,8 +177,11 @@ function flattenSuites(node: unknown): { testcases: FlatTestCase[]; suiteMetas: 
 
 /** Build a single ParsedTestResult from a flattened testcase. */
 function buildResult({ raw, suiteFile }: FlatTestCase): ParsedTestResult {
-  const classname = typeof raw['@_classname'] === 'string' && raw['@_classname'] ? raw['@_classname'] : undefined;
-  const name = raw['@_name'] as string;
+  const classname =
+    typeof raw['@_classname'] === 'string' && raw['@_classname']
+      ? decodeXmlEntities(raw['@_classname'])
+      : undefined;
+  const name = decodeXmlEntities(raw['@_name'] as string);
   const testName = classname ? `${classname} › ${name}` : name;
   const testFile = (raw['@_file'] as string | undefined) || suiteFile || classname || '';
 

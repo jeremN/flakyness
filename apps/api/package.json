@@ -32,7 +32,7 @@
   "devDependencies": {
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
-    "@types/node": "^24.19.1",
+    "@types/node": "^24.19.2",
     "drizzle-kit": "^0.31.11",
     "tsup": "^8.0.0",
     "tsx": "^4.23.15",

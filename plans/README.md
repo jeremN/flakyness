@@ -974,7 +974,7 @@ rationale. Items 5–7 remain unplanned.
     merge deliberately rather than rushed; the guard's own comment now documents this limit
     instead of claiming a completeness it does not have.
 
-29. **🔴 SECURITY — [DONE 2026-10-19 — branch `fix/session-epoch`; found 2026-08-15 by the Codex adversarial pass during plan 059's
+29. **🔴 SECURITY — [DONE 2026-10-19 — PR #171; found 2026-08-15 by the Codex adversarial pass during plan 059's
     final review] Session revocation is not atomic with login (TOCTOU). Worth a plan of its
     own, not a one-line cleanup.** Pre-existing: this is inherited from the 058/058b auth work,
     plan 059 did not introduce it and was not blocked by it (verified, not assumed —

@@ -589,6 +589,16 @@ describeAuth('POST /api/v1/auth/change-password', () => {
 describeAuth('session epoch (login racing a password rotation)', () => {
   const NEW_PASSWORD = 'an-entirely-different-one';
 
+  // A test that fails before its paused call runs would leave the unused
+  // mockImplementationOnce queued, and the NEXT test's verify would hang on
+  // a gate nobody releases. Restore the passthrough after every test.
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof import('../services/auth/password')>(
+      '../services/auth/password'
+    );
+    vi.mocked(verifyPassword).mockReset().mockImplementation(actual.verifyPassword);
+  });
+
   /** Hold the NEXT verifyPassword call until `release()`; signal when reached. */
   async function pauseNextVerify() {
     const actual = await vi.importActual<typeof import('../services/auth/password')>(

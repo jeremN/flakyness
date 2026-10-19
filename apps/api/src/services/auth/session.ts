@@ -42,6 +42,17 @@ export function isSessionExpired(session: { expiresAt: Date }, now: Date): boole
   return session.expiresAt.getTime() <= now.getTime();
 }
 
+/**
+ * A session is stale when the user's password changed after it was issued
+ * (backlog #29). Compared with `!==`, not `<`: any mismatch means the session
+ * was not minted from the current password, so it is dead either way.
+ */
+export function isSessionStale(
+  session: { sessionPasswordVersion: number; userPasswordVersion: number }
+): boolean {
+  return session.sessionPasswordVersion !== session.userPasswordVersion;
+}
+
 export function shouldSlideSession(session: { lastSeenAt: Date }, now: Date): boolean {
   return now.getTime() - session.lastSeenAt.getTime() > SESSION_SLIDE_AFTER_MS;
 }

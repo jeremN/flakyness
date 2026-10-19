@@ -305,10 +305,18 @@ adminUsersRouter.post('/:userId/reset-password', async (c) => {
   if (!user) return c.json({ error: 'User not found' }, 404);
 
   const temporaryPassword = generateTempPassword();
-  await db
+  // The epoch bump (backlog #29) kills any session a concurrent login inserts
+  // after the revoke below: that login read the old version.
+  const [reset] = await db
     .update(users)
-    .set({ passwordHash: await hashPassword(temporaryPassword), mustChangePassword: true })
-    .where(eq(users.id, user.id));
+    .set({
+      passwordHash: await hashPassword(temporaryPassword),
+      mustChangePassword: true,
+      passwordVersion: sql`${users.passwordVersion} + 1`,
+    })
+    .where(eq(users.id, user.id))
+    .returning({ id: users.id });
+  if (!reset) return c.json({ error: 'User not found' }, 404);
   await revokeAllUserSessions(user.id);
 
   logger.info('User password reset by admin', { userId: user.id, requestId: c.get('requestId') });

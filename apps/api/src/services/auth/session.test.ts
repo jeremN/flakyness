@@ -7,6 +7,7 @@ import {
   hashSessionToken,
   sessionExpiry,
   isSessionExpired,
+  isSessionStale,
   shouldSlideSession,
 } from './session';
 
@@ -92,5 +93,20 @@ describe('sliding TTL', () => {
 describe('cookie name', () => {
   it('is fk_session (the dashboard and docs both hardcode it)', () => {
     expect(SESSION_COOKIE).toBe('fk_session');
+  });
+});
+
+describe('isSessionStale (session epoch, backlog #29)', () => {
+  it('is live when the session carries the current version', () => {
+    expect(isSessionStale({ sessionPasswordVersion: 3, userPasswordVersion: 3 })).toBe(false);
+  });
+
+  it('is stale when the password changed after the session was issued', () => {
+    expect(isSessionStale({ sessionPasswordVersion: 2, userPasswordVersion: 3 })).toBe(true);
+  });
+
+  it('is stale on ANY mismatch, including a session ahead of the user', () => {
+    // Not constructible through the routes, but a `<` check would accept it.
+    expect(isSessionStale({ sessionPasswordVersion: 4, userPasswordVersion: 3 })).toBe(true);
   });
 });

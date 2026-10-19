@@ -974,7 +974,7 @@ rationale. Items 5–7 remain unplanned.
     merge deliberately rather than rushed; the guard's own comment now documents this limit
     instead of claiming a completeness it does not have.
 
-29. **🔴 SECURITY — [OPEN — found 2026-08-15 by the Codex adversarial pass during plan 059's
+29. **🔴 SECURITY — [DONE 2026-10-19 — PR #171; found 2026-08-15 by the Codex adversarial pass during plan 059's
     final review] Session revocation is not atomic with login (TOCTOU). Worth a plan of its
     own, not a one-line cleanup.** Pre-existing: this is inherited from the 058/058b auth work,
     plan 059 did not introduce it and was not blocked by it (verified, not assumed —
@@ -1003,6 +1003,17 @@ rationale. Items 5–7 remain unplanned.
     with a password version and have `sessionAuth` reject stale ones — which closes the race
     without serialising logins. Re-checking `passwordHash` inside the insert transaction also
     works and is smaller.
+
+    **Fixed with the session epoch.** `users.password_version` and `sessions.password_version`
+    (migration `0013`, both default 0, so existing sessions stay valid). Login stamps the version
+    from the row whose hash it verified; change-password and admin reset increment it in the same
+    `UPDATE` as the hash; `sessionAuth` treats a mismatch like expiry (anonymous, row reaped). The
+    hash re-check was rejected: under READ COMMITTED an `INSERT ... SELECT` that starts before the
+    `UPDATE` commits and commits after the revoke `DELETE` takes its snapshot still survives.
+    Change-password also gained an optimistic guard (`WHERE password_version = <read>`) and
+    returns `409 password_conflict` when it loses a race, so it can no longer overwrite an admin
+    reset and clear its `mustChangePassword` flag. Covered by gated-interleaving tests in
+    `routes/auth.test.ts` (`session epoch ...`); four hand mutants of the fix each fail them.
 30. **[OPEN — 2026-08-15] Operator-documentation debt: the documented production deployment
     does not work end to end. One plan should cover all of it.** `docker-compose.yml:76`
     hardcodes `PUBLIC_API_URL: http://localhost:8080` on the **dashboard** service with no

@@ -25,7 +25,7 @@ function formEvent(
 ) {
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.set(k, v);
-  const cookies = { set: vi.fn() };
+  const cookies = { set: vi.fn(), delete: vi.fn() };
   const clientIp = opts.clientIp === undefined ? '203.0.113.7' : opts.clientIp;
   const sessionToken = opts.sessionToken === undefined ? 'sess-old-abc' : opts.sessionToken;
   return { request: { formData: async () => fd }, cookies, locals: { clientIp, sessionToken } };
@@ -165,6 +165,20 @@ describe('change-password action', () => {
 
     expect(result.status).toBe(401);
     expect(result.data.error).toBe('Current password is incorrect');
+    expect(event.cookies.set).not.toHaveBeenCalled();
+  });
+
+  it('on 409 password_conflict, drops the dead session cookie and redirects to /login', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        { error: 'Password was changed by another request. Sign in again.', code: 'password_conflict' },
+        409
+      )
+    );
+    const event = formEvent(validFields());
+
+    await expect(actions.default(event as any)).rejects.toMatchObject({ status: 303, location: '/login' });
+    expect(event.cookies.delete).toHaveBeenCalledWith('fk_session', { path: SESSION_COOKIE_PATH });
     expect(event.cookies.set).not.toHaveBeenCalled();
   });
 

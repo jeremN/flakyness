@@ -243,6 +243,12 @@ holds, and re-issues a fresh `fk_session` cookie for the caller — a password
 change that left other devices signed in would not actually have revoked
 anything.
 
+Each change also increments the user's **password version** (session epoch).
+Every session carries the version of the password it was issued from, and a
+session with an older version is treated as signed out. This kills a session
+that a concurrent login inserts after the revocation: that login verified the
+old password before the change committed.
+
 **Error responses:**
 
 | Status | Condition |
@@ -250,6 +256,7 @@ anything.
 | `400` | `newPassword` shorter than 12 characters, or a malformed body. |
 | `400` | `{ "error": "New password must differ from the current one", "code": "password_reused" }` — key off `code`, not the message. Nothing is changed: the flag stays set, the hash is untouched, and no session is revoked or re-issued. |
 | `401` | Not authenticated, or `{ "error": "Current password is incorrect" }`. |
+| `409` | `{ "error": "Password was changed by another request. Sign in again.", "code": "password_conflict" }` — the password changed (for example, an admin reset) between the `currentPassword` check and the write. Nothing is changed and no session is issued. The caller's session is now stale: sign in again. |
 | `429` | Rate limited — 10 attempts/minute per IP. |
 
 **Example:**
@@ -1943,7 +1950,10 @@ POST /api/v1/admin/users/:userId/reset-password
 Issues a fresh **show-once** temporary password, forces a reset
 (`mustChangePassword: true`), and revokes **every** live session the user
 holds — an admin-initiated reset is often a response to a compromise, and a
-reset that leaves an existing session alive would be cosmetic.
+reset that leaves an existing session alive would be cosmetic. The reset also
+increments the password version, so a session from a login that was still
+verifying the old password is dead too (see
+[Change Password](#change-password)).
 
 **Response (200):**
 ```json
@@ -1958,7 +1968,7 @@ reset that leaves an existing session alive would be cosmetic.
 | Status | Condition |
 |--------|-----------|
 | `400` | Malformed `userId`. |
-| `404` | No user with that id. |
+| `404` | No user with that id, or the user was deleted during the reset. |
 
 #### Delete User
 

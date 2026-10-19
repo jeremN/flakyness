@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { setCookie, deleteCookie } from 'hono/cookie';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
@@ -177,7 +177,9 @@ authRouter.post('/login', zValidator('json', loginSchema), async (c) => {
   }
 
   const now = new Date();
-  const token = await issueSession(user.id, now);
+  // Stamp the version from the SAME row whose hash we just verified. If a
+  // change or reset bumped it meanwhile, sessionAuth rejects this session.
+  const token = await issueSession(user.id, user.passwordVersion, now);
   await db.update(users).set({ lastLoginAt: now }).where(eq(users.id, user.id));
 
   setSessionCookie(c, token);
@@ -281,13 +283,33 @@ authRouter.post('/change-password', zValidator('json', changePasswordSchema), as
     );
   }
 
-  await db
+  // Bump the session epoch in the same statement as the hash (backlog #29),
+  // and only if nobody rotated the password since we verified it. Without
+  // the version guard, a change racing an admin reset would overwrite the
+  // reset and clear its mustChangePassword flag.
+  const [updated] = await db
     .update(users)
-    .set({ passwordHash: await hashPassword(newPassword), mustChangePassword: false })
-    .where(eq(users.id, user.id));
+    .set({
+      passwordHash: await hashPassword(newPassword),
+      mustChangePassword: false,
+      passwordVersion: sql`${users.passwordVersion} + 1`,
+    })
+    .where(and(eq(users.id, user.id), eq(users.passwordVersion, user.passwordVersion)))
+    .returning({ passwordVersion: users.passwordVersion });
+
+  if (!updated) {
+    logger.warn('Rejected password change: password changed concurrently', {
+      userId: user.id,
+      requestId: c.get('requestId'),
+    });
+    return c.json(
+      { error: 'Password was changed by another request. Sign in again.', code: 'password_conflict' },
+      409
+    );
+  }
 
   await revokeAllUserSessions(user.id);
-  setSessionCookie(c, await issueSession(user.id, new Date()));
+  setSessionCookie(c, await issueSession(user.id, updated.passwordVersion, new Date()));
 
   logger.info('Password changed', { userId: user.id, requestId: c.get('requestId') });
   return c.json({ success: true });

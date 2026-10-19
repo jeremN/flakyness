@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, users, sessions } from '../db';
-import { hashPassword } from '../services/auth/password';
-import { SESSION_COOKIE } from '../services/auth/session';
+import { hashPassword, verifyPassword } from '../services/auth/password';
+import { SESSION_COOKIE, hashSessionToken } from '../services/auth/session';
 import { isCookieSecure } from './auth';
 
 // Wraps the real password module in a passthrough spy so verifyPassword's
@@ -576,6 +576,146 @@ describeAuth('POST /api/v1/auth/change-password', () => {
       headers: { Cookie: `${SESSION_COOKIE}=${fresh}` },
     });
     expect(caller.status).toBe(200);
+  });
+});
+
+/**
+ * Backlog #29: login reads the user row, runs a slow scrypt verify, THEN
+ * inserts its session. A password change or admin reset that lands inside
+ * that window used to leave the late session alive, because its revoke
+ * DELETE ran before the INSERT. These tests pause the login's verify on a
+ * gate so the interleaving is deterministic, not a timing bet.
+ */
+describeAuth('session epoch (login racing a password rotation)', () => {
+  const NEW_PASSWORD = 'an-entirely-different-one';
+
+  /** Hold the NEXT verifyPassword call until `release()`; signal when reached. */
+  async function pauseNextVerify() {
+    const actual = await vi.importActual<typeof import('../services/auth/password')>(
+      '../services/auth/password'
+    );
+    let release!: () => void;
+    let reached!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const arrived = new Promise<void>((r) => (reached = r));
+    vi.mocked(verifyPassword).mockImplementationOnce(async (pw, hash) => {
+      reached();
+      await gate;
+      return actual.verifyPassword(pw, hash);
+    });
+    return { arrived, release };
+  }
+
+  async function me(cookie: string) {
+    return app.request('/api/v1/auth/me', { headers: { Cookie: `${SESSION_COOKIE}=${cookie}` } });
+  }
+
+  it('a login that verified the OLD password before a change gets no usable session', async () => {
+    const user = await createUser();
+    const changer = sessionCookieFrom(await login(user.email))!;
+
+    const pause = await pauseNextVerify();
+    const lateLogin = login(user.email); // reads the row, then blocks in verify
+    await pause.arrived;
+
+    const changed = await app.request('/api/v1/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${changer}` },
+      body: JSON.stringify({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD }),
+    });
+    expect(changed.status).toBe(200);
+
+    pause.release();
+    const res = await lateLogin;
+    // The login itself succeeds: the password WAS right when it was read.
+    expect(res.status).toBe(200);
+    const lateCookie = sessionCookieFrom(res)!;
+
+    // The row exists (it was inserted after the revoke DELETE) ...
+    const [row] = await db
+      .select({ passwordVersion: sessions.passwordVersion })
+      .from(sessions)
+      .where(eq(sessions.tokenHash, hashSessionToken(lateCookie)));
+    expect(row, 'precondition: the late session row was really inserted').toBeDefined();
+
+    // ... but it is stamped with the old epoch, so it is dead and reaped.
+    expect((await me(lateCookie)).status).toBe(401);
+    const left = await db.select().from(sessions).where(eq(sessions.userId, user.id));
+    expect(left, 'only the change-password re-issued session survives').toHaveLength(1);
+  });
+
+  it('a login that verified the OLD password before an admin reset gets no usable session', async () => {
+    const user = await createUser();
+
+    const pause = await pauseNextVerify();
+    const lateLogin = login(user.email);
+    await pause.arrived;
+
+    const reset = await app.request(`/api/v1/admin/users/${user.id}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+    });
+    expect(reset.status).toBe(200);
+
+    pause.release();
+    const res = await lateLogin;
+    expect(res.status).toBe(200);
+    // Without the epoch this session survives the reset. The gate would trap
+    // it (mustChangePassword is now true), but the reset exists to evict a
+    // possible attacker, so the session must be dead, not merely gated.
+    expect((await me(sessionCookieFrom(res)!)).status).toBe(401);
+  });
+
+  it('a change-password racing an admin reset 409s and keeps the reset intact', async () => {
+    const user = await createUser();
+    const cookie = sessionCookieFrom(await login(user.email))!;
+
+    const pause = await pauseNextVerify(); // change-password's currentPassword check
+    const change = app.request('/api/v1/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${cookie}` },
+      body: JSON.stringify({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD }),
+    });
+    await pause.arrived;
+
+    const reset = await app.request(`/api/v1/admin/users/${user.id}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+    });
+    expect(reset.status).toBe(200);
+    const [afterReset] = await db.select().from(users).where(eq(users.id, user.id));
+
+    pause.release();
+    const res = await change;
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('password_conflict');
+    expect(sessionCookieFrom(res), 'a refused change must not mint a session').toBeNull();
+
+    const [after] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(after.passwordHash, 'the reset hash must not be overwritten').toBe(afterReset.passwordHash);
+    expect(after.mustChangePassword, 'the reset flag must not be cleared').toBe(true);
+    expect(after.passwordVersion).toBe(afterReset.passwordVersion);
+  });
+
+  it('bumps password_version by exactly one on change and on reset', async () => {
+    const user = await createUser();
+    expect(user.passwordVersion).toBe(0);
+    const cookie = sessionCookieFrom(await login(user.email))!;
+
+    await app.request('/api/v1/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${cookie}` },
+      body: JSON.stringify({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD }),
+    });
+    const [afterChange] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(afterChange.passwordVersion).toBe(1);
+
+    await app.request(`/api/v1/admin/users/${user.id}/reset-password`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.ADMIN_TOKEN}` },
+    });
+    const [afterReset] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(afterReset.passwordVersion).toBe(2);
   });
 });
 

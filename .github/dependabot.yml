@@ -2,20 +2,23 @@
 # Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 version: 2
 updates:
-  # JavaScript / TypeScript dependencies across the pnpm workspace.
-  # The "npm" ecosystem understands pnpm workspaces. Split into two entries
-  # because Dependabot `ignore` rules apply to the whole `updates` entry and
-  # cannot be scoped per-directory: the dashboard needs an extra TypeScript
-  # majors ignore that the root/api entry must NOT inherit (see below).
+  # JavaScript / TypeScript dependencies for the whole pnpm workspace.
+  # ONE entry, root "/" only. Dependabot's npm updater understands pnpm
+  # workspaces: from "/" it updates every package matched by the
+  # `packages` globs in pnpm-workspace.yaml (apps/*, packages/*) and
+  # regenerates the root pnpm-lock.yaml in the same PR.
+  # Do NOT add "/apps/api", "/apps/dashboard" or any other workspace
+  # subdirectory here:
+  #   - each subdirectory entry opens a second PR for the same bump, with
+  #     no lockfile change (seen: #174-#178 and #184 duplicated #180-#183);
+  #   - security updates fail on a subdirectory with pnpm
+  #     `misconfigured_tooling` ("Updating workspaces from inside a
+  #     workspace subdirectory is not supported").
+  # A new app is covered when it matches a pnpm-workspace.yaml glob.
+  # `apps/api/src/dependabot-coverage.test.ts` enforces both rules.
   - package-ecosystem: "npm"
     directories:
-      # Explicit paths, not the `/apps/*` glob — a glob here would overlap the
-      # dashboard entry below and double-open its PRs. Trade-off: a NEW app
-      # under apps/ must be added to this list by hand — enforced by
-      # `apps/api/src/dependabot-coverage.test.ts`, which fails CI if a
-      # workspace package dir is missing here.
       - "/"
-      - "/apps/api"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -28,71 +31,24 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
-    # @types/node must track the Node runtime (24) — never the newest types
-    # release (25+ targets a Node version we don't run).
     ignore:
+      # @types/node must track the Node runtime (24) — never the newest types
+      # release (25+ targets a Node version we don't run).
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
-      # TypeScript majors are ignored HERE too, not just in the apps/dashboard
-      # entry below. This entry's "/" root fans out across the whole pnpm
-      # workspace — including apps/dashboard — so without this rule, "/" re-opens
-      # the dashboard's TS 6->7 bump that the dashboard entry's ignore is meant
-      # to block (exactly what happened in PR #86). apps/api's TS major is
-      # adopted manually anyway (see plan 023 / AGENTS.md). See the apps/dashboard
-      # entry below for the full TS 7.1 / svelte-check rationale and recheck trigger.
+      # TypeScript majors are adopted by hand, for the whole workspace.
+      # apps/dashboard must stay on TS 6: svelte-check 4.x cannot run under
+      # TypeScript 7, because TS 7.0 ships no stable programmatic API, which
+      # Svelte's template type-checking needs (see AGENTS.md sharp edges and
+      # PR #62). The API is expected in TS 7.1 (~Oct 2026, upstream
+      # estimate). svelte-check's peer range claims `typescript: ">=5.0.0"`,
+      # so nothing stops the install — only this rule does. apps/api is
+      # already on TS 7 (plan 023). Lift the dashboard pin by hand only once
+      # BOTH TS 7.1 has shipped AND a svelte-check release supports it
+      # (latest is still 4.7.2) — track `sveltejs/language-tools#2733`.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
     # Batch low-risk updates into a few PRs instead of one-per-package.
-    groups:
-      dev-dependencies:
-        dependency-type: "development"
-        update-types:
-          - "minor"
-          - "patch"
-      production-minor-patch:
-        dependency-type: "production"
-        update-types:
-          - "minor"
-          - "patch"
-
-  # apps/dashboard: same as above, but TypeScript majors are additionally
-  # ignored. svelte-check 4.x can't run under TypeScript 7 at all — TS 7.0
-  # has no stable programmatic API yet (see AGENTS.md sharp edges) — so the
-  # dashboard is deliberately pinned to TS 6 while apps/api (above) moves
-  # ahead to TS 7.
-  - package-ecosystem: "npm"
-    directories:
-      - "/apps/dashboard"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    cooldown:
-      default-days: 2
-    commit-message:
-      prefix: "chore(deps)"
-      prefix-development: "chore(deps-dev)"
-    # @types/node must track the Node runtime (24) — never the newest types
-    # release (25+ targets a Node version we don't run).
-    ignore:
-      - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
-      # TypeScript 7 (the native rewrite) breaks svelte-check 4.x: it reads
-      # `ts.default.sys.useCaseSensitiveFileNames`, which TS 7 no longer
-      # exposes, so `svelte-check` crashes on startup (see PR #62). That crash
-      # is a symptom: verified 2026-07-15, TS 7.0 GA ships no stable
-      # programmatic API, which Svelte's template type-checking needs to run
-      # against the Go (`tsgo`) compiler at all — so svelte-check can't
-      # support TS 7.0, period. The API is expected in TS 7.1 (~Oct 2026,
-      # upstream estimate); official Svelte guidance is to stay on TS 6 until
-      # then. Its peer range claims `typescript: ">=5.0.0"`, so nothing stops
-      # the install — only this rule does. The API is already on TS 7; only
-      # the dashboard is pinned. REMOVE THIS only once BOTH TS 7.1 has shipped
-      # AND a svelte-check release supports it (latest is still 4.7.2) — track
-      # `sveltejs/language-tools#2733` — then bump the dashboard to match the
-      # API.
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: "development"

@@ -47,6 +47,7 @@ apps/dashboard/e2e/.auth/
 
 # Vitest browser mode (apps/dashboard/*.svelte.test.ts) run artifacts
 .vitest-attachments/
+.vitest/
 __screenshots__/
 
 # Docker

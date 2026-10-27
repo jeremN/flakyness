@@ -23,11 +23,14 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    # Don't propose versions younger than pnpm's minimumReleaseAge (24h in
-    # pnpm-workspace.yaml) — otherwise the lockfile-sync workflow can't resolve
-    # them and the PR fails. 2 days gives margin over the 24h gate.
+    # Wait 7 days before proposing a new version: a compromised or broken
+    # release is usually yanked within that window. This is also above
+    # pnpm's minimumReleaseAge (24h in pnpm-workspace.yaml), so the
+    # lockfile-sync workflow can always resolve the proposed version.
+    # Cooldown applies to version updates only: security updates are not
+    # delayed.
     cooldown:
-      default-days: 2
+      default-days: 7
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
@@ -68,5 +71,9 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    # Same 7-day supply-chain delay as npm. Actions are pinned by commit SHA,
+    # but a new release can still be compromised.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(ci)"

@@ -27,12 +27,16 @@ describe('requestLogger', () => {
     await app.request('/broken');
 
     const completed = (arr: string[]) => arr.filter((l) => l.includes('Request completed'));
+    // Match the status field only. A bare includes('200') also matched a
+    // random requestId or the timestamp milliseconds, which made this test
+    // flaky. `→ 200` is the dev format, `"status":200` the JSON format.
+    const hasStatus = (l: string, status: number) => new RegExp(`(→ |"status":)${status}\\b`).test(l);
     // 200 -> info (console.log), 404 -> warn, 500 -> error
-    expect(completed(info).some((l) => l.includes('200'))).toBe(true);
-    expect(completed(warn).some((l) => l.includes('404'))).toBe(true);
-    expect(completed(error).some((l) => l.includes('500'))).toBe(true);
+    expect(completed(info).some((l) => hasStatus(l, 200))).toBe(true);
+    expect(completed(warn).some((l) => hasStatus(l, 404))).toBe(true);
+    expect(completed(error).some((l) => hasStatus(l, 500))).toBe(true);
     // and not misrouted: the 200 completion is not a warning
-    expect(completed(warn).some((l) => l.includes('200'))).toBe(false);
+    expect(completed(warn).some((l) => hasStatus(l, 200))).toBe(false);
   });
 
   it('sets a requestId on context and logs the request start', async () => {

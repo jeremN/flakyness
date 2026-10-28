@@ -56,9 +56,9 @@ describe('admin users page', () => {
       },
     });
     const row = page.getByRole('row', { name: /bob@x.test/ });
-    await expect.element(row).toHaveTextContent('Bob');
-    await expect.element(row).toHaveTextContent('Yes');
-    await expect.element(row).toHaveTextContent('Platform');
+    await expect.element(row).toMatchTextContent('Bob');
+    await expect.element(row).toMatchTextContent('Yes');
+    await expect.element(row).toMatchTextContent('Platform');
     await expect.element(row.getByText('Never')).not.toBeInTheDocument();
   });
 
@@ -67,7 +67,7 @@ describe('admin users page', () => {
       props: { data: { ...layoutData, users: [user({ lastLoginAt: null })] }, form: null },
     });
     const row = page.getByRole('row', { name: /alice@x.test/ });
-    await expect.element(row).toHaveTextContent('Never');
+    await expect.element(row).toMatchTextContent('Never');
   });
 
   // IMPORTANT: create/resetPassword both return a show-once temporaryPassword

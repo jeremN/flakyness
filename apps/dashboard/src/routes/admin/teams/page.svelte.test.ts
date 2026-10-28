@@ -105,7 +105,7 @@ describe('admin teams page', () => {
     });
     const banner = page.getByText('Team deleted.', { exact: false });
     await expect.element(banner).toBeInTheDocument();
-    await expect.element(banner).toHaveTextContent('4 projects became unassigned.');
+    await expect.element(banner).toMatchTextContent('4 projects became unassigned.');
   });
 
   // Minor #8: "Every user is already a member of this team" is misleading

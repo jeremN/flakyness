@@ -4,11 +4,11 @@ import type { Project } from '../../app.d';
 // Minimal by design: this route previously had no server-load test file at
 // all. It is added now only to close the identity gap flagged in Task 2
 // review (I1) — do not build out coverage for the rest of the route here.
-vi.mock('$lib/server/api', () => ({
+vi.mock('#lib/server/api.js', () => ({
   createApi: vi.fn(),
 }));
 
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import { load } from './+page.server';
 
 const project: Project = { id: 'p1', name: 'Project A', createdAt: '2024-01-01', teamId: null };

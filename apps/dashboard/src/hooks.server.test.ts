@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { isRedirect, type Handle, type Redirect } from '@sveltejs/kit';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '$lib/session';
+import { isRedirect, type Redirect } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '#lib/session.js';
 import type { SessionUser, TeamSummary } from './app.d';
 
-vi.mock('$lib/server/session', () => ({
+vi.mock('#lib/server/session.js', () => ({
   fetchMe: vi.fn(),
 }));
 
-import { fetchMe } from '$lib/server/session';
+import { fetchMe } from '#lib/server/session.js';
 import { handle } from './hooks.server';
 
 const user: SessionUser = {

@@ -16,8 +16,14 @@ export function appendProjectParam(href: string, projectId: string | undefined):
 // already carry a `project=` or `team=` param from a previous click. Shared
 // by TeamSwitcher.svelte (`team=`) and the root layout's project link list
 // (`project=`) so clicking one filter never clobbers the other.
-export function withQueryParam(url: URL, key: string, value: string | null): string {
-  const params = new URLSearchParams(url.searchParams);
+// Takes only `pathname` and `search`, so SvelteKit 3's readonly `page.url`
+// fits without a copy.
+export function withQueryParam(
+  url: Pick<URL, 'pathname' | 'search'>,
+  key: string,
+  value: string | null,
+): string {
+  const params = new URLSearchParams(url.search);
   if (value) {
     params.set(key, value);
   } else {

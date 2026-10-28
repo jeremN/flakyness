@@ -29,28 +29,18 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   environment. `docker compose` also refuses to even parse its config
   unless `DB_PASSWORD` and `ADMIN_TOKEN` have values (from `.env` or the
   shell).
-- **`pnpm --filter dashboard check` can, in principle, report phantom errors
-  if you exported `.env` in that shell — but no test file currently triggers
-  it.** `svelte-kit sync` generates the `$env/dynamic/private` `env` type from
-  **the ambient environment at sync time**, declaring every variable it
-  happens to find as a *required* `string` (verified 2026-08-15: exporting
-  `ADMIN_TOKEN` or `COOKIE_SECURE` still bakes both into
-  `.svelte-kit/ambient.d.ts` as non-optional). A `delete privateEnv.X` on a
-  key the ambient scan found used to fail as TS2790 *"The operand of a
-  'delete' operator must be optional"* — this bit `adminApi.test.ts`'s
-  `delete privateEnv.ADMIN_TOKEN` (×3) until plan 059 Task 2 removed that
-  import entirely, and the pattern is now further insulated: the tests that
-  still `delete` an env var (`login/page.server.test.ts`,
-  `change-password/page.server.test.ts`, both on `COOKIE_SECURE`) import a
-  dedicated `tests/env-private-stub.ts` (`Record<string, string |
-  undefined>`) instead of the real `$env/dynamic/private`, so their types
-  never depend on the ambient scan at all. Confirmed 2026-08-15 with both
-  `ADMIN_TOKEN` and `COOKIE_SECURE` exported: same 521 files, **0 errors**.
-  The underlying mechanism is unchanged, though, so a *future* test file that
-  imports `$env/dynamic/private` directly and `delete`s a key present in your
-  shell could still trip this — run typechecks in a clean shell (`env -u
-  ADMIN_TOKEN pnpm --filter dashboard check`) before trusting a failure that
-  looks unrelated to your change.
+- **The dashboard is on SvelteKit 3: no `svelte.config.js`, no `$lib`, no
+  `$env/dynamic/*`.** The kit configuration (adapter, CSP) lives in the
+  `sveltekit({...})` call in `apps/dashboard/vite.config.ts`. Imports use
+  `#lib/<file>.js` (Node subpath imports declared in the dashboard's
+  `package.json` `imports`, with the file extension). Runtime variables are
+  declared once in `src/env.ts` (`defineEnvVars`) and read through
+  `$app/env/public` and `$app/env/private`; a missing one is `''`. The node
+  test suite aliases both modules to `src/tests/env-stub.ts` and
+  `src/tests/env-private-stub.ts`, whose `let` exports are live bindings:
+  change them with `setPrivateEnv({...})` and clear them with
+  `resetPrivateEnv()` in `afterEach`. A new variable needs an entry in
+  `src/env.ts` AND in the matching stub.
 - **TypeScript is split across the workspace**: `apps/api` is on **TS 7**;
   `apps/dashboard` is pinned to **TS 6** because `svelte-check` 4.x crashes
   under TS 7 (it reads `ts.default.sys`, which the native rewrite removed).
@@ -140,19 +130,26 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   scripts. On upgrade an operator MUST create their first global admin via
   `POST /api/v1/admin/users` with `ADMIN_TOKEN` before they can sign in — see
   `docs/GETTING_STARTED.md`.
-- **The dashboard needs `ORIGIN` (or `PROTOCOL_HEADER`) set for any admin
-  form action to work, found while writing plan 053's E2E spec — the first
-  test in the suite to exercise a POST.** `@sveltejs/adapter-node`'s CSRF
-  check compares the request's `Origin` header against its own guess at
-  `event.url.origin`; without `ORIGIN`/`PROTOCOL_HEADER`, `get_origin()`
-  defaults to assuming `https`, so every same-origin POST served over plain
-  `http` (the E2E build, and `docker-compose.yml`'s default) 403s as
-  `"Cross-site POST form submissions are forbidden"` even though browser and
-  server agree on the origin. Fixed by setting `ORIGIN` in both
-  `apps/dashboard/playwright.config.ts`'s `webServer.env` (E2E) and
-  `docker-compose.yml`'s `dashboard.environment` (real deployments, defaults
-  to `http://localhost:3000`) — set it to the externally visible URL, not
-  the container's own port, when behind a reverse proxy.
+- **Start the built dashboard with `node runtime/server.js`, never `node
+  build`: only the first one reads `ORIGIN`.** SvelteKit's CSRF check
+  compares the browser's `Origin` header against the server's idea of its
+  own origin. Without a configured origin, adapter-node assumes `https`, so
+  every same-origin POST served over plain `http` (the E2E build,
+  `docker-compose.yml`'s default) fails with 403 *"Cross-site POST form
+  submissions are forbidden"* — found by plan 053's E2E spec, the first to
+  exercise a POST. adapter-node 6 removed its `ORIGIN` variable in favour of
+  `paths.origin`, which is fixed at BUILD time and would bake one URL into
+  the published image. `apps/dashboard/runtime/server.js` restores `ORIGIN`
+  at runtime: it starts adapter-node's own `build/index.js` and, before
+  adapter-node handles a request, overwrites two internal headers
+  (`x-flackyness-origin-proto`/`-host`) that it points `PROTOCOL_HEADER` and
+  `HOST_HEADER` at (`runtime/origin.js`). It refuses to start when `ORIGIN`
+  is invalid or combined with `PROTOCOL_HEADER`, `HOST_HEADER` or
+  `PORT_HEADER`. The Dockerfile `CMD`, the `start` script and
+  `playwright.config.ts`'s `webServer` all use it. Measured on the built
+  app: with `node build`, a same-origin POST over `http` gets 403 even with
+  `ORIGIN` set. Set `ORIGIN` to the externally visible URL, not the
+  container's own port, when behind a reverse proxy.
 - **Quarantine promotion is rule-driven once a project has ≥1 enabled
   `quarantine_rules` row (plan 054).** `reconcileQuarantine()` prefers
   `promoteWithRules` over the plan-051 `promoteLegacy` path whenever

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import { formatDate } from '$lib/format';
+  import { formatDate } from '#lib/format.js';
 
   interface Props {
     data: PageData;

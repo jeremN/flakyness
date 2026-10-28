@@ -1,8 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readable } from 'svelte/store';
-vi.mock('$app/stores', () => ({
-  page: readable({ status: 404, error: { message: 'nope' }, url: new URL('http://localhost/x') }),
-}));
+vi.mock('$app/state', () => ({ page: { status: 404, error: { message: 'nope' }, url: new URL('http://localhost/x') } }));
 import { render } from 'vitest-browser-svelte';
 import { page as vitestPage } from 'vitest/browser';
 import ErrorPage from './+error.svelte';

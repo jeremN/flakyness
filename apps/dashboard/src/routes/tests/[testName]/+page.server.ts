@@ -1,4 +1,4 @@
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import { error } from '@sveltejs/kit';
 
 // Mirrors the API's own guard (apps/api/src/routes/tests.ts `/:testName/trend`

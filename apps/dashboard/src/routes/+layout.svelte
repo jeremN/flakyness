@@ -1,9 +1,9 @@
 <script lang="ts">
   import '../app.css';
-  import { page } from '$app/stores';
-  import { appendProjectParam, withQueryParam } from '$lib/href';
-  import { partitionProjects } from '$lib/project-groups';
-  import TeamSwitcher from '$lib/components/TeamSwitcher.svelte';
+  import { page } from '$app/state';
+  import { appendProjectParam, withQueryParam } from '#lib/href.js';
+  import { partitionProjects } from '#lib/project-groups.js';
+  import TeamSwitcher from '#lib/components/TeamSwitcher.svelte';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -26,7 +26,7 @@
   }
 
   function isActive(href: string): boolean {
-    return $page.url.pathname === href;
+    return page.url.pathname === href;
   }
 
   // Discharges the plan 059 Task 6 Global Constraint: a `teamId === null`
@@ -37,7 +37,7 @@
   const partitioned = $derived(partitionProjects(data.projects));
 
   function projectHref(projectId: string): string {
-    return withQueryParam($page.url, 'project', projectId);
+    return withQueryParam(page.url, 'project', projectId);
   }
 
   function isSelectedProject(projectId: string): boolean {

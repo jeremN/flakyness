@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { env as privateEnv } from '../../tests/env-private-stub';
-import { SESSION_COOKIE_PATH } from '$lib/session';
+import { setPrivateEnv, resetPrivateEnv } from '../../tests/env-private-stub';
+import { SESSION_COOKIE_PATH } from '#lib/session.js';
 import { actions, load } from './+page.server';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -43,7 +43,7 @@ function validFields(overrides: Record<string, string> = {}): Record<string, str
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  delete privateEnv.COOKIE_SECURE;
+  resetPrivateEnv();
 });
 
 afterEach(() => {
@@ -346,7 +346,7 @@ describe('change-password action', () => {
   });
 
   it('sets a Secure cookie when COOKIE_SECURE=true', async () => {
-    privateEnv.COOKIE_SECURE = 'true';
+    setPrivateEnv({ COOKIE_SECURE: 'true' });
     fetchMock.mockResolvedValue(
       jsonResponse({ success: true }, 200, { 'set-cookie': 'fk_session=sess-new-xyz; Path=/; HttpOnly' })
     );

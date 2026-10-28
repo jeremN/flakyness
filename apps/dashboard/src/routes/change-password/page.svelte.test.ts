@@ -3,7 +3,7 @@ vi.mock('$app/forms', () => ({ enhance: () => ({ destroy() {} }) }));
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';
 import Page from './+page.svelte';
-import { MIN_PASSWORD_LENGTH } from '$lib/password-form';
+import { MIN_PASSWORD_LENGTH } from '#lib/password-form.js';
 
 // PageData for this route is the root +layout.server.ts's data merged with
 // this page's own { forced }, per SvelteKit's load-data merging — matches

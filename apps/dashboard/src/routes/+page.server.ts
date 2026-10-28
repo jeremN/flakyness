@@ -1,4 +1,4 @@
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import type { Project } from '../app.d';
 
 // Typed locally (rather than via `./$types`' `PageServerLoad`) so that importing

@@ -1,6 +1,6 @@
 import type { Actions } from './$types';
 import { fail } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
 
 export const actions = {
   default: async ({ request, locals }) => {

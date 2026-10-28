@@ -1,8 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readable } from 'svelte/store';
-vi.mock('$app/stores', () => ({
-  page: readable({ url: new URL('http://localhost/flaky?project=p1') }),
-}));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/flaky?project=p1') } }));
 import { render } from 'vitest-browser-svelte';
 import { page as vitestPage } from 'vitest/browser';
 import TeamSwitcher from './TeamSwitcher.svelte';
@@ -33,7 +30,7 @@ describe('TeamSwitcher', () => {
   it('preserves the rest of the query string when linking to a team', async () => {
     render(TeamSwitcher, { props: { teams: [teamA, teamB], activeTeam: null } });
 
-    // $app/stores is mocked to /flaky?project=p1 — switching teams must not
+    // $app/state is mocked to /flaky?project=p1 — switching teams must not
     // drop the existing project= param.
     await expect
       .element(vitestPage.getByRole('link', { name: 'Team Alpha' }))

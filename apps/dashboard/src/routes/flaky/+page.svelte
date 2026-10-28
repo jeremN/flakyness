@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
-  import { formatDate } from '$lib/format';
-  import { flakyStatusBadgeClass } from '$lib/status';
-  import { appendProjectParam } from '$lib/href';
+  import { formatDate } from '#lib/format.js';
+  import { flakyStatusBadgeClass } from '#lib/status.js';
+  import { appendProjectParam } from '#lib/href.js';
 
   interface Props {
     data: PageData;

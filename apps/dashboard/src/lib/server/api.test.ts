@@ -1,15 +1,14 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { env as privateEnv } from '../../tests/env-private-stub';
+import { setPrivateEnv, resetPrivateEnv } from '../../tests/env-private-stub';
 import { createApi } from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  // api.ts reads privateEnv.READ_TOKEN fresh on every call (not cached at
-  // import time), so mutating the shared stub object here is enough — no
-  // vi.resetModules() needed. But it must be cleaned up, or a READ_TOKEN set
+  // The stub exports READ_TOKEN as a live binding, so setPrivateEnv() reaches
+  // api.ts without vi.resetModules(). It must be reset, or a READ_TOKEN set
   // by one test would leak into the next and break the `headers: {}`
   // assertions above.
-  delete privateEnv.READ_TOKEN;
+  resetPrivateEnv();
 });
 
 describe('lib/api', () => {
@@ -43,7 +42,7 @@ describe('lib/api', () => {
   // win, so scoping is preserved. The bearer only satisfies the readAuth gate
   // in front of it. Reverting to `else if` must fail here.
   it("forwards BOTH the caller's session cookie and the READ_TOKEN bearer", async () => {
-    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    setPrivateEnv({ READ_TOKEN: 'super-secret-read-token' });
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ projects: [] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -59,7 +58,7 @@ describe('lib/api', () => {
   // /tests/flaky/:id is readAuth-mounted, so a cookie-only mute hits the exact
   // same 401 as a read; the mute test below covers the no-READ_TOKEN case.
   it('sends both credentials on setFlakyStatus too, since it shares buildHeaders', async () => {
-    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    setPrivateEnv({ READ_TOKEN: 'super-secret-read-token' });
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -141,7 +140,7 @@ describe('lib/api', () => {
   });
 
   it('sends READ_TOKEN as a Bearer credential when set and there is no session (proves the fallback is actually wired up)', async () => {
-    privateEnv.READ_TOKEN = 'super-secret-read-token';
+    setPrivateEnv({ READ_TOKEN: 'super-secret-read-token' });
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ projects: [] }), { status: 200 })
     );

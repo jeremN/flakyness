@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), invalidateAll: vi.fn() }));
-vi.mock('$lib/components/Chart.svelte', async () => ({
-  default: (await import('$lib/components/Chart.stub.svelte')).default,
+vi.mock('#lib/components/Chart.svelte', async () => ({
+  default: (await import('#lib/components/Chart.stub.svelte')).default,
 }));
 import { render } from 'vitest-browser-svelte';
 import { page } from 'vitest/browser';

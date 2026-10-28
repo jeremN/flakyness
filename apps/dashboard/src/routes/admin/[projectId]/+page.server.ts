@@ -1,7 +1,7 @@
 import type { PageServerLoad, Actions } from './$types';
 import { error, fail, redirect } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
-import { validateConfigForm, buildConfigPatch, CONFIG_FIELD_SPECS } from '$lib/admin-validation';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
+import { validateConfigForm, buildConfigPatch, CONFIG_FIELD_SPECS } from '#lib/admin-validation.js';
 import type { AdminTeam } from '../../../app.d';
 
 export const load: PageServerLoad = async ({ params, locals }) => {

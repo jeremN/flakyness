@@ -63,11 +63,12 @@ export default defineConfig({
   // suite has been green for a while (see plan 026 maintenance notes).
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   // Build + serve the REAL production artifact (adapter-node's `build/`,
-  // started with plain `node`), not `vite dev` / `vite preview`. Dev-mode SSR
+  // started through runtime/server.js exactly as the Docker image does; plain
+  // `node build` would ignore ORIGIN below), not `vite dev` / `vite preview`. Dev-mode SSR
   // has different behavior than what production actually runs, and that gap
   // is exactly what let the SSR crash in plan 008 slip through undetected.
   webServer: {
-    command: 'pnpm run build && node build',
+    command: 'pnpm run build && node runtime/server.js',
     // `port`, not `url`: once ADDRESS_HEADER is set below, EVERY request
     // without an x-forwarded-for header 500s (hooks.server.ts calls
     // event.getClientAddress() unconditionally) — including Playwright's own
@@ -83,11 +84,9 @@ export default defineConfig({
       PORT: DASHBOARD_PORT,
       HOST: '127.0.0.1',
       PUBLIC_API_URL: API_URL,
-      // adapter-node's CSRF origin check (SvelteKit core, not app code)
-      // rejects same-origin POSTs unless it can resolve the request's real
-      // origin. Without ORIGIN (or PROTOCOL_HEADER) set, it *assumes*
-      // https — see get_origin() in @sveltejs/adapter-node/files/handler.js
-      // — so over this plain-http E2E server every form action 403s with
+      // SvelteKit's CSRF origin check (core, not app code) rejects
+      // same-origin POSTs unless it can resolve the request's real origin.
+      // Without ORIGIN set, adapter-node *assumes* https, so over this plain-http E2E server every form action 403s with
       // "Cross-site POST form submissions are forbidden" even though
       // browser and server agree on the origin. Discovered by admin.spec.ts
       // (plan 053 Task 7), the first spec to exercise a POST action; no

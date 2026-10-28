@@ -140,7 +140,7 @@
                 ? 'bg-purple-50 text-purple-700'
                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}"
           >
-            <span class="w-6 h-6 flex items-center justify-center rounded-lg text-sm
+            <span aria-hidden="true" class="w-6 h-6 flex items-center justify-center rounded-lg text-sm
               {isActive(item.href)
                 ? (item.color === 'purple' ? 'bg-purple-100' : item.color === 'orange' ? 'bg-orange-100' : 'bg-blue-100')
                 : 'bg-gray-100'}">

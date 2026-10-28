@@ -49,8 +49,9 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   can't run against `tsgo` at all (not just this crash), and Svelte/Vue/
   Astro/MDX are all blocked the same way. Unblocks at **TS 7.1
   (~Oct 2026, upstream estimate)** — stay on TS 6 until then.
-  `.github/dependabot.yml` ignores TS majors for the dashboard only; only
-  lift that pin once BOTH TS 7.1 has shipped AND a `svelte-check` release
+  `.github/dependabot.yml` has one npm entry (root `"/"`) and ignores TS
+  majors for the whole workspace: TS majors are adopted by hand. Bump the
+  dashboard only once BOTH TS 7.1 has shipped AND a `svelte-check` release
   supports it (latest is still 4.7.2). Track `sveltejs/language-tools#2733`.
 - **Dashboard rendered-DOM tests run in Vitest browser mode; the default
   `test` suite stays node-only.** Pure view-logic is extracted to

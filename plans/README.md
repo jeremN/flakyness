@@ -884,7 +884,7 @@ rationale. Items 5–7 remain unplanned.
     `use('*', adminRateLimit)` also matches `/api/v1/admin/users/*` and `/teams/*`, which mount
     their own copy of the same module-singleton limiter; on a path matching **no** handler both
     run and one request burns two of five slots. Pre-existing since plan 057.
-23. **[FIX PROPOSED 2026-10-27 — PR `chore/dependabot-single-root`: one root `"/"` npm entry, guard rewritten to check pnpm-workspace globs and forbid subdirectory entries. Dry-run evidence: root-entry PRs #143, #180-#183, #187 updated `apps/*` package.json + lockfile correctly; subdirectory entries only added lockfile-less duplicates #174-#178, #184. Found 2026-08-14 while investigating CI] `dependabot.yml` listing `/apps/api`
+23. **[RESOLVED 2026-10-28 — PR #193 merged: one root `"/"` npm entry, guard rewritten to check pnpm-workspace globs and forbid subdirectory entries. Dry-run evidence: root-entry PRs #143, #180-#183, #187 updated `apps/*` package.json + lockfile correctly; subdirectory entries only added lockfile-less duplicates #174-#178, #184. Found 2026-08-14 while investigating CI] `dependabot.yml` listing `/apps/api`
     breaks security updates, but `dependabot-coverage.test.ts` requires it.** Dependabot's
     security-update path fans out per directory; the `/` entry succeeds, `/apps/api` fails with
     pnpm `misconfigured_tooling` — *"Updating workspaces from inside a workspace subdirectory is

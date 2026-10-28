@@ -1,7 +1,7 @@
 import type { PageServerLoad, Actions } from './$types';
 import { error, fail } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
-import { validateRuleForm, buildRulePayload } from '$lib/rules-validation';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
+import { validateRuleForm, buildRulePayload } from '#lib/rules-validation.js';
 
 export const load: PageServerLoad = async ({ params, parent, locals }) => {
   const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);

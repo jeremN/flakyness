@@ -1,4 +1,4 @@
-import { env } from '$env/dynamic/public';
+import { PUBLIC_API_URL } from '$app/env/public';
 import { SESSION_COOKIE } from '../session';
 import type {
   AdminProject,
@@ -11,7 +11,7 @@ import type {
   TeamSummary,
 } from '../../app.d';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 // A non-2xx from the admin API. Carries the status + the API's own error
 // message so the calling action can forward both to the user.

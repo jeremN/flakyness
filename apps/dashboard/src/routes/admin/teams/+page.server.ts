@@ -1,5 +1,5 @@
 import { error, fail, type Actions, type ServerLoadEvent } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
 import type { TeamSummary } from '../../../app.d';
 
 export async function load({ locals }: ServerLoadEvent) {

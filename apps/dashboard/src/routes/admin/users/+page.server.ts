@@ -1,5 +1,5 @@
 import { error, fail, type Actions, type ServerLoadEvent } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
 
 export async function load({ locals }: ServerLoadEvent) {
   if (!locals.user?.isGlobalAdmin) {

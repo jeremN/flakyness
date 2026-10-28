@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import type { SubmitFunction } from '@sveltejs/kit';
+  import type { SubmitFunction } from '$app/forms';
   import { enhance } from '$app/forms';
-  import TokenReveal from '$lib/components/TokenReveal.svelte';
-  import { formatDateTime } from '$lib/format';
+  import TokenReveal from '#lib/components/TokenReveal.svelte';
+  import { formatDateTime } from '#lib/format.js';
 
   // Manual form-result type (Global Constraint 3, matching admin/teams): every
   // action here returns either `{ success: true }` (plus temporaryPassword +

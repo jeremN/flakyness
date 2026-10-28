@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import ErrorState from '$lib/components/ErrorState.svelte';
+  import ErrorState from '#lib/components/ErrorState.svelte';
   import { invalidateAll } from '$app/navigation';
-  import { statusBadgeClass } from '$lib/status';
-  import { formatDateTime, formatDuration, runDurationMs } from '$lib/format';
+  import { statusBadgeClass } from '#lib/status.js';
+  import { formatDateTime, formatDuration, runDurationMs } from '#lib/format.js';
 
   interface Props {
     data: PageData;

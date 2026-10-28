@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { env as privateEnv } from '../../tests/env-private-stub';
-import { SESSION_COOKIE_PATH } from '$lib/session';
+import { setPrivateEnv, resetPrivateEnv } from '../../tests/env-private-stub';
+import { SESSION_COOKIE_PATH } from '#lib/session.js';
 import { actions } from './+page.server';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -25,9 +25,8 @@ function formEvent(fields: Record<string, string>, clientIp: string | null = '20
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  // privateEnv.ts reads COOKIE_SECURE fresh on every call (not cached at
-  // import time) — see api.test.ts's identical READ_TOKEN pattern.
-  delete privateEnv.COOKIE_SECURE;
+  // Live-binding stub — see api.test.ts's identical READ_TOKEN pattern.
+  resetPrivateEnv();
 });
 
 afterEach(() => {
@@ -183,10 +182,10 @@ describe('login action', () => {
   // Deviation from the task-4 brief (recorded in task-4-report.md): the brief's
   // code block reads `process.env.COOKIE_SECURE`, which is untestable here —
   // `process.env` appears nowhere else in src/, every other server module
-  // reads $env/dynamic/*, and the test setup only stubs the private env
+  // reads $app/env/*, and the test setup only stubs the private env
   // module. These two tests pin both states of the flag directly.
   it('sets a Secure cookie when COOKIE_SECURE=true', async () => {
-    privateEnv.COOKIE_SECURE = 'true';
+    setPrivateEnv({ COOKIE_SECURE: 'true' });
     fetchMock.mockResolvedValue(
       jsonResponse({ mustChangePassword: false }, 200, { 'set-cookie': 'fk_session=tok-abc; Path=/; HttpOnly' })
     );

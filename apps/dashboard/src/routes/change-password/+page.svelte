@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
-  import { MIN_PASSWORD_LENGTH } from '$lib/password-form';
+  import { MIN_PASSWORD_LENGTH } from '#lib/password-form.js';
 
   // `data` uses the generated PageData; `form` is hand-typed (Global
   // Constraint 3, matches login/+page.svelte) — no field here is ever worth

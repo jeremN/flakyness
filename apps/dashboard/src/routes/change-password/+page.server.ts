@@ -1,11 +1,11 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
-import { env } from '$env/dynamic/public';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH, parseSessionCookie } from '$lib/session';
-import { sessionCookieOptions } from '$lib/server/session';
-import { validatePasswordChange } from '$lib/password-form';
+import { PUBLIC_API_URL } from '$app/env/public';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, parseSessionCookie } from '#lib/session.js';
+import { sessionCookieOptions } from '#lib/server/session.js';
+import { validatePasswordChange } from '#lib/password-form.js';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 // `forced` drives the +page.svelte heading — "you must" vs. a voluntary
 // change from an already-signed-in account. locals.user is populated by

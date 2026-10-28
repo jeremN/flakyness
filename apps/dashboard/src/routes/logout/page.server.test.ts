@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '$lib/session';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '#lib/session.js';
 import { actions } from './+page.server';
 
 const fetchMock = vi.fn();

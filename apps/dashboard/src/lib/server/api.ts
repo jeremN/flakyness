@@ -1,5 +1,5 @@
-import { env } from '$env/dynamic/public';
-import { env as privateEnv } from '$env/dynamic/private';
+import { PUBLIC_API_URL } from '$app/env/public';
+import { READ_TOKEN } from '$app/env/private';
 import { error, isHttpError } from '@sveltejs/kit';
 import { SESSION_COOKIE } from '../session';
 import type {
@@ -13,7 +13,7 @@ import type {
   AnalysisResponse,
 } from '../../app.d';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 export class APIError extends Error {
   constructor(
@@ -48,8 +48,8 @@ export function createApi(sessionToken: string | null, clientIp: string | null) 
     if (sessionToken) {
       headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
     }
-    if (privateEnv.READ_TOKEN) {
-      headers.Authorization = `Bearer ${privateEnv.READ_TOKEN}`;
+    if (READ_TOKEN) {
+      headers.Authorization = `Bearer ${READ_TOKEN}`;
     }
     // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
     // every such request into one bucket instead of falling back to the

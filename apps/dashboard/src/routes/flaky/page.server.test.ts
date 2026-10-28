@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/server/api', () => ({
+vi.mock('#lib/server/api.js', () => ({
   createApi: vi.fn(),
   APIError: class APIError extends Error {
     statusCode: number;
@@ -14,7 +14,7 @@ vi.mock('$lib/server/api', () => ({
   },
 }));
 
-import { createApi, APIError } from '$lib/server/api';
+import { createApi, APIError } from '#lib/server/api.js';
 import { load, actions } from './+page.server';
 import type { Project, SessionUser, TeamSummary } from '../../app.d';
 

@@ -271,7 +271,7 @@ function parseValidatedXml(xml: string): ParsedReport {
 
   if (testcases.length > MAX_TESTCASES) {
     throw new Error(
-      `JUnit report exceeds maximum of ${MAX_TESTCASES.toLocaleString()} test cases (found ${testcases.length})`
+      `JUnit report exceeds maximum of ${MAX_TESTCASES.toLocaleString('en-US')} test cases (found ${testcases.length})`
     );
   }
 

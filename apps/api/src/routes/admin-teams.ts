@@ -7,7 +7,7 @@ import { logger } from '../middleware/logger';
 import { adminRateLimit } from '../middleware/rate-limit';
 import { adminOrGlobalAdminAuth } from '../middleware/auth';
 import { passwordChangeGate } from '../middleware/password-change';
-import { getAccess } from '../middleware/access';
+import { getAccess, uuidSchema } from '../middleware/access';
 import { canAdministerTeams } from '../services/auth/access';
 import { TEAM_ROLES } from '../services/auth/membership';
 
@@ -32,7 +32,6 @@ adminTeamsRouter.use('*', async (c, next) => {
   await next();
 });
 
-const uuidSchema = z.string().uuid();
 
 const createTeamSchema = z.object({ name: z.string().min(1).max(255) });
 const patchTeamSchema = z.object({ name: z.string().min(1).max(255) });

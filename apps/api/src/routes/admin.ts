@@ -9,7 +9,7 @@ import { passwordChangeGate } from '../middleware/password-change';
 import { logger } from '../middleware/logger';
 import { resolveProjectConfig } from '../services/flakiness';
 import { globToRegExp } from '../services/rules';
-import { getAccess, loadScopedProject } from '../middleware/access';
+import { getAccess, loadScopedProject, uuidSchema } from '../middleware/access';
 import {
   canAdministerTeams,
   canReadProject,
@@ -20,7 +20,6 @@ import {
 
 const adminRouter = new Hono();
 
-const uuidSchema = z.string().uuid();
 
 // Rate limiting MUST come before auth: a brute-force flood of bad tokens has to
 // be throttled here, not waved through to adminOrGlobalAdminAuth (which would

@@ -846,7 +846,7 @@ rationale. Items 5–7 remain unplanned.
     candidate already accepted in #16 above. Acceptable at operator scale (tens of rules/
     candidates per project today); the design doc explicitly notes a batched-query optimization
     as a deliberately deferred follow-up rather than built speculatively ahead of real volume.
-19. **[OPEN — deferred from plan 058's final whole-branch review; the one with teeth] `uuidSchema`
+19. **[RESOLVED 2026-10-30 — PR #198: `middleware/access.ts` exports the only `uuidSchema`, guarded by `uuid-schema-coverage.test.ts`. Deferred from plan 058's final whole-branch review; the one with teeth] `uuidSchema`
     is duplicated, and `resolveAccess` skips the scope check on a parse failure.**
     `middleware/access.ts` and `routes/projects.ts` each declare their own `uuidSchema`, and
     `resolveAccess` **skips the scope check entirely** for any id that fails *its* parse — so

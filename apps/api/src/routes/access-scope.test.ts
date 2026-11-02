@@ -465,6 +465,40 @@ describeScope('flaky-test mute authorization', () => {
     expect(res.status).toBe(200);
   });
 
+  // Backlog #21: the seventh AccessKind on this route. The global-admin user
+  // belongs to NO team, so only the isGlobalAdmin branch of canWriteProject
+  // can let it through.
+  it('a global admin session in no team mutes a test in any team', async () => {
+    const theirs = await fixture('member');
+    const flakyId = await seedFlaky(theirs);
+
+    // Same lock as the global-admin read test above: a concurrent
+    // withSoleGlobalAdmin cycle would otherwise demote this user mid-test.
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const adminUser = await json(await app.request('/api/v1/admin/users', {
+        method: 'POST', headers: adminHeaders(),
+        body: JSON.stringify({ email: `${uniq('ga')}@example.test`, isGlobalAdmin: true }),
+      }));
+      await clearMustChangePassword(adminUser.user.id);
+      const loginRes = await app.request('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: adminUser.user.email, password: adminUser.temporaryPassword }),
+      });
+      const cookie = (loginRes.headers.get('set-cookie') ?? '')
+        .match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+      expect(cookie, 'login must issue a session cookie').toBeDefined();
+
+      const res = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${cookie}` },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(res.status).toBe(200);
+      expect((await res.json()).flakyTest.status).toBe('ignored');
+    });
+  });
+
   it('a project (ingest) token gets 401 muting a test in its OWN project — mute is a management action, not a per-project write (docs/API.md)', async () => {
     const f = await fixture('member');
     const flakyId = await seedFlaky(f);

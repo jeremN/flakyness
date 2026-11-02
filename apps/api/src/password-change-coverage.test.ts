@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import app from './index';
 import { PASSWORD_CHANGE_ALLOWLIST } from './services/auth/access';
-import { reportRateLimit, apiRateLimit, authRateLimit, adminRateLimit } from './middleware/rate-limit';
+import {
+  reportRateLimit,
+  reportPreAuthRateLimit,
+  apiRateLimit,
+  authRateLimit,
+  adminRateLimit,
+} from './middleware/rate-limit';
 
 /**
  * Fail-loud guard: every /api/v1 route is covered by a passwordChangeGate()
@@ -138,33 +144,24 @@ const format = (method: string, path: string) => `${method} ${path}`;
  *
  * ### What this does NOT catch — do not read it as total (follow-up #28)
  *
- * Coverage here is a question about path SHAPE, not about registration ORDER,
- * and Hono dispatches by order. A router mounted UNDER an already-gated
- * wildcard but registered BEFORE it never runs that wildcard's chain, yet
- * matches the prefix and is reported covered. Concretely: a future
+ * Coverage depends on registration ORDER as well as path SHAPE, because Hono
+ * dispatches by order. A router mounted UNDER an already-gated wildcard but
+ * registered BEFORE it never runs that wildcard's chain. Concretely: a future
  * `app.route('/api/v1/admin/billing', billing)` placed above `adminRouter`
- * runs zero `ALL /api/v1/admin/*` middleware — measured, not theorised — while
- * this function returns true for every one of its paths.
+ * runs zero `ALL /api/v1/admin/*` middleware — measured, not theorised. And
+ * `index.ts` deliberately mounts the more specific admin routers before
+ * `adminRouter`, so that is the pattern the codebase teaches.
  *
- * That is not a hypothetical mounting mistake: `index.ts` deliberately mounts
- * the more specific admin routers before `adminRouter`, so the pattern is the
- * one the codebase teaches. No live gap exists today — `admin-users`,
- * `admin-teams` and `admin` each mount their own gate — but a new sibling that
- * forgot one would pass this assertion.
- *
- * Closing it means making coverage order-aware: require the covering gate at a
- * LOWER `app.routes` index than the route it covers. Deliberately deferred to
- * follow-up #28 rather than rushed in at merge time; recorded here because a
- * guard that overstates its reach is worse than one whose limits are written
- * down. (The previous version of this comment claimed a completeness it did
- * not have, which is exactly the defect the final review caught twice.)
+ * This function answers the SHAPE half only. `uncoveredV1Routes` adds the
+ * ORDER half (backlog #28): a gate covers a registration only when the gate's
+ * `app.routes` index is LOWER. Its self-test pins the out-of-order case.
  *
  * ### The vacuity trap — read before editing
  *
  * Wildcard mounts (`/api/v1/admin/*`) and exact-path gates (`/api/v1`) MUST be
  * handled separately. Treating every gate path as a `startsWith` prefix looks
  * tidier and destroys the guard: `'/api/v1'` is a prefix of literally every
- * path under `/api/v1`, so `isGateCovered` would return true for everything
+ * path under `/api/v1`, so the predicate would return true for everything
  * and the assertion would pass forever, including for a completely ungated
  * router. Exact paths therefore go in a Set and only `/*` mounts become
  * prefixes. `buildGateCoverage`'s self-test below pins exactly this.
@@ -194,23 +191,52 @@ function buildGateCoverage(gateMountPaths: readonly string[]): (path: string) =>
     wildcardBases.some((base) => path === base || path.startsWith(`${base}/`));
 }
 
-/** Every `/api/v1` route registration no gate mount covers. */
-function uncoveredV1Routes(
-  routes: ReadonlyArray<{ method: string; path: string }>,
-  isCovered: (path: string) => boolean
-): string[] {
+type RouteRegistration = { method: string; path: string; handler?: unknown };
+
+// Rate limiters run BEFORE the gate on purpose (see EXPECTED_GATE_ORDER), so
+// they are never "uncovered" for preceding it. Matched by reference.
+const PRE_GATE_LIMITERS: readonly unknown[] = [
+  reportRateLimit,
+  reportPreAuthRateLimit,
+  apiRateLimit,
+  authRateLimit,
+  adminRateLimit,
+];
+
+/**
+ * Every `/api/v1` route registration no gate covers. Order-aware (backlog
+ * #28): a gate covers registration `i` only when its path covers `i`'s path
+ * (`buildGateCoverage`) AND it sits at a LOWER index, because Hono runs a
+ * layer registered after a terminal handler only if that handler calls next.
+ *
+ * Two kinds of registration may precede their gate and are skipped:
+ * - a known rate limiter (by reference), which is meant to run first;
+ * - a router-level `use('*', ...)` layer, i.e. an `ALL` registration on the
+ *   exact path of a gate mount. These are that same router's middleware
+ *   (`projectAuth()` on reports and audits, for one), not handlers.
+ * A whole sub-router registered ahead of a covering gate matches neither: its
+ * layers sit on its OWN mount path, which no gate mounts.
+ */
+function uncoveredV1Routes(routes: ReadonlyArray<RouteRegistration>): string[] {
+  const gates = routes.flatMap((r, index) => (isGateHandler(r.handler) ? [{ path: r.path, index }] : []));
+  const gatePathSet = new Set(gates.map((g) => g.path));
+  const isCovered = (path: string, index: number) =>
+    gates.some((g) => g.index < index && buildGateCoverage([g.path])(path));
   return [
     ...new Set(
       routes
+        .map((r, index) => ({ ...r, index }))
         .filter((r) => r.path === '/api/v1' || r.path.startsWith('/api/v1/'))
-        .filter((r) => !isCovered(r.path))
+        .filter((r) => !isGateHandler(r.handler))
+        .filter((r) => !PRE_GATE_LIMITERS.includes(r.handler))
+        .filter((r) => !(r.method === 'ALL' && gatePathSet.has(r.path)))
+        .filter((r) => !isCovered(r.path, r.index))
         .map((r) => format(r.method, r.path))
     ),
   ].sort();
 }
 
 const gateMountPaths = [...gatePaths];
-const isGateCovered = buildGateCoverage(gateMountPaths);
 const wildcardMountCount = gateMountPaths.filter((p) => p.endsWith('/*')).length;
 
 // METHOD+PATH pairs, not bare paths. Deduping into a Set of PATHS — which this
@@ -399,7 +425,7 @@ describe('password-change gate coverage', () => {
    */
   it('every /api/v1 route is covered by a gate mount', () => {
     expect(
-      uncoveredV1Routes(app.routes, isGateCovered),
+      uncoveredV1Routes(app.routes),
       'These /api/v1 routes have no passwordChangeGate covering them. A session\n' +
         'holding an unrotated temporary password keeps full authority on each one.\n\n' +
         'For a new ROUTER: add\n' +
@@ -418,7 +444,11 @@ describe('password-change gate coverage', () => {
     // today's routes. That proves nothing about whether it would CATCH an
     // ungated router. These drive the same function with a fabricated route
     // table, which is the only way to exercise the failing direction.
-    const NEW_ROUTER: ReadonlyArray<{ method: string; path: string }> = [
+    // A stand-in for passwordChangeGate(): the guard finds gates by this flag.
+    const GATE = Object.assign(() => undefined, { isPasswordChangeGate: true });
+    const gateAt = (path: string): RouteRegistration => ({ method: 'ALL', path, handler: GATE });
+
+    const NEW_ROUTER: ReadonlyArray<RouteRegistration> = [
       { method: 'GET', path: '/api/v1' },
       { method: 'GET', path: '/api/v1/projects/' },
       // A plausible next router, mounted and never gated. WRITE-only on
@@ -428,19 +458,20 @@ describe('password-change gate coverage', () => {
     ];
 
     it('reports an ungated router as uncovered', () => {
-      const covered = buildGateCoverage(['/api/v1/projects/*', '/api/v1']);
-      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([
-        'POST /api/v1/notifications/:channelId/test',
-      ]);
+      expect(
+        uncoveredV1Routes([gateAt('/api/v1/projects/*'), gateAt('/api/v1'), ...NEW_ROUTER])
+      ).toEqual(['POST /api/v1/notifications/:channelId/test']);
     });
 
     it('reports nothing once that router mounts the gate', () => {
-      const covered = buildGateCoverage([
-        '/api/v1/projects/*',
-        '/api/v1/notifications/*',
-        '/api/v1',
-      ]);
-      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([]);
+      expect(
+        uncoveredV1Routes([
+          gateAt('/api/v1/projects/*'),
+          gateAt('/api/v1/notifications/*'),
+          gateAt('/api/v1'),
+          ...NEW_ROUTER,
+        ])
+      ).toEqual([]);
     });
 
     it('THE VACUITY TRAP: gating /api/v1 must NOT cover everything beneath it', () => {
@@ -454,10 +485,36 @@ describe('password-change gate coverage', () => {
         covered('/api/v1/notifications/:channelId/test'),
         "gating '/api/v1' must not silently cover the entire API"
       ).toBe(false);
-      expect(uncoveredV1Routes(NEW_ROUTER, covered)).toEqual([
+      expect(uncoveredV1Routes([gateAt('/api/v1'), ...NEW_ROUTER])).toEqual([
         'GET /api/v1/projects/',
         'POST /api/v1/notifications/:channelId/test',
       ]);
+    });
+
+    // Backlog #28. Shape alone said "covered" here; Hono never runs the gate.
+    it('reports a sub-router registered BEFORE the wildcard gate that would cover it', () => {
+      const billingLimiter = () => undefined;
+      expect(
+        uncoveredV1Routes([
+          { method: 'ALL', path: '/api/v1/admin/billing/*', handler: billingLimiter },
+          { method: 'POST', path: '/api/v1/admin/billing/charge' },
+          gateAt('/api/v1/admin/*'),
+          { method: 'GET', path: '/api/v1/admin/projects' },
+        ])
+      ).toEqual(['ALL /api/v1/admin/billing/*', 'POST /api/v1/admin/billing/charge']);
+    });
+
+    it('accepts a router\'s own layers ahead of its gate, but not its handlers', () => {
+      const projectAuthLayer = () => undefined;
+      expect(
+        uncoveredV1Routes([
+          { method: 'ALL', path: '/api/v1/reports/*', handler: reportRateLimit },
+          { method: 'ALL', path: '/api/v1/reports/*', handler: projectAuthLayer },
+          { method: 'POST', path: '/api/v1/reports/early' },
+          gateAt('/api/v1/reports/*'),
+          { method: 'POST', path: '/api/v1/reports' },
+        ])
+      ).toEqual(['POST /api/v1/reports/early']);
     });
 
     it('a wildcard mount covers its subtree AND its own root, and nothing else', () => {
@@ -480,16 +537,12 @@ describe('password-change gate coverage', () => {
       // /health and /metrics are mounted on the root app ABOVE sessionAuth and
       // carry no credential; they are not this gate's business and must never
       // be reported as drift.
-      const covered = buildGateCoverage([]);
       expect(
-        uncoveredV1Routes(
-          [
-            { method: 'GET', path: '/health' },
-            { method: 'GET', path: '/metrics' },
-            { method: 'ALL', path: '*' },
-          ],
-          covered
-        )
+        uncoveredV1Routes([
+          { method: 'GET', path: '/health' },
+          { method: 'GET', path: '/metrics' },
+          { method: 'ALL', path: '*' },
+        ])
       ).toEqual([]);
     });
   });

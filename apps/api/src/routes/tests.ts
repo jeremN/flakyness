@@ -317,6 +317,11 @@ testsRouter.get('/flaky/:id', readAuth(), resolveAccess(), async (c) => {
   // so no resolveAccess() resolver could supply it — the scope check has to
   // live here instead. Same 404-not-403 existence-hiding as the middleware
   // path (see resolveAccess's doc comment).
+  //
+  // This check FAILS OPEN if resolveAccess() is unmounted above: getAccess()
+  // then falls back to anonymousAccess(), which reads every project. PATCH
+  // below fails closed under the same mutation (its early 401). tsc cannot
+  // catch it; routes-auth-coverage.test.ts and access-scope.test.ts do.
   if (!(await assertProjectReadable(c, flakyTest.projectId))) {
     return c.json({ error: 'Flaky test not found' }, 404);
   }

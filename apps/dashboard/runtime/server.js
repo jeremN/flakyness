@@ -2,7 +2,7 @@
 // It starts adapter-node's own server (build/index.js), so PORT, HOST,
 // SOCKET_PATH, the timeouts and the graceful shutdown work as documented.
 // It adds two things, both read at runtime: the ORIGIN variable (see
-// origin.js) and TRUSTED_PROXY_IPS for the client address (see
+// origin.js) and DASHBOARD_TRUSTED_PROXY_IPS for the client address (see
 // client-address.js).
 import process from 'node:process';
 import { configureOrigin } from './origin.js';

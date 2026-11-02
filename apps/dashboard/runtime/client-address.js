@@ -8,14 +8,14 @@
 // adapter-node's own fix, ADDRESS_HEADER=x-forwarded-for, trusts the header
 // from ANY socket: a client that reaches the dashboard directly picks its own
 // address. This module trusts X-Forwarded-For only from the addresses in
-// TRUSTED_PROXY_IPS. It points ADDRESS_HEADER at an internal header, and
+// DASHBOARD_TRUSTED_PROXY_IPS. It points ADDRESS_HEADER at an internal header, and
 // runtime/server.js OVERWRITES that header on every request, so a client
 // cannot set it.
 
 export const CLIENT_ADDRESS_HEADER = 'x-flackyness-client-ip';
 
 // adapter-node variables that also decide the client address. They cannot be
-// combined with TRUSTED_PROXY_IPS: the result would depend on which one wins.
+// combined with DASHBOARD_TRUSTED_PROXY_IPS: the result would depend on which one wins.
 const CONFLICTING = ['ADDRESS_HEADER', 'XFF_DEPTH'];
 
 /** @param {string} ip */
@@ -48,7 +48,7 @@ export function resolveClientAddress(socketAddress, forwardedFor, trusted) {
 }
 
 /**
- * Read TRUSTED_PROXY_IPS from `env`. When it is set, point adapter-node's
+ * Read DASHBOARD_TRUSTED_PROXY_IPS from `env`. When it is set, point adapter-node's
  * ADDRESS_HEADER at the internal header (this mutates `env`) and return the
  * function that writes it on a request. When it is not set, change nothing
  * and return null.
@@ -59,7 +59,7 @@ export function resolveClientAddress(socketAddress, forwardedFor, trusted) {
  * @returns {((req: import('node:http').IncomingMessage) => void) | null}
  */
 export function configureClientAddress(env) {
-  const trusted = (env.TRUSTED_PROXY_IPS ?? '')
+  const trusted = (env.DASHBOARD_TRUSTED_PROXY_IPS ?? '')
     .split(',')
     .map(normalize)
     .filter((ip) => ip !== '');
@@ -67,7 +67,7 @@ export function configureClientAddress(env) {
 
   const conflicts = CONFLICTING.filter((name) => env[name]);
   if (conflicts.length > 0) {
-    throw new Error(`Set TRUSTED_PROXY_IPS or ${conflicts.join('/')}, not both`);
+    throw new Error(`Set DASHBOARD_TRUSTED_PROXY_IPS or ${conflicts.join('/')}, not both`);
   }
 
   env.ADDRESS_HEADER = CLIENT_ADDRESS_HEADER;

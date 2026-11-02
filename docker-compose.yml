@@ -119,7 +119,7 @@ services:
       # the host can reach the port. Never trust the gateway while the port is
       # published on every interface: outside traffic can arrive from that
       # address too. See docs/GETTING_STARTED.md "Reverse Proxy".
-      TRUSTED_PROXY_IPS: ${DASHBOARD_TRUSTED_PROXY_IPS:-}
+      DASHBOARD_TRUSTED_PROXY_IPS: ${DASHBOARD_TRUSTED_PROXY_IPS:-}
     ports:
       - "${DASHBOARD_PUBLISH:-3000}:3000"
     healthcheck:

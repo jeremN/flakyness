@@ -273,9 +273,11 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   **`ADDRESS_HEADER` is a test-harness setting here — do NOT carry it into a
   deployment.** It makes adapter-node trust `X-Forwarded-For` from ANY
   socket, so on a directly reachable dashboard every client picks its own
-  `authRateLimit` bucket. Production uses the dashboard's
-  `TRUSTED_PROXY_IPS` instead (backlog #31, `runtime/client-address.js`,
-  compose `DASHBOARD_TRUSTED_PROXY_IPS`): `runtime/server.js` points
+  `authRateLimit` bucket. Production uses `DASHBOARD_TRUSTED_PROXY_IPS`
+  instead (backlog #31, `runtime/client-address.js`). It is deliberately NOT
+  the API's `TRUSTED_PROXY_IPS`: the E2E job sets that one for the API, the
+  Playwright dashboard inherits it alongside `ADDRESS_HEADER`, and a shared
+  name made the dashboard refuse to start (caught by CI on PR #204): `runtime/server.js` points
   `ADDRESS_HEADER` at an internal header it OVERWRITES on every request,
   with `X-Forwarded-For` honoured only from a trusted socket, and refuses to
   start if `ADDRESS_HEADER` or `XFF_DEPTH` is also set. Both the dashboard and

@@ -1029,7 +1029,7 @@ rationale. Items 5–7 remain unplanned.
     that an account must be created first, and it still asserts every admin endpoint needs
     `Authorization: Bearer $ADMIN_TOKEN`. (Plan 059 fixed only the single missing
     `DB_PASSWORD` line, which blocked compose from parsing at all.)
-31. **[RESOLVED 2026-11-02 — the dashboard reads `TRUSTED_PROXY_IPS` (`runtime/client-address.js`, compose `DASHBOARD_TRUSTED_PROXY_IPS` + `DASHBOARD_PUBLISH`), trusting `X-Forwarded-For` only from those sockets; nginx docs overwrite the header. Found 2026-08-15] Per-user rate limiting does not work in either documented
+31. **[RESOLVED 2026-11-02 — the dashboard reads `DASHBOARD_TRUSTED_PROXY_IPS` (`runtime/client-address.js`; compose also adds `DASHBOARD_PUBLISH`), trusting `X-Forwarded-For` only from those sockets; nginx docs overwrite the header. Found 2026-08-15] Per-user rate limiting does not work in either documented
     deployment.** `GETTING_STARTED.md` claims compose solves the shared-bucket problem via
     `TRUSTED_PROXY_IPS`, but `hooks.server.ts`'s `event.getClientAddress()` only returns the
     real client when adapter-node's `ADDRESS_HEADER` is set — and that appears **only** in

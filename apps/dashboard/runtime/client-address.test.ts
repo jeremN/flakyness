@@ -32,42 +32,50 @@ describe('resolveClientAddress', () => {
 });
 
 describe('configureClientAddress', () => {
-  it('changes nothing when TRUSTED_PROXY_IPS is unset or empty', () => {
-    for (const env of [{}, { TRUSTED_PROXY_IPS: '' }, { TRUSTED_PROXY_IPS: ' , ' }] as Record<string, string | undefined>[]) {
+  it('changes nothing when DASHBOARD_TRUSTED_PROXY_IPS is unset or empty', () => {
+    for (const env of [{}, { DASHBOARD_TRUSTED_PROXY_IPS: '' }, { DASHBOARD_TRUSTED_PROXY_IPS: ' , ' }] as Record<string, string | undefined>[]) {
       const before = { ...env };
       expect(configureClientAddress(env)).toBeNull();
       expect(env).toEqual(before);
     }
   });
 
-  it.each(['ADDRESS_HEADER', 'XFF_DEPTH'])('refuses TRUSTED_PROXY_IPS combined with %s', (name) => {
-    expect(() => configureClientAddress({ TRUSTED_PROXY_IPS: '10.0.0.2', [name]: 'x' })).toThrow(
-      new RegExp(`Set TRUSTED_PROXY_IPS or ${name}, not both`)
+  // The API reads TRUSTED_PROXY_IPS. Where both processes share one
+  // environment (dev, the E2E harness), the dashboard must not pick it up.
+  it("ignores the API's TRUSTED_PROXY_IPS", () => {
+    const env: Record<string, string | undefined> = { TRUSTED_PROXY_IPS: '127.0.0.1', ADDRESS_HEADER: 'x-forwarded-for' };
+    expect(configureClientAddress(env)).toBeNull();
+    expect(env.ADDRESS_HEADER).toBe('x-forwarded-for');
+  });
+
+  it.each(['ADDRESS_HEADER', 'XFF_DEPTH'])('refuses DASHBOARD_TRUSTED_PROXY_IPS combined with %s', (name) => {
+    expect(() => configureClientAddress({ DASHBOARD_TRUSTED_PROXY_IPS: '10.0.0.2', [name]: 'x' })).toThrow(
+      new RegExp(`Set DASHBOARD_TRUSTED_PROXY_IPS or ${name}, not both`)
     );
   });
 
   it('points ADDRESS_HEADER at the internal header', () => {
-    const env: Record<string, string | undefined> = { TRUSTED_PROXY_IPS: '10.0.0.2' };
+    const env: Record<string, string | undefined> = { DASHBOARD_TRUSTED_PROXY_IPS: '10.0.0.2' };
     configureClientAddress(env);
     expect(env.ADDRESS_HEADER).toBe(CLIENT_ADDRESS_HEADER);
   });
 
   it('overwrites a forged internal header and ignores X-Forwarded-For from an untrusted socket', () => {
-    const pin = configureClientAddress({ TRUSTED_PROXY_IPS: '10.0.0.2' })!;
+    const pin = configureClientAddress({ DASHBOARD_TRUSTED_PROXY_IPS: '10.0.0.2' })!;
     const req = fakeRequest('203.0.113.9', { [CLIENT_ADDRESS_HEADER]: '1.1.1.1', 'x-forwarded-for': '1.1.1.1' });
     pin(req);
     expect(req.headers[CLIENT_ADDRESS_HEADER]).toBe('203.0.113.9');
   });
 
   it('writes the client address a trusted proxy forwarded', () => {
-    const pin = configureClientAddress({ TRUSTED_PROXY_IPS: ' 10.0.0.2 ,10.0.0.3' })!;
+    const pin = configureClientAddress({ DASHBOARD_TRUSTED_PROXY_IPS: ' 10.0.0.2 ,10.0.0.3' })!;
     const req = fakeRequest('10.0.0.3', { 'x-forwarded-for': '198.51.100.7' });
     pin(req);
     expect(req.headers[CLIENT_ADDRESS_HEADER]).toBe('198.51.100.7');
   });
 
   it('always sets the header, so adapter-node never sees it missing', () => {
-    const pin = configureClientAddress({ TRUSTED_PROXY_IPS: '10.0.0.2' })!;
+    const pin = configureClientAddress({ DASHBOARD_TRUSTED_PROXY_IPS: '10.0.0.2' })!;
     const req = fakeRequest('10.0.0.2');
     pin(req);
     expect(req.headers[CLIENT_ADDRESS_HEADER]).toBe('10.0.0.2');

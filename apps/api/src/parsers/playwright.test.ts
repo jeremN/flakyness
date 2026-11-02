@@ -37,6 +37,53 @@ describe('Playwright Parser', () => {
   });
 
   describe('parsePlaywrightReport', () => {
+    describe.each(['nested', 'legacy'])('%s report expected status', (format) => {
+      it.each([
+        { expectedStatus: 'failed', statuses: ['failed'], status: 'passed' },
+        { expectedStatus: 'failed', statuses: ['passed'], status: 'failed' },
+        { expectedStatus: 'failed', statuses: ['skipped'], status: 'skipped' },
+        { expectedStatus: 'failed', statuses: ['failed', 'skipped'], status: 'skipped' },
+        { expectedStatus: 'failed', statuses: ['passed', 'failed'], status: 'flaky' },
+        { expectedStatus: 'failed', statuses: ['failed', 'passed'], status: 'flaky' },
+        { expectedStatus: 'failed', statuses: ['passed', 'passed'], status: 'failed' },
+        { expectedStatus: 'passed', statuses: ['passed'], status: 'passed' },
+        { expectedStatus: 'passed', statuses: ['failed', 'passed'], status: 'flaky' },
+        { expectedStatus: 'passed', statuses: ['timedOut', 'passed'], status: 'flaky' },
+        { expectedStatus: 'passed', statuses: ['failed', 'failed'], status: 'failed' },
+        { expectedStatus: 'passed', statuses: ['interrupted'], status: 'failed' },
+        { expectedStatus: 'passed', statuses: ['interrupted', 'passed'], status: 'passed' },
+        { expectedStatus: undefined, statuses: ['passed'], status: 'passed' },
+        { expectedStatus: undefined, statuses: ['failed'], status: 'failed' },
+        { expectedStatus: undefined, statuses: ['failed', 'passed'], status: 'flaky' },
+      ])('classifies $statuses with expectedStatus=$expectedStatus as $status', ({ expectedStatus, statuses, status }) => {
+        const execution = {
+          ...(expectedStatus === undefined ? {} : { expectedStatus }),
+          results: statuses.map((attemptStatus, retry) => ({
+            workerIndex: 0,
+            status: attemptStatus,
+            duration: 100,
+            retry,
+            startTime: '2026-07-01T00:00:00.000Z',
+          })),
+        };
+        const parsed = parsePlaywrightReport({
+          config: {},
+          suites: [{
+            title: 'expected status',
+            specs: [{
+              title: 'test.fail()',
+              ok: true,
+              ...(format === 'nested' ? { tests: [execution] } : execution),
+            }],
+          }],
+        });
+
+        expect(parsed.results).toHaveLength(1);
+        expect(parsed.results[0].status).toBe(status);
+        expect(parsed[status as 'passed' | 'failed' | 'skipped' | 'flaky']).toBe(1);
+      });
+    });
+
     it('should parse sample report correctly', () => {
       const parsed = parsePlaywrightReport(sampleReport);
 

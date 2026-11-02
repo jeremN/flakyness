@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { page } from '$app/stores';
-  import { errorTitle, errorIcon } from '$lib/error-page';
+  import { page } from '$app/state';
+  import { errorTitle, errorIcon } from '#lib/error-page.js';
 
   // Get error info from page store
-  const status = $derived($page.status);
-  const message = $derived($page.error?.message || 'An unexpected error occurred');
+  const status = $derived(page.status);
+  const message = $derived(page.error?.message || 'An unexpected error occurred');
 </script>
 
 <svelte:head>

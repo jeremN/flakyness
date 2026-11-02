@@ -360,15 +360,18 @@ docker compose exec api pnpm db:migrate
 ```
 
 > ⚠️ **Set `ORIGIN` to the dashboard's externally visible URL, or every admin
-> form action 403s.** `@sveltejs/adapter-node`'s CSRF check compares the
-> browser's `Origin` header against its own guess at the request's origin;
-> unset, it assumes `https` regardless of how the dashboard is actually
-> served, so a plain-`http` deployment rejects its own same-origin POSTs as
+> form action 403s.** SvelteKit's CSRF check compares the browser's `Origin`
+> header against the dashboard's own origin; unset, the dashboard assumes
+> `https` regardless of how it is actually served, so a plain-`http`
+> deployment rejects its own same-origin POSTs as
 > `"Cross-site POST form submissions are forbidden"`. `docker-compose.yml`
 > defaults it to `http://localhost:3000` so a bare `docker compose up`
 > still works — override it to your real URL (behind a reverse proxy, that's
 > the proxy's `https` URL, not this container's own port) once you expose
-> the dashboard beyond `localhost`.
+> the dashboard beyond `localhost`. `ORIGIN` is read when the container
+> starts, so the published image works for any URL. If you run the build
+> outside Docker, start it with `node runtime/server.js` (or `pnpm --filter
+> dashboard start`): plain `node build` ignores `ORIGIN`.
 
 > ⚠️ **There is no `DASHBOARD_PASSWORD` to set — the dashboard authenticates
 > real user accounts instead (plan 059), and this is not optional.** Every

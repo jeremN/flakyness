@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Project, SessionUser } from '../app.d';
 
-vi.mock('$lib/server/api', () => ({
+vi.mock('#lib/server/api.js', () => ({
   createApi: vi.fn(),
 }));
 
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import { load } from './+layout.server';
 
 const projectA: Project = { id: 'a', name: 'Project A', createdAt: '2024-01-01', teamId: null };

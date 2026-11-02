@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types';
 import { error } from '@sveltejs/kit';
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);

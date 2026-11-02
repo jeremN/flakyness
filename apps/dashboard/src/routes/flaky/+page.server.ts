@@ -1,7 +1,7 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail } from '@sveltejs/kit';
-import { createApi, APIError } from '$lib/server/api';
-import { canMuteTests } from '$lib/permissions';
+import { createApi, APIError } from '#lib/server/api.js';
+import { canMuteTests } from '#lib/permissions.js';
 
 export const load: PageServerLoad = async ({ url, parent, locals }) => {
   const { selectedProject } = await parent();

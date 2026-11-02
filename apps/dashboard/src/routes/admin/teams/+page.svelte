@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import type { SubmitFunction } from '@sveltejs/kit';
+  import type { SubmitFunction } from '$app/forms';
   import { enhance } from '$app/forms';
-  import { membersOfTeam, usersAvailableForTeam } from '$lib/team-members';
+  import { membersOfTeam, usersAvailableForTeam } from '#lib/team-members.js';
 
   // Manual form-result type (Global Constraint 3, matching the rest of the
   // admin console): every action here returns either `{ success: true }` (plus

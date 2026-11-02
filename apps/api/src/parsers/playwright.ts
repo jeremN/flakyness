@@ -206,9 +206,10 @@ function buildTestName(titlePath: string[], specTitle: string): string {
 
 /**
  * Determine the final status of a test based on all its results
- * A test is flaky if it failed on some attempts but passed on retry
+ * With expectedStatus, a test is flaky if some attempts matched it and some did not.
+ * Otherwise, a test is flaky if it failed on some attempts but passed on retry.
  */
-function determineStatus(results: TestResult[]): 'passed' | 'failed' | 'skipped' | 'flaky' {
+function determineStatus(results: TestResult[], expectedStatus?: string): 'passed' | 'failed' | 'skipped' | 'flaky' {
   if (!results || results.length === 0) {
     return 'skipped';
   }
@@ -219,6 +220,19 @@ function determineStatus(results: TestResult[]): 'passed' | 'failed' | 'skipped'
 
   if (allSkipped) {
     return 'skipped';
+  }
+
+  // Real reporter output sets expectedStatus on every test ('passed' for a
+  // normal test, 'failed' for test.fail()). Mirror Playwright's
+  // TestCase.outcome(): classify each attempt as expected or unexpected.
+  if (expectedStatus !== undefined) {
+    if (results[results.length - 1].status === 'skipped') return 'skipped';
+    const attempts = results.filter(r => r.status !== 'skipped' && r.status !== 'interrupted');
+    if (attempts.length === 0) return 'failed';
+    const unexpected = attempts.filter(r => r.status !== expectedStatus).length;
+    if (unexpected === 0) return 'passed';
+    if (unexpected === attempts.length) return 'failed';
+    return 'flaky';
   }
 
   // Flaky: failed on some attempts but eventually passed
@@ -261,6 +275,7 @@ function calculateDuration(results: TestResult[]): number {
 
 interface Execution {
   results: TestResult[];
+  expectedStatus?: string;
   projectName?: string;
   annotations?: { type: string; description?: string }[];
 }
@@ -279,13 +294,13 @@ function getExecutions(spec: TestCase): Execution[] {
     const executions: Execution[] = [];
     for (const test of spec.tests) {
       if (test.results && test.results.length > 0) {
-        executions.push({ results: test.results, projectName: test.projectName, annotations: test.annotations });
+        executions.push({ results: test.results, expectedStatus: test.expectedStatus, projectName: test.projectName, annotations: test.annotations });
       }
     }
     return executions;
   }
   if (spec.results && spec.results.length > 0) {
-    return [{ results: spec.results, projectName: undefined }];
+    return [{ results: spec.results, expectedStatus: spec.expectedStatus, projectName: undefined }];
   }
   return [];
 }
@@ -429,7 +444,7 @@ export function parsePlaywrightReport(rawReport: unknown): ParsedReport {
   for (const { spec, file, titlePath, execution } of entries) {
     const { results, projectName } = execution;
 
-    const status = determineStatus(results);
+    const status = determineStatus(results, execution.expectedStatus);
     const durationMs = calculateDuration(results);
     const retryCount = Math.max(0, results.length - 1);
     const errorMessage = extractErrorMessage(results);

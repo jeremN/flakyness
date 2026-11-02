@@ -1,6 +1,6 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
-  import TokenReveal from '$lib/components/TokenReveal.svelte';
+  import TokenReveal from '#lib/components/TokenReveal.svelte';
 
   // Manual form-result type (Global Constraint 3) — cleaner than narrowing the
   // generated ActionData union. The create page has no `load`, so it needs no

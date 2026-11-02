@@ -1,15 +1,15 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import Chart from '$lib/components/Chart.svelte';
-  import ErrorState from '$lib/components/ErrorState.svelte';
+  import Chart from '#lib/components/Chart.svelte';
+  import ErrorState from '#lib/components/ErrorState.svelte';
   import { invalidateAll } from '$app/navigation';
   import type { EChartsOption } from 'echarts';
   import {
     statusBadgeClass as getStatusBadgeClass,
     trendDirectionLabel,
     trendDirectionBadgeClass,
-  } from '$lib/status';
-  import { formatDateTime, formatDuration, trendTooltipLabel } from '$lib/format';
+  } from '#lib/status.js';
+  import { formatDateTime, formatDuration, trendTooltipLabel } from '#lib/format.js';
 
   interface Props {
     data: PageData;

@@ -9,6 +9,7 @@ import {
   hashSessionToken,
   sessionExpiry,
   isSessionExpired,
+  isSessionStale,
   shouldSlideSession,
 } from '../services/auth/session';
 
@@ -51,6 +52,8 @@ export function sessionAuth(): MiddlewareHandler {
         sessionId: sessions.id,
         expiresAt: sessions.expiresAt,
         lastSeenAt: sessions.lastSeenAt,
+        sessionPasswordVersion: sessions.passwordVersion,
+        userPasswordVersion: users.passwordVersion,
         id: users.id,
         email: users.email,
         displayName: users.displayName,
@@ -65,14 +68,19 @@ export function sessionAuth(): MiddlewareHandler {
     const found = row[0];
     if (!found) return await next();
 
-    if (isSessionExpired(found, now)) {
+    // A stale session was minted from a password that has since changed
+    // (backlog #29): a login that read the old hash before a change or reset
+    // can insert its row AFTER the revoke DELETE. The epoch check kills that
+    // row here, without serialising logins. Handled exactly like expiry.
+    const expired = isSessionExpired(found, now);
+    if (expired || isSessionStale(found)) {
       // Best-effort reap: whether or not the DELETE lands, the session IS
-      // expired, so the request proceeds anonymous either way. Treating a
+      // dead, so the request proceeds anonymous either way. Treating a
       // failed delete as "still valid" would be a security regression.
       try {
         await db.delete(sessions).where(eq(sessions.id, found.sessionId));
       } catch (err) {
-        logger.warn('Failed to reap expired session', {
+        logger.warn(expired ? 'Failed to reap expired session' : 'Failed to reap stale session', {
           sessionId: found.sessionId,
           error: err instanceof Error ? { name: err.name, message: err.message } : undefined,
         });
@@ -114,11 +122,22 @@ export function getSessionUser(c: Context): SessionUser | null {
   return (c.get('sessionUser') as SessionUser | undefined) ?? null;
 }
 
-/** Insert a session row and return the RAW token for the Set-Cookie header. */
-export async function issueSession(userId: string, now: Date): Promise<string> {
+/**
+ * Insert a session row and return the RAW token for the Set-Cookie header.
+ *
+ * `passwordVersion` MUST come from the same user row whose hash the caller
+ * verified (or from the UPDATE that just set it). Re-reading it here would
+ * pick up a newer version and defeat the epoch check in sessionAuth.
+ */
+export async function issueSession(
+  userId: string,
+  passwordVersion: number,
+  now: Date
+): Promise<string> {
   const token = generateSessionToken();
   await db.insert(sessions).values({
     userId,
+    passwordVersion,
     tokenHash: hashSessionToken(token),
     createdAt: now,
     lastSeenAt: now,

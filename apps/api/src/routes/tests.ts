@@ -5,12 +5,11 @@ import { db, testResults, testRuns, flakyTests, quarantineEvents } from '../db';
 import { apiRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
 import { readAuth } from '../middleware/auth';
-import { resolveAccess, getAccess, loadScopedProject, assertProjectReadable } from '../middleware/access';
+import { resolveAccess, getAccess, loadScopedProject, assertProjectReadable, uuidSchema } from '../middleware/access';
 import { canReadProject, canWriteProject } from '../services/auth/access';
 
 const testsRouter = new Hono();
 
-const uuidSchema = z.string().uuid();
 
 // Apply rate limiting
 testsRouter.use('*', apiRateLimit);

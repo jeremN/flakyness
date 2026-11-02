@@ -6,14 +6,13 @@ import { getProjectStats, analyzeFlakiness, resolveProjectConfig } from '../serv
 import { apiRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
 import { readAuth } from '../middleware/auth';
-import { resolveAccess, getAccess } from '../middleware/access';
+import { resolveAccess, getAccess, uuidSchema } from '../middleware/access';
 import { scopesProjectList, canReadProject } from '../services/auth/access';
 import { compareAuditResults, summarizeScores } from '../services/audits';
 import { findPreviousAuditRun, loadComparableResults } from '../services/audit-store';
 
 const projectsRouter = new Hono();
 
-const uuidSchema = z.string().uuid();
 const flakyStatusSchema = z.enum(['active', 'resolved', 'ignored', 'all']).default('active');
 
 // Safety cap for the quarantine endpoint — a CI consumer needs the complete

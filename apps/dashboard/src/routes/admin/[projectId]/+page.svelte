@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { enhance } from '$app/forms';
-  import TokenReveal from '$lib/components/TokenReveal.svelte';
-  import { formatDate } from '$lib/format';
+  import TokenReveal from '#lib/components/TokenReveal.svelte';
+  import { formatDate } from '#lib/format.js';
 
   // `data` uses the generated PageData; `form` is hand-typed (Global Constraint
   // 3) — the union of all four actions' returns is not worth narrowing.

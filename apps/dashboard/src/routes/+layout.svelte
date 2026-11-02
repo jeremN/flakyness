@@ -1,9 +1,9 @@
 <script lang="ts">
   import '../app.css';
-  import { page } from '$app/stores';
-  import { appendProjectParam, withQueryParam } from '$lib/href';
-  import { partitionProjects } from '$lib/project-groups';
-  import TeamSwitcher from '$lib/components/TeamSwitcher.svelte';
+  import { page } from '$app/state';
+  import { appendProjectParam, withQueryParam } from '#lib/href.js';
+  import { partitionProjects } from '#lib/project-groups.js';
+  import TeamSwitcher from '#lib/components/TeamSwitcher.svelte';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -26,7 +26,7 @@
   }
 
   function isActive(href: string): boolean {
-    return $page.url.pathname === href;
+    return page.url.pathname === href;
   }
 
   // Discharges the plan 059 Task 6 Global Constraint: a `teamId === null`
@@ -37,7 +37,7 @@
   const partitioned = $derived(partitionProjects(data.projects));
 
   function projectHref(projectId: string): string {
-    return withQueryParam($page.url, 'project', projectId);
+    return withQueryParam(page.url, 'project', projectId);
   }
 
   function isSelectedProject(projectId: string): boolean {
@@ -140,7 +140,7 @@
                 ? 'bg-purple-50 text-purple-700'
                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}"
           >
-            <span class="w-6 h-6 flex items-center justify-center rounded-lg text-sm
+            <span aria-hidden="true" class="w-6 h-6 flex items-center justify-center rounded-lg text-sm
               {isActive(item.href)
                 ? (item.color === 'purple' ? 'bg-purple-100' : item.color === 'orange' ? 'bg-orange-100' : 'bg-blue-100')
                 : 'bg-gray-100'}">

@@ -1,9 +1,9 @@
-import { env } from '$env/dynamic/public';
-import { env as privateEnv } from '$env/dynamic/private';
+import { PUBLIC_API_URL } from '$app/env/public';
+import { COOKIE_SECURE } from '$app/env/private';
 import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '../session';
 import type { SessionUser, TeamSummary } from '../../app.d';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 /**
  * The three possible outcomes of validating a session token against the API.
@@ -69,7 +69,7 @@ export async function fetchMe(sessionToken: string, clientIp: string | null): Pr
  * matching comment at logout/+page.server.ts:28). The two deletes take only
  * `path` and so use `SESSION_COOKIE_PATH` directly rather than this function,
  * but all four must agree on that path. Lives here rather than in the pure
- * `lib/session.ts` because `secure` reads `$env/dynamic/private`, which the
+ * `lib/session.ts` because `secure` reads `$app/env/private`, which the
  * browser-safe module must never import.
  */
 export function sessionCookieOptions() {
@@ -96,10 +96,10 @@ export function sessionCookieOptions() {
     // sets NODE_ENV=production with a plain-http ORIGIN, so adopting the
     // API's default here would mark this cookie Secure over plain http —
     // the browser silently drops it, and login breaks on that documented
-    // deployment. Read via $env/dynamic/private (not process.env, which
+    // deployment. Read via $app/env/private (not process.env, which
     // appears nowhere else in src/) so this is stubbable the same way
     // every other server module's env read is.
-    secure: privateEnv.COOKIE_SECURE === 'true',
+    secure: COOKIE_SECURE === 'true',
     maxAge: 7 * 24 * 60 * 60,
   };
 }

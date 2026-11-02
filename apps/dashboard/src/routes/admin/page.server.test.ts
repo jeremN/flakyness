@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/server/adminApi', () => ({
+vi.mock('#lib/server/adminApi.js', () => ({
   createAdminApi: vi.fn(),
   AdminApiError: class AdminApiError extends Error {
     statusCode: number;
@@ -16,7 +16,7 @@ vi.mock('$lib/server/adminApi', () => ({
   },
 }));
 
-import { createAdminApi, AdminApiError, NotAuthenticatedError } from '$lib/server/adminApi';
+import { createAdminApi, AdminApiError, NotAuthenticatedError } from '#lib/server/adminApi.js';
 import { load } from './+page.server';
 
 const mockedList = vi.fn();

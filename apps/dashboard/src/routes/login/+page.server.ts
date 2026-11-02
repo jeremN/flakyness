@@ -1,9 +1,9 @@
 import { fail, redirect, type Actions } from '@sveltejs/kit';
-import { env } from '$env/dynamic/public';
-import { SESSION_COOKIE, parseSessionCookie } from '$lib/session';
-import { sessionCookieOptions } from '$lib/server/session';
+import { PUBLIC_API_URL } from '$app/env/public';
+import { SESSION_COOKIE, parseSessionCookie } from '#lib/session.js';
+import { sessionCookieOptions } from '#lib/server/session.js';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 export const actions: Actions = {
   default: async ({ request, cookies, locals }) => {

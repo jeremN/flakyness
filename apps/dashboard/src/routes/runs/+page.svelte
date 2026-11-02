@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PageData } from './$types';
   import { goto } from '$app/navigation';
-  import { formatDateTime, getPassRate } from '$lib/format';
+  import { formatDateTime, getPassRate } from '#lib/format.js';
 
   interface Props {
     data: PageData;

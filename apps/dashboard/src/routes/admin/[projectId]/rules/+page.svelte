@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import type { SubmitFunction } from '@sveltejs/kit';
+  import type { SubmitFunction } from '$app/forms';
   import { enhance } from '$app/forms';
-  import { describeRule } from '$lib/rule-summary';
+  import { describeRule } from '#lib/rule-summary.js';
 
   type Rule = PageData['rules'][number];
 

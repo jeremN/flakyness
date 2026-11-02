@@ -1,6 +1,7 @@
-import { redirect, type Handle } from '@sveltejs/kit';
-import { SESSION_COOKIE, SESSION_COOKIE_PATH, redirectTargetFor } from '$lib/session';
-import { fetchMe } from '$lib/server/session';
+import { redirect } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, redirectTargetFor } from '#lib/session.js';
+import { fetchMe } from '#lib/server/session.js';
 
 /**
  * The single authentication gate for the dashboard (plan 059).

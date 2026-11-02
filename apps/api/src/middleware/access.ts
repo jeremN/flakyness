@@ -32,7 +32,13 @@ export interface ResolveAccessMiddleware extends MiddlewareHandler {
 // into a 500. Validating the shape here, before the query, is what makes the
 // "malformed id falls through to the handler" comment on resolveAccess below
 // actually true instead of only true for well-formed-but-unknown ids.
-const uuidSchema = z.string().uuid();
+//
+// The ONLY uuidSchema in the API (plans/README.md #19). Every route parses its
+// ids with this object, so resolveAccess and the handler always reject the
+// same ids. A route with its own, looser copy would make resolveAccess skip
+// the scope check for ids that handler still serves. Guarded by
+// uuid-schema-coverage.test.ts.
+export const uuidSchema = z.string().uuid();
 
 /**
  * Classify the caller. Order matters and mirrors readAuth's reasoning: the

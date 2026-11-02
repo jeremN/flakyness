@@ -847,7 +847,7 @@ rationale. Items 5–7 remain unplanned.
     candidate already accepted in #16 above. Acceptable at operator scale (tens of rules/
     candidates per project today); the design doc explicitly notes a batched-query optimization
     as a deliberately deferred follow-up rather than built speculatively ahead of real volume.
-19. **[OPEN — deferred from plan 058's final whole-branch review; the one with teeth] `uuidSchema`
+19. **[RESOLVED 2026-10-30 — PR #198: `middleware/access.ts` exports the only `uuidSchema`, guarded by `uuid-schema-coverage.test.ts`. Deferred from plan 058's final whole-branch review; the one with teeth] `uuidSchema`
     is duplicated, and `resolveAccess` skips the scope check on a parse failure.**
     `middleware/access.ts` and `routes/projects.ts` each declare their own `uuidSchema`, and
     `resolveAccess` **skips the scope check entirely** for any id that fails *its* parse — so
@@ -885,7 +885,7 @@ rationale. Items 5–7 remain unplanned.
     `use('*', adminRateLimit)` also matches `/api/v1/admin/users/*` and `/teams/*`, which mount
     their own copy of the same module-singleton limiter; on a path matching **no** handler both
     run and one request burns two of five slots. Pre-existing since plan 057.
-23. **[OPEN — found 2026-08-14 while investigating CI] `dependabot.yml` listing `/apps/api`
+23. **[RESOLVED 2026-10-28 — PR #193 merged: one root `"/"` npm entry, guard rewritten to check pnpm-workspace globs and forbid subdirectory entries. Dry-run evidence: root-entry PRs #143, #180-#183, #187 updated `apps/*` package.json + lockfile correctly; subdirectory entries only added lockfile-less duplicates #174-#178, #184. Found 2026-08-14 while investigating CI] `dependabot.yml` listing `/apps/api`
     breaks security updates, but `dependabot-coverage.test.ts` requires it.** Dependabot's
     security-update path fans out per directory; the `/` entry succeeds, `/apps/api` fails with
     pnpm `misconfigured_tooling` — *"Updating workspaces from inside a workspace subdirectory is
@@ -975,7 +975,7 @@ rationale. Items 5–7 remain unplanned.
     merge deliberately rather than rushed; the guard's own comment now documents this limit
     instead of claiming a completeness it does not have.
 
-29. **🔴 SECURITY — [OPEN — found 2026-08-15 by the Codex adversarial pass during plan 059's
+29. **🔴 SECURITY — [DONE 2026-10-19 — PR #171; found 2026-08-15 by the Codex adversarial pass during plan 059's
     final review] Session revocation is not atomic with login (TOCTOU). Worth a plan of its
     own, not a one-line cleanup.** Pre-existing: this is inherited from the 058/058b auth work,
     plan 059 did not introduce it and was not blocked by it (verified, not assumed —
@@ -1004,6 +1004,17 @@ rationale. Items 5–7 remain unplanned.
     with a password version and have `sessionAuth` reject stale ones — which closes the race
     without serialising logins. Re-checking `passwordHash` inside the insert transaction also
     works and is smaller.
+
+    **Fixed with the session epoch.** `users.password_version` and `sessions.password_version`
+    (migration `0013`, both default 0, so existing sessions stay valid). Login stamps the version
+    from the row whose hash it verified; change-password and admin reset increment it in the same
+    `UPDATE` as the hash; `sessionAuth` treats a mismatch like expiry (anonymous, row reaped). The
+    hash re-check was rejected: under READ COMMITTED an `INSERT ... SELECT` that starts before the
+    `UPDATE` commits and commits after the revoke `DELETE` takes its snapshot still survives.
+    Change-password also gained an optimistic guard (`WHERE password_version = <read>`) and
+    returns `409 password_conflict` when it loses a race, so it can no longer overwrite an admin
+    reset and clear its `mustChangePassword` flag. Covered by gated-interleaving tests in
+    `routes/auth.test.ts` (`session epoch ...`); four hand mutants of the fix each fail them.
 30. **[OPEN — 2026-08-15] Operator-documentation debt: the documented production deployment
     does not work end to end. One plan should cover all of it.** `docker-compose.yml:76`
     hardcodes `PUBLIC_API_URL: http://localhost:8080` on the **dashboard** service with no

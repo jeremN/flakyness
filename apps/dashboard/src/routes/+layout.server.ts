@@ -1,5 +1,5 @@
 import type { ServerLoadEvent } from '@sveltejs/kit';
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import type { Project } from '../app.d';
 
 export async function load({ url, locals }: ServerLoadEvent) {

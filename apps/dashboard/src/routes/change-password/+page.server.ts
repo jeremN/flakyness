@@ -1,11 +1,11 @@
 import type { Actions, PageServerLoad } from './$types';
 import { fail, redirect } from '@sveltejs/kit';
-import { env } from '$env/dynamic/public';
-import { SESSION_COOKIE, parseSessionCookie } from '$lib/session';
-import { sessionCookieOptions } from '$lib/server/session';
-import { validatePasswordChange } from '$lib/password-form';
+import { PUBLIC_API_URL } from '$app/env/public';
+import { SESSION_COOKIE, SESSION_COOKIE_PATH, parseSessionCookie } from '#lib/session.js';
+import { sessionCookieOptions } from '#lib/server/session.js';
+import { validatePasswordChange } from '#lib/password-form.js';
 
-const API_URL = env.PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = PUBLIC_API_URL || 'http://localhost:8080';
 
 // `forced` drives the +page.svelte heading — "you must" vs. a voluntary
 // change from an already-signed-in account. locals.user is populated by
@@ -64,6 +64,16 @@ export const actions: Actions = {
 
     if (res.status === 429) {
       return fail(429, { error: 'Too many attempts. Wait a minute and try again.' });
+    }
+
+    if (res.status === 409) {
+      // 409 password_conflict: another request (e.g. an admin reset) changed
+      // the password while this one ran. The API's session epoch has already
+      // made this session dead, so leaving the user on the form only fails
+      // their next submit. Drop the cookie and send them to sign in again.
+      // Same path as every other session-cookie site (see logout).
+      cookies.delete(SESSION_COOKIE, { path: SESSION_COOKIE_PATH });
+      throw redirect(303, '/login');
     }
 
     if (!res.ok) {

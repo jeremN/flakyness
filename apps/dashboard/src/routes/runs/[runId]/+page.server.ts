@@ -1,4 +1,4 @@
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import { isHttpError } from '@sveltejs/kit';
 import type { Project, RunDetail } from '../../../app.d';
 

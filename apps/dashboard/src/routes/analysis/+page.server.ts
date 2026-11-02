@@ -1,4 +1,4 @@
-import { createApi } from '$lib/server/api';
+import { createApi } from '#lib/server/api.js';
 import type { Project } from '../../app.d';
 
 // Mirror the API's own clamps (apps/api/src/routes/projects.ts `GET /:id/analysis`)

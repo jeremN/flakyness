@@ -221,6 +221,11 @@ export const users = pgTable('users', {
   // Set when an admin provisions the account with a show-once temp password
   // (plan 057); forces a reset on first login.
   mustChangePassword: boolean('must_change_password').notNull().default(false),
+  // Session epoch (backlog #29). Bumped on every password change or reset.
+  // A session stamped with an older value is dead, even if its row survived
+  // the revoke DELETE: a login that read the old hash before the UPDATE can
+  // insert its session after the DELETE. See middleware/session.ts.
+  passwordVersion: integer('password_version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
 });
@@ -232,6 +237,8 @@ export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  // Copy of users.password_version from the row the login verified against.
+  passwordVersion: integer('password_version').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   // Sliding TTL anchor: refreshed on use, so an active session does not expire

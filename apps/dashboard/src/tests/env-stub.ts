@@ -1,2 +1,2 @@
-// Stub for SvelteKit's $env/dynamic/public in plain vitest runs.
-export const env: Record<string, string | undefined> = {};
+// Stub for SvelteKit's $app/env/public in plain vitest runs.
+export const PUBLIC_API_URL = '';

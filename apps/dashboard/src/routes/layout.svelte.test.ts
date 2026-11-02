@@ -1,12 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readable } from 'svelte/store';
 import { createRawSnippet } from 'svelte';
 // The query string here is load-bearing: it lets tests assert that project-link
 // hrefs (built via `projectHref` -> `withQueryParam`) both PRESERVE an existing
 // param (`team=t1`) and SET `project=` rather than appending a duplicate. A
 // bare `/flaky` mock would leave that round-trip unexercised (finding #1, task
 // 6 review round 1).
-vi.mock('$app/stores', () => ({ page: readable({ url: new URL('http://localhost/flaky?team=t1') }) }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/flaky?team=t1') } }));
 import { render } from 'vitest-browser-svelte';
 import { page as vitestPage } from 'vitest/browser';
 import Layout from './+layout.svelte';
@@ -58,7 +57,7 @@ describe('+layout', () => {
   // its arguments, also made it pass. Rendering a SECOND project with a
   // different id closes that gap: a hardcoded literal cannot produce two
   // different values for two different links, so this table proves the
-  // function actually uses its `projectId` argument (and, via `$page.url`,
+  // function actually uses its `projectId` argument (and, via `page.url`,
   // the current URL) rather than returning a fixed string. `withQueryParam`'s
   // own replace-vs-append property is already unit-tested in isolation
   // (`href.test.ts`); this test's job is only to prove `projectHref` is wired
@@ -99,7 +98,7 @@ describe('+layout', () => {
 
   it('applies the active styling to the current-page nav link, not the others', async () => {
     render(Layout, { props: { children, data: data() } });
-    // $app/stores is mocked to url=/flaky, so `isActive('/flaky')` is true and the
+    // $app/state is mocked to url=/flaky, so `isActive('/flaky')` is true and the
     // 'Flaky Tests' nav link takes the active branch (`bg-purple-50 text-purple-700`).
     await expect.element(vitestPage.getByRole('link', { name: /Flaky Tests/ })).toHaveClass('bg-purple-50');
     // a non-active item must NOT get the active styling (guards the ternary discriminating).

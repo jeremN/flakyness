@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  import Chart from '$lib/components/Chart.svelte';
-  import ErrorState from '$lib/components/ErrorState.svelte';
+  import Chart from '#lib/components/Chart.svelte';
+  import ErrorState from '#lib/components/ErrorState.svelte';
   import { invalidateAll, goto } from '$app/navigation';
-  import { formatDateTime, trendTooltipLabel } from '$lib/format';
+  import { formatDateTime, trendTooltipLabel } from '#lib/format.js';
   import type { EChartsOption } from 'echarts';
 
   interface Props {

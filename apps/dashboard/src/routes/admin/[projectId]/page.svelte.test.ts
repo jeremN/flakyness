@@ -27,11 +27,10 @@ const project = (over: Partial<AdminProject> = {}): AdminProject => ({
 });
 
 // Layout half of PageData (Global Constraint 1). `data` for this route =
-// { projects, selectedProject, apiError, user, activeTeam } ∪ { project,
-// teams }. Note the name collision (same pattern as admin/teams' own test):
-// the layout's `teams` (TeamSummary[], the caller's own memberships) is
-// shadowed by this page's own `teams` (AdminTeam[], every team — Task 7b) in
-// the merged PageData, so `teams` below is always this page's own shape.
+// { projects, selectedProject, apiError, user, teams, activeTeam } ∪
+// { project, assignableTeams }. The page key is `assignableTeams`, not
+// `teams` (backlog #35): the layout's `teams` (TeamSummary[], the caller's
+// own memberships) stays visible instead of being shadowed.
 const layout = {
   projects: [],
   selectedProject: { id: 'p1', name: 'Proj One', createdAt: '2026-01-01T00:00:00Z', teamId: null },
@@ -62,7 +61,7 @@ const adminTeams = [
 
 describe('admin/[projectId]/+page settings', () => {
   it('pre-fills numeric fields and leaves nulls blank', async () => {
-    render(Page, { props: { data: { ...layout, project: project() }, form: null } });
+    render(Page, { props: { data: { ...layout, assignableTeams: [], project: project() }, form: null } });
     await expect.element(page.getByLabelText('Window days (1–90)')).toHaveValue('14');
     await expect.element(page.getByLabelText('Quarantine TTL days (1–365)')).toHaveValue('');
   });
@@ -70,7 +69,7 @@ describe('admin/[projectId]/+page settings', () => {
   it('renders per-field validation errors from a patch fail', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project() },
+        data: { ...layout, assignableTeams: [], project: project() },
         form: { action: 'patch', errors: { windowDays: 'must be between 1 and 90' } },
       },
     });
@@ -79,7 +78,7 @@ describe('admin/[projectId]/+page settings', () => {
 
   it('confirms a successful save', async () => {
     render(Page, {
-      props: { data: { ...layout, project: project() }, form: { action: 'patch', success: true } },
+      props: { data: { ...layout, assignableTeams: [], project: project() }, form: { action: 'patch', success: true } },
     });
     await expect.element(page.getByText('Settings saved.')).toBeInTheDocument();
   });
@@ -89,7 +88,7 @@ describe('admin/[projectId]/+page lifecycle', () => {
   it('shows the token reveal after a rotate', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project() },
+        data: { ...layout, assignableTeams: [], project: project() },
         form: { action: 'rotate', token: 'rot_tok', warning: 'gone forever' },
       },
     });
@@ -99,7 +98,7 @@ describe('admin/[projectId]/+page lifecycle', () => {
   it('shows prune preview counts and a confirm button on a dry run', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project() },
+        data: { ...layout, assignableTeams: [], project: project() },
         form: {
           action: 'prune',
           prune: { dryRun: true, cutoff: '2026-01-01T00:00:00Z', runsToDelete: 5, resultsToDelete: 20 },
@@ -111,7 +110,7 @@ describe('admin/[projectId]/+page lifecycle', () => {
   });
 
   it('keeps Delete disabled until the exact name is typed', async () => {
-    render(Page, { props: { data: { ...layout, project: project() }, form: null } });
+    render(Page, { props: { data: { ...layout, assignableTeams: [], project: project() }, form: null } });
     const btn = page.getByRole('button', { name: 'Delete permanently' });
     await expect.element(btn).toBeDisabled();
     await page.getByLabelText('Type the project name to confirm').fill('wrong');
@@ -125,7 +124,7 @@ describe('admin/[projectId]/+page team assignment (Task 7b)', () => {
   it('shows a team select, pre-selected to the project team, for a global admin', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project({ teamId: 't2' }), teams: adminTeams, user: globalAdmin },
+        data: { ...layout, project: project({ teamId: 't2' }), assignableTeams: adminTeams, user: globalAdmin },
         form: null,
       },
     });
@@ -137,7 +136,7 @@ describe('admin/[projectId]/+page team assignment (Task 7b)', () => {
   it('pre-selects "Unassigned" when the project has no team', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project({ teamId: null }), teams: adminTeams, user: globalAdmin },
+        data: { ...layout, project: project({ teamId: null }), assignableTeams: adminTeams, user: globalAdmin },
         form: null,
       },
     });
@@ -147,7 +146,7 @@ describe('admin/[projectId]/+page team assignment (Task 7b)', () => {
   it('hides the team select for a team_admin', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project(), teams: [], user: teamAdmin },
+        data: { ...layout, project: project(), assignableTeams: [], user: teamAdmin },
         form: null,
       },
     });
@@ -157,7 +156,7 @@ describe('admin/[projectId]/+page team assignment (Task 7b)', () => {
   it('hides the team select for an anonymous/absent user', async () => {
     render(Page, {
       props: {
-        data: { ...layout, project: project(), teams: [], user: null },
+        data: { ...layout, project: project(), assignableTeams: [], user: null },
         form: null,
       },
     });

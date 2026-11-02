@@ -1053,12 +1053,12 @@ rationale. Items 5–7 remain unplanned.
     password and `ADMIN_TOKEN` is lost.** The instance is unrecoverable without direct DB
     access. Worth either a documented break-glass procedure or an explicit statement that none
     exists — silence currently reads as the former.
-34. **[OPEN — 2026-08-15] `fetchMe` casts the `/auth/me` body with `as` and no shape check.**
+34. **[RESOLVED 2026-11-02 — `fetchMe` zod-parses the body (dashboard now depends on `zod`); a malformed 200 returns `{ ok: false, rejected: false }`, so the page fails closed and the cookie stays.] — 2026-08-15: `fetchMe` casts the `/auth/me` body with `as` and no shape check.**
     A 200 answering `{"user":{},"teams":[]}` renders a page with a half-populated
     `locals.user`. Fails **safe** on privilege today (`isGlobalAdmin` / `mustChangePassword`
     both `undefined` ⇒ falsy) and the real API never answers that way, so this is hardening,
     not a live bug. Fix is to zod-parse the body.
-35. **[OPEN — 2026-08-15] `admin/[projectId]`'s `teams: []` shadows the layout's `teams`** for
+35. **[RESOLVED 2026-11-02 — the page key is now `assignableTeams`; `svelte-check` flagged every render fixture, and the render test reds if the page reads `data.teams` again. `admin/teams` also returns its own `teams` key and shadows the layout the same way; left as is, outside #35.] — 2026-08-15: `admin/[projectId]`'s `teams: []` shadows the layout's `teams`** for
     a team_admin. Harmless now — layout components receive `LayoutData`, not the merged
     `PageData` — but a future component *inside* that page reading `data.teams` would silently
     get an empty list. A trap, not a defect.

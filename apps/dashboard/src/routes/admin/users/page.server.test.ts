@@ -120,7 +120,7 @@ describe('users load', () => {
 describe('create action', () => {
   it('creates a user and returns the show-once temporary password', async () => {
     mockedCreateUser.mockResolvedValue({
-      user: user(),
+      user: user({ id: 'u-new' }),
       temporaryPassword: 'tmp_pw_1',
       warning: 'Save this password securely.',
     });
@@ -132,7 +132,13 @@ describe('create action', () => {
       displayName: 'New',
       isGlobalAdmin: true,
     });
-    expect(result).toEqual({ success: true, temporaryPassword: 'tmp_pw_1', warning: 'Save this password securely.' });
+    // `forUserId` comes from the API's created user, not from the form.
+    expect(result).toEqual({
+      success: true,
+      temporaryPassword: 'tmp_pw_1',
+      warning: 'Save this password securely.',
+      forUserId: 'u-new',
+    });
   });
 
   it('omits displayName and defaults isGlobalAdmin to false when neither is submitted', async () => {
@@ -197,6 +203,7 @@ describe('resetPassword action', () => {
       success: true,
       temporaryPassword: 'tmp_pw_2',
       warning: "All of this user's sessions have been revoked.",
+      forUserId: 'u1',
     });
   });
 

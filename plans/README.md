@@ -1070,7 +1070,7 @@ rationale. Items 5–7 remain unplanned.
     as the `read-token` principal, which `scopesProjectList` (`services/auth/access.ts`) leaves
     **unscoped**; measured returning every project across both teams. Recorded because
     "escalation when it breaks" deserves a note even when nothing reaches it.
-37. **[OPEN — 2026-08-15] Console-consistency gaps between the two admin screens** — none
+37. **[PARTLY RESOLVED 2026-11-02 — teams `delete`/`rename` now check the id before any API call; the temporary-password panel names its user (`forUserId` from the action, email looked up in the reloaded list, never from a form field); `resetPassword` takes a confirmation step that states the consequence. Teams rename was already tested at server level. STILL OPEN: the two derived safety nets for the teams server test, and a console guard on self-demotion / self-deletion (the API's last-admin 409 still bounds both).] — 2026-08-15: Console-consistency gaps between the two admin screens** — none
     Critical, all unreasoned rather than deliberate. Teams' `delete`/`rename` skip the
     id-presence check that users and the `rules` precedent both perform, spending an admin
     round-trip before 404ing against a budget this codebase deliberately economises. The

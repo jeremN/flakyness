@@ -16,6 +16,8 @@
     error?: string;
     temporaryPassword?: string;
     warning?: string;
+    /** Whose temporary password this is (create and resetPassword). */
+    forUserId?: string;
   }
   interface Props {
     data: PageData;
@@ -24,6 +26,14 @@
   let { data, form }: Props = $props();
 
   const users = $derived(data.users);
+
+  // Name the account the temporary password belongs to (backlog #37). After
+  // several resets in a row, an unlabelled panel cannot be told apart. The
+  // email comes from the reloaded user list, never from a form field.
+  const revealFor = $derived(users.find((u) => u.id === form?.forUserId)?.email ?? null);
+
+  // null = no user's reset confirmation is showing. Only one at a time.
+  let confirmingResetId = $state<string | null>(null);
 
   // null = no user's delete confirmation is showing. Only one at a time.
   let confirmingDeleteId = $state<string | null>(null);
@@ -50,6 +60,13 @@
       confirmEmail = '';
     }
   };
+
+  // Submitting closes the confirmation whatever the outcome: an error lands
+  // in the alert region, a success in the reveal panel.
+  const enhanceReset: SubmitFunction = () => async ({ update }) => {
+    await update();
+    confirmingResetId = null;
+  };
 </script>
 
 <svelte:head>
@@ -70,7 +87,11 @@
 
 {#if form?.success && form.temporaryPassword}
   <div class="mb-6 max-w-2xl">
-    <TokenReveal token={form.temporaryPassword} warning={form.warning ?? ''} label="Temporary password" />
+    <TokenReveal
+      token={form.temporaryPassword}
+      warning={form.warning ?? ''}
+      label={revealFor ? `Temporary password for ${revealFor}` : 'Temporary password'}
+    />
   </div>
 {/if}
 
@@ -144,10 +165,26 @@
                     {u.isGlobalAdmin ? 'Remove global admin' : 'Make global admin'}
                   </button>
                 </form>
-                <form method="POST" action="?/resetPassword" use:enhance>
-                  <input type="hidden" name="userId" value={u.id} />
-                  <button type="submit" class="pill-btn pill-btn-ghost text-xs">Reset password</button>
-                </form>
+                {#if confirmingResetId === u.id}
+                  <div class="flex flex-col items-end gap-1">
+                    <span class="text-xs text-red-700">
+                      Signs <span class="font-semibold">{u.email}</span> out everywhere and sets a new temporary password.
+                    </span>
+                    <form method="POST" action="?/resetPassword" use:enhance={enhanceReset} class="flex items-center gap-2">
+                      <input type="hidden" name="userId" value={u.id} />
+                      <button type="submit" class="pill-btn bg-red-600 text-white hover:bg-red-700 text-xs">
+                        Confirm reset
+                      </button>
+                      <button type="button" class="pill-btn pill-btn-ghost text-xs" onclick={() => (confirmingResetId = null)}>
+                        Cancel
+                      </button>
+                    </form>
+                  </div>
+                {:else}
+                  <button type="button" class="pill-btn pill-btn-ghost text-xs" onclick={() => (confirmingResetId = u.id)}>
+                    Reset password
+                  </button>
+                {/if}
                 {#if confirmingDeleteId === u.id}
                   <div class="flex flex-col items-end gap-1">
                     <span class="text-xs text-red-700">

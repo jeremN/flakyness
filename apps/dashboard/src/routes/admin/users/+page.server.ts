@@ -49,7 +49,13 @@ export const actions: Actions = {
       });
       // The temporary password is shown exactly once, here — it is never
       // returned by GET /admin/users, so this response is its only sighting.
-      return { success: true, temporaryPassword: result.temporaryPassword, warning: result.warning };
+      // `forUserId` lets the page name whose password it is (backlog #37).
+      return {
+        success: true,
+        temporaryPassword: result.temporaryPassword,
+        warning: result.warning,
+        forUserId: result.user.id,
+      };
     } catch (e) {
       return toFail(e);
     }
@@ -62,7 +68,12 @@ export const actions: Actions = {
     if (!userId) return fail(400, { error: 'Missing user.' });
     try {
       const result = await createAdminApi(locals.sessionToken, locals.clientIp).resetUserPassword(userId);
-      return { success: true, temporaryPassword: result.temporaryPassword, warning: result.warning };
+      return {
+        success: true,
+        temporaryPassword: result.temporaryPassword,
+        warning: result.warning,
+        forUserId: userId,
+      };
     } catch (e) {
       return toFail(e);
     }

@@ -193,6 +193,13 @@ describe('rename action', () => {
     expect(mockedPatchTeam).not.toHaveBeenCalled();
   });
 
+  it('refuses a missing team id without calling the API', async () => {
+    const result = (await actions.rename(formEvent({ name: 'Renamed' }))) as any;
+    expect(result.status).toBe(400);
+    expect(result.data).toEqual({ error: 'Missing team.' });
+    expect(mockedPatchTeam).not.toHaveBeenCalled();
+  });
+
   it('refuses for a non-global-admin without calling the API', async () => {
     const result = (await actions.rename(formEvent({ teamId: 't1', name: 'x' }, { isGlobalAdmin: false }))) as any;
     expect(result.status).toBe(403);
@@ -278,6 +285,14 @@ describe('delete action', () => {
     const result = (await actions.delete(formEvent({ teamId: 't1', confirmName: 'Team One' }))) as any;
     expect(result.status).toBe(409);
     expect(result.data.error).toBe('conflict deleting team');
+  });
+
+  it('refuses a missing team id before the listTeams() pre-fetch', async () => {
+    const result = (await actions.delete(formEvent({ confirmName: 'Team One' }))) as any;
+    expect(result.status).toBe(400);
+    expect(result.data).toEqual({ error: 'Missing team.' });
+    expect(mockedListTeams).not.toHaveBeenCalled();
+    expect(mockedDeleteTeam).not.toHaveBeenCalled();
   });
 
   it('refuses for a non-global-admin without calling the API', async () => {

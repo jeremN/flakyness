@@ -20,9 +20,9 @@ export async function load({ url, locals }: ServerLoadEvent) {
   // execution — `!locals.user?.mustChangePassword` alone is `true` for an
   // ANONYMOUS caller, and this layout runs for /login too (Task 3's gate lets
   // /login through by design, so the gate cannot be relied on to stop this).
-  // With no session, api.ts falls back to READ_TOKEN or an anonymous request,
-  // and anonymous API reads are UNSCOPED (AGENTS.md: "Anonymous callers stay
-  // unscoped" — true whether or not READ_TOKEN is set). The nav would
+  // With no session, api.ts sends an anonymous request (no READ_TOKEN since
+  // backlog #36), and on an API without READ_TOKEN anonymous reads are
+  // UNSCOPED (AGENTS.md: "Anonymous callers stay unscoped"). The nav would
   // therefore render every project name on the instance to a visitor sitting
   // on the sign-in page. Skip the fetch unless somebody is actually signed in.
   if (locals.user && !locals.user.mustChangePassword) {

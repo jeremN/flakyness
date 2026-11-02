@@ -139,7 +139,12 @@ describe('lib/api', () => {
     }
   });
 
-  it('sends READ_TOKEN as a Bearer credential when set and there is no session (proves the fallback is actually wired up)', async () => {
+  // Backlog #36: fail CLOSED. With no session, READ_TOKEN used to go out alone,
+  // and the API treats a bare READ_TOKEN as an UNSCOPED reader: a route that
+  // called createApi(null, ...) read every project of every team. Now a
+  // session-less call sends no bearer, so a READ_TOKEN-hardened API answers 401
+  // (denial) and an open API answers what it answers any anonymous caller.
+  it('never sends READ_TOKEN without a session, so a missing session cannot escalate', async () => {
     setPrivateEnv({ READ_TOKEN: 'super-secret-read-token' });
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ projects: [] }), { status: 200 })
@@ -149,7 +154,7 @@ describe('lib/api', () => {
     await createApi(null, null).getProjects();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/api/v1/projects', {
-      headers: { Authorization: 'Bearer super-secret-read-token' },
+      headers: {},
     });
   });
 

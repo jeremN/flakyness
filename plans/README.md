@@ -1056,7 +1056,7 @@ rationale. Items 5–7 remain unplanned.
     a team_admin. Harmless now — layout components receive `LayoutData`, not the merged
     `PageData` — but a future component *inside* that page reading `data.teams` would silently
     get an empty list. A trap, not a defect.
-36. **[OPEN — 2026-08-15] `createApi`'s `READ_TOKEN` fallback fails OPEN, and its failure mode
+36. **[RESOLVED 2026-11-02 — `createApi` sends the READ_TOKEN bearer only together with a session; a session-less call is anonymous and a hardened API denies it. Found 2026-08-15] `createApi`'s `READ_TOKEN` fallback fails OPEN, and its failure mode
     is escalation rather than denial.** Unreachable from any route today (past the session
     gate, `locals.sessionToken` and `locals.user` are set together and cannot diverge, and
     `+layout.server.ts` guards the one anonymous route), and it is deliberately retained. But a

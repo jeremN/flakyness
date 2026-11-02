@@ -2120,6 +2120,7 @@ verifying the old password is dead too (see
 |--------|-----------|
 | `400` | Malformed `userId`. |
 | `404` | No user with that id, or the user was deleted during the reset. |
+| `409` | The caller is signed in as the target user. The temporary password exists only in the response, and the reset revokes the caller's own session: a lost response would lock the account out. Use [Change Password](#change-password) for your own account. `ADMIN_TOKEN` callers have no session and are not refused: that is the recovery path when the last global admin is locked out. |
 
 #### Delete User
 

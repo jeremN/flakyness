@@ -232,6 +232,64 @@ describeAdmin('POST /api/v1/admin/users/:userId/reset-password', () => {
     expect(fresh.status).toBe(200);
   });
 
+  // Backlog #24: the temp password lives only in the response. A self-reset
+  // would also revoke the caller's own session, so a lost response locks the
+  // account out. The same session must still reset OTHER users: the guard keys
+  // on identity, not on "a session is present".
+  it('refuses a signed-in admin resetting their own password, and still resets others', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const { body: admin } = await createUserViaApi({ isGlobalAdmin: true });
+      const { body: other } = await createUserViaApi();
+      try {
+        await clearMustChangePassword(admin.user.id);
+        const login = await app.request('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: admin.user.email, password: admin.temporaryPassword }),
+        });
+        const cookie = (login.headers.get('set-cookie') ?? '').match(new RegExp(`${SESSION_COOKIE}=([^;]*)`))?.[1];
+        expect(cookie, 'login must issue a session cookie').toBeDefined();
+        const asSelf = { Cookie: `${SESSION_COOKIE}=${cookie}` };
+
+        const [before] = await db.select().from(users).where(eq(users.id, admin.user.id));
+        const self = await app.request(`/api/v1/admin/users/${admin.user.id}/reset-password`, {
+          method: 'POST',
+          headers: asSelf,
+        });
+        expect(self.status).toBe(409);
+        expect(await self.json()).toEqual({ error: 'Use change-password to change your own password' });
+
+        const [after] = await db.select().from(users).where(eq(users.id, admin.user.id));
+        expect(after.passwordHash).toBe(before.passwordHash);
+        expect(after.passwordVersion).toBe(before.passwordVersion);
+        expect(await db.select().from(sessions).where(eq(sessions.userId, admin.user.id))).not.toHaveLength(0);
+
+        const forOther = await app.request(`/api/v1/admin/users/${other.user.id}/reset-password`, {
+          method: 'POST',
+          headers: asSelf,
+        });
+        expect(forOther.status).toBe(200);
+      } finally {
+        await db.delete(users).where(inArray(users.id, [admin.user.id, other.user.id]));
+      }
+    });
+  });
+
+  it('lets ADMIN_TOKEN reset a global admin: the documented recovery path', async () => {
+    await withAdvisoryLock(GLOBAL_ADMIN_LOCK_KEY, async () => {
+      const { body: admin } = await createUserViaApi({ isGlobalAdmin: true });
+      try {
+        const res = await app.request(`/api/v1/admin/users/${admin.user.id}/reset-password`, {
+          method: 'POST',
+          headers: authHeaders(),
+        });
+        expect(res.status).toBe(200);
+      } finally {
+        await db.delete(users).where(eq(users.id, admin.user.id));
+      }
+    });
+  });
+
   it('404s for an unknown user', async () => {
     const res = await app.request(`/api/v1/admin/users/${crypto.randomUUID()}/reset-password`, {
       method: 'POST',

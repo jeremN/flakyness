@@ -897,7 +897,12 @@ rationale. Items 5–7 remain unplanned.
     dissolves follow-up #6) and rewriting the guard — the alternative already recorded as
     deferred in plan 040, blocked on a Dependabot dry-run to de-risk `dependabot-core`
     #11135/#10203.
-24. **[OPEN — found 2026-08-14 by Codex reviewing the `mustChangePassword` spec]
+24. **[RESOLVED 2026-11-02 — a signed-in admin can no longer reset their own password
+    through this route (`409`, use `change-password`). `ADMIN_TOKEN` resets stay allowed:
+    they are the documented recovery path (`docs/GETTING_STARTED.md`, "Recovery: the last
+    global admin is locked out"), so the install is never left without a way back in. The
+    response is still the only copy of the temp password for OTHER users; a lost response
+    there costs one more reset by the same admin.] — found 2026-08-14 by Codex reviewing the `mustChangePassword` spec]
     `POST /admin/users/:userId/reset-password` delivers the temp password non-atomically.**
     It writes the new hash and revokes every session (`routes/admin-users.ts:306-311`), then
     returns the plaintext temp password **only** in the HTTP response body (`:314-317`). If that

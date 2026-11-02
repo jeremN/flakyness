@@ -259,6 +259,14 @@ describeWithDb('Audits API (plan 060)', () => {
       expect(runs.map((r: { id: string }) => r.id)).toEqual([runIds[1], runIds[0]]);
     });
 
+    // An invalid branch must not silently widen the answer to every branch.
+    it('400s on an empty or over-long branch instead of ignoring it', async () => {
+      expect((await read(`/api/v1/projects/${listProject.id}/audits?branch=`)).status).toBe(400);
+      expect(
+        (await read(`/api/v1/projects/${listProject.id}/audits?branch=${'b'.repeat(256)}`)).status
+      ).toBe(400);
+    });
+
     it('clamps limit and falls back to the default on garbage', async () => {
       const one = await (await read(`/api/v1/projects/${listProject.id}/audits?limit=0`)).json();
       expect(one.runs).toHaveLength(1);

@@ -593,8 +593,17 @@ projectsRouter.get(
     const limit = Number.isNaN(requested)
       ? AUDIT_RUNS_DEFAULT_LIMIT
       : Math.min(Math.max(requested, 1), AUDIT_RUNS_MAX_LIMIT);
-    const branchParsed = z.string().min(1).max(255).safeParse(c.req.query('branch'));
-    const branch = branchParsed.success ? branchParsed.data : undefined;
+    // `branch` is optional, but a PRESENT invalid value is a 400: dropping it
+    // would answer with every branch when the caller asked for one.
+    const rawBranch = c.req.query('branch');
+    let branch: string | undefined;
+    if (rawBranch !== undefined) {
+      const branchParsed = z.string().min(1).max(255).safeParse(rawBranch);
+      if (!branchParsed.success) {
+        return c.json({ error: 'Invalid branch' }, 400);
+      }
+      branch = branchParsed.data;
+    }
 
     const runs = await db
       .select({

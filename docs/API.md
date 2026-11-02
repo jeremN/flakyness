@@ -1023,7 +1023,7 @@ the data behind a score-over-time chart.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `branch` | string | Only runs on this branch (default: all) |
+| `branch` | string | Only runs on this branch (default: all); 1–255 chars, an empty or longer value is a `400` |
 | `limit` | number | 1–100, default 30; unparseable falls back to 30 |
 
 ```json

@@ -25,8 +25,9 @@ export async function loadComparableResults(auditRunId: string): Promise<Compara
 
 /**
  * The most recent run on the same project + branch, strictly older than
- * `before` when given (read path), or simply the most recent one (ingest path,
- * called BEFORE the new run is inserted so it can never select itself).
+ * `before`. Both paths pass `before`: the read path with the run being shown,
+ * the ingest path with the run it has just inserted. That is what stops a run
+ * from selecting itself as its own baseline.
  *
  * Baselines are per-branch: a feature-branch audit is compared with that
  * branch's previous audit, never with production's.

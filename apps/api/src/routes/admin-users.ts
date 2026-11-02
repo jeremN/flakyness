@@ -9,7 +9,7 @@ import { adminOrGlobalAdminAuth } from '../middleware/auth';
 import { passwordChangeGate } from '../middleware/password-change';
 import { getAccess, uuidSchema } from '../middleware/access';
 import { canAdministerTeams } from '../services/auth/access';
-import { revokeAllUserSessions } from '../middleware/session';
+import { revokeAllUserSessions, getSessionUser } from '../middleware/session';
 import { hashPassword } from '../services/auth/password';
 import { generateTempPassword, canRemoveGlobalAdmin, normaliseEmail } from '../services/auth/membership';
 
@@ -299,6 +299,16 @@ adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c
 adminUsersRouter.post('/:userId/reset-password', async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('userId'));
   if (!parsed.success) return c.json({ error: 'Invalid user ID format' }, 400);
+
+  // Backlog #24: the temp password exists only in this response. A signed-in
+  // admin who resets their OWN account also loses their session, so a lost
+  // response leaves nobody holding the password; a sole global admin would
+  // need ADMIN_TOKEN to get back in. Their own account goes through
+  // POST /api/v1/auth/change-password instead. ADMIN_TOKEN callers have no
+  // session and stay unaffected: that is the documented recovery path.
+  if (getSessionUser(c)?.id === parsed.data) {
+    return c.json({ error: 'Use change-password to change your own password' }, 409);
+  }
 
   const user = await db.query.users.findFirst({ where: eq(users.id, parsed.data) });
   if (!user) return c.json({ error: 'User not found' }, 404);

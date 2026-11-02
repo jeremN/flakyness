@@ -24,11 +24,15 @@ export const load: PageServerLoad = async ({ params, locals }) => {
   // global admin; the page also gates the team-reassignment control on
   // `data.user?.isGlobalAdmin`, so a team_admin never sees a control it
   // can't use.
-  if (!locals.user?.isGlobalAdmin) return { project, teams: [] as AdminTeam[] };
+  //
+  // Named `assignableTeams`, not `teams` (backlog #35): the root layout
+  // already returns `teams` (the caller's own memberships), and a page key
+  // with the same name shadows it in the merged PageData.
+  if (!locals.user?.isGlobalAdmin) return { project, assignableTeams: [] as AdminTeam[] };
 
   try {
     const { teams } = await adminApi.listTeams();
-    return { project, teams };
+    return { project, assignableTeams: teams };
   } catch (e) {
     const status = e instanceof NotAuthenticatedError ? 403 : e instanceof AdminApiError ? e.statusCode : 502;
     throw error(status, e instanceof Error ? e.message : 'Failed to load teams');

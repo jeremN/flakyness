@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { PUBLIC_API_URL } from '$app/env/public';
 import { COOKIE_SECURE } from '$app/env/private';
 import { SESSION_COOKIE, SESSION_COOKIE_PATH } from '../session';
@@ -23,6 +24,27 @@ export type MeResult =
   | { ok: true; user: SessionUser; teams: TeamSummary[] }
   | { ok: false; rejected: true }
   | { ok: false; rejected: false };
+
+// The `/auth/me` body (backlog #34). A 200 with any other shape is treated as
+// no answer: a half-populated `locals.user` must never reach a page. Extra
+// fields (`createdAt`, `lastLoginAt`) are stripped, so `locals.user` is
+// exactly a `SessionUser`.
+const meBodySchema = z.object({
+  user: z.object({
+    id: z.string(),
+    email: z.string(),
+    displayName: z.string().nullable(),
+    isGlobalAdmin: z.boolean(),
+    mustChangePassword: z.boolean(),
+  }),
+  teams: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      role: z.enum(['team_admin', 'member']),
+    })
+  ),
+}) satisfies z.ZodType<{ user: SessionUser; teams: TeamSummary[] }>;
 
 /**
  * Validate a session token against the API and return who it belongs to.
@@ -51,8 +73,11 @@ export async function fetchMe(sessionToken: string, clientIp: string | null): Pr
     // not "invalid" — see MeResult.
     if (res.status === 401 || res.status === 403) return { ok: false, rejected: true };
     if (!res.ok) return { ok: false, rejected: false };
-    const body = (await res.json()) as { user: SessionUser; teams: TeamSummary[] };
-    return { ok: true, user: body.user, teams: body.teams };
+    // Malformed body: the API answered, but not with an identity. Same
+    // outcome as an unreachable API — fail closed, keep the cookie.
+    const parsed = meBodySchema.safeParse(await res.json());
+    if (!parsed.success) return { ok: false, rejected: false };
+    return { ok: true, user: parsed.data.user, teams: parsed.data.teams };
   } catch {
     // Network error or the timeout above — no answer, not a refusal.
     return { ok: false, rejected: false };

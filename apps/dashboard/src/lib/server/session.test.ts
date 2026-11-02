@@ -32,6 +32,29 @@ describe('fetchMe', () => {
     expect(init.headers.Cookie).toBe('fk_session=sess-abc');
   });
 
+  it('keeps only the SessionUser fields of the user object', async () => {
+    const user = { id: 'u1', email: 'a@b.c', displayName: 'A', isGlobalAdmin: true, mustChangePassword: false };
+    fetchMock.mockResolvedValue(
+      jsonResponse({ user: { ...user, createdAt: '2026-01-01', lastLoginAt: null }, teams: [] })
+    );
+
+    expect(await fetchMe('sess-abc', null)).toEqual({ ok: true, user, teams: [] });
+  });
+
+  // Backlog #34: a 200 is not proof of an identity. A half-populated user
+  // must never become `locals.user`; the cookie stays (rejected: false).
+  it.each([
+    ['an empty user object', { user: {}, teams: [] }],
+    ['a missing teams array', { user: { id: 'u1', email: 'a@b.c', displayName: null, isGlobalAdmin: false, mustChangePassword: false } }],
+    ['a string isGlobalAdmin', { user: { id: 'u1', email: 'a@b.c', displayName: null, isGlobalAdmin: 'true', mustChangePassword: false }, teams: [] }],
+    ['an unknown team role', { user: { id: 'u1', email: 'a@b.c', displayName: null, isGlobalAdmin: false, mustChangePassword: false }, teams: [{ id: 't1', name: 'A', role: 'owner' }] }],
+    ['a JSON null body', null],
+  ])('treats a 200 with %s as no answer', async (_label, body) => {
+    fetchMock.mockResolvedValue(jsonResponse(body));
+
+    expect(await fetchMe('sess-abc', null)).toEqual({ ok: false, rejected: false });
+  });
+
   it('forwards the browser IP as X-Forwarded-For so the API keys per user', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ user: {}, teams: [] }));
 

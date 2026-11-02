@@ -141,7 +141,7 @@
           class="w-full border border-subtle rounded-lg px-3 py-2 text-sm"
         >
           <option value="" selected={project.teamId === null}>Unassigned</option>
-          {#each data.teams as t (t.id)}
+          {#each data.assignableTeams as t (t.id)}
             <option value={t.id} selected={project.teamId === t.id}>{t.name}</option>
           {/each}
         </select>

@@ -73,7 +73,7 @@ function formEvent(
 
 // `user` defaults to `null` (an anonymous/non-admin `locals.user`), matching
 // what most of this file's existing tests exercise implicitly — `load` takes
-// the non-global-admin branch (`teams: []`, no listTeams() call) unless a
+// the non-global-admin branch (`assignableTeams: []`, no listTeams() call) unless a
 // test opts into `{ isGlobalAdmin: true }`.
 function loadEvent(
   projectId: string,
@@ -103,7 +103,7 @@ describe('admin/[projectId] load', () => {
   it('returns the matching project', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
     const result = await load(loadEvent('p1'));
-    expect(result).toEqual({ project, teams: [] });
+    expect(result).toEqual({ project, assignableTeams: [] });
   });
 
   it('404s when the project id is not in the list', async () => {
@@ -137,14 +137,14 @@ describe('admin/[projectId] load — team assignment (Task 7b)', () => {
   it('does not fetch teams for a non-global-admin', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
     const result = await load(loadEvent('p1', 'sess-1', null, { isGlobalAdmin: false }));
-    expect(result).toEqual({ project, teams: [] });
+    expect(result).toEqual({ project, assignableTeams: [] });
     expect(mockedListTeams).not.toHaveBeenCalled();
   });
 
   it('does not fetch teams for an anonymous caller', async () => {
     mockedList.mockResolvedValue({ projects: [project] });
     const result = await load(loadEvent('p1', 'sess-1', null, null));
-    expect(result).toEqual({ project, teams: [] });
+    expect(result).toEqual({ project, assignableTeams: [] });
     expect(mockedListTeams).not.toHaveBeenCalled();
   });
 
@@ -153,7 +153,7 @@ describe('admin/[projectId] load — team assignment (Task 7b)', () => {
     mockedListTeams.mockResolvedValue({ teams: [team] });
     const result = await load(loadEvent('p1', 'sess-1', null, { isGlobalAdmin: true }));
     expect(mockedListTeams).toHaveBeenCalled();
-    expect(result).toEqual({ project, teams: [team] });
+    expect(result).toEqual({ project, assignableTeams: [team] });
   });
 
   it('maps an AdminApiError from listTeams to that status, not an unhandled 500', async () => {

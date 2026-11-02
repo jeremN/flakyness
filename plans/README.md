@@ -1015,7 +1015,7 @@ rationale. Items 5–7 remain unplanned.
     returns `409 password_conflict` when it loses a race, so it can no longer overwrite an admin
     reset and clear its `mustChangePassword` flag. Covered by gated-interleaving tests in
     `routes/auth.test.ts` (`session epoch ...`); four hand mutants of the fix each fail them.
-30. **[OPEN — 2026-08-15] Operator-documentation debt: the documented production deployment
+30. **[RESOLVED 2026-11-02 — compose points the dashboard at `http://api:8080`, `node apps/api/dist/migrate.js` replaces `pnpm db:migrate` in the image, healthchecks use 127.0.0.1 (the `localhost` ones never passed, so the dashboard never started), README env table completed; verified with a real `docker compose up`. Found 2026-08-15] Operator-documentation debt: the documented production deployment
     does not work end to end. One plan should cover all of it.** `docker-compose.yml:76`
     hardcodes `PUBLIC_API_URL: http://localhost:8080` on the **dashboard** service with no
     `${…}` interpolation, overriding the Dockerfile's correct `http://api:8080`
@@ -1041,10 +1041,10 @@ rationale. Items 5–7 remain unplanned.
     proxy that *overwrites* `X-Forwarded-For`; on a directly-reachable dashboard it lets every
     client choose its own rate-limit bucket), which is why this is a plan and not a one-liner.
     See the `ADDRESS_HEADER` warning in `AGENTS.md`.
-32. **[OPEN — 2026-08-15] `docs/GETTING_STARTED.md` uses `$ADMIN_TOKEN` before the `export`
+32. **[RESOLVED 2026-11-02 — `export ADMIN_TOKEN` now precedes the first `curl`. Found 2026-08-15] `docs/GETTING_STARTED.md` uses `$ADMIN_TOKEN` before the `export`
     that defines it.** Following the bootstrap literally sends `Bearer ` and gets a 401 that
     reads like a curl-syntax error. Small, but it is the *first* command a new operator runs.
-33. **[OPEN — 2026-08-15] No documented recovery when the last global admin forgets their
+33. **[RESOLVED 2026-11-02 — GETTING_STARTED documents the recovery: `ADMIN_TOKEN` is an environment variable, so a new value plus an API restart restores access. Found 2026-08-15] No documented recovery when the last global admin forgets their
     password and `ADMIN_TOKEN` is lost.** The instance is unrecoverable without direct DB
     access. Worth either a documented break-glass procedure or an explicit statement that none
     exists — silence currently reads as the former.

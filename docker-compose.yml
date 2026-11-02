@@ -52,7 +52,10 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      # 127.0.0.1, never `localhost`: in node:24-alpine `localhost` resolves to
+      # ::1 first, the server listens on 0.0.0.0 (IPv4 only), the check is
+      # refused, the container stays unhealthy and the dashboard never starts.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -73,7 +76,11 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      PUBLIC_API_URL: http://localhost:8080
+      # The dashboard calls the API from its own server side only (never from
+      # the browser), so this is the API's address INSIDE the compose
+      # network. `localhost` here would be the dashboard container itself,
+      # where nothing listens on 8080: every page would redirect to /login.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://api:8080}
       PORT: 3000
       HOST: 0.0.0.0
       # Required for the admin console's write actions (create/patch/rotate/
@@ -106,7 +113,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000"]
       interval: 30s
       timeout: 3s
       retries: 3

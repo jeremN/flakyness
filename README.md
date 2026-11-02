@@ -38,14 +38,16 @@ A self-hosted flaky test tracking system for CI/CD pipelines. Collect, analyze, 
    pnpm install
    ```
 
-2. **Start PostgreSQL**
-   ```bash
-   docker compose up -d
-   ```
-
-3. **Copy environment file**
+2. **Copy environment file**, then set `DB_PASSWORD` and `ADMIN_TOKEN` in it
+   (`openssl rand -hex 32`). Compose refuses to start without them.
    ```bash
    cp .env.example .env
+   ```
+
+3. **Start PostgreSQL** (in a clone, `docker-compose.override.yml` starts
+   only Postgres)
+   ```bash
+   docker compose up -d
    ```
 
 4. **Run database migrations**
@@ -71,15 +73,19 @@ A self-hosted flaky test tracking system for CI/CD pipelines. Collect, analyze, 
 Build and run the full stack with Docker:
 
 ```bash
-# Set your database password
-export DB_PASSWORD=your-secure-password
+# .env needs DB_PASSWORD and ADMIN_TOKEN (openssl rand -hex 32 for each)
 
 # Build and start all services
 docker compose --profile production up -d
 
 # Run database migrations
-docker compose exec api node dist/db/migrate.js
+docker compose exec api node apps/api/dist/migrate.js
 ```
+
+Nobody can sign in until you create the first global admin account with
+`ADMIN_TOKEN`: see [Create Your First User Account](docs/GETTING_STARTED.md#create-your-first-user-account).
+Full production guidance (TLS, `ORIGIN`, `COOKIE_SECURE`, `READ_TOKEN`,
+reverse proxy) is in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md#production-deployment).
 
 Services:
 - **API**: http://localhost:8080
@@ -125,10 +131,13 @@ Create a `.env` file based on `.env.example`:
 | `DATABASE_URL` | PostgreSQL connection string | `postgres://postgres:postgres@localhost:5432/flackyness` |
 | `API_PORT` | API server port | `8080` |
 | `API_HOST` | API server host | `0.0.0.0` |
-| `PUBLIC_API_URL` | Dashboard → API URL | `http://localhost:8080` |
-| `DB_PASSWORD` | Database password (Docker) | `postgres` |
-| `ADMIN_TOKEN` | Admin API authentication token | (required for admin endpoints) |
-| `READ_TOKEN` | Gates the 11 read endpoints (`/projects/*`, `/tests/*`); unset = reads stay open | (unset — reads open) |
+| `PUBLIC_API_URL` | API URL the dashboard server calls (server-side only) | `http://localhost:8080` (compose: `http://api:8080`) |
+| `DB_PASSWORD` | Database password (Docker) | required by compose |
+| `ADMIN_TOKEN` | Break-glass admin credential; creates the first user account | required by compose |
+| `READ_TOKEN` | Gates the read endpoints (`/projects/*`, `/tests/*`); a signed-in session also passes. Set the same value on API and dashboard | (unset — reads open) |
+| `ORIGIN` | Dashboard's externally visible URL, for the CSRF check | compose: `http://localhost:3000` |
+| `COOKIE_SECURE` | Mark the dashboard session cookie `Secure`; set `true` behind https | `false` |
+| `TRUSTED_PROXY_IPS` | Addresses the API trusts for `X-Forwarded-For` | compose: `172.28.0.10` |
 
 > 💡 Generate a secure admin token: `openssl rand -hex 32`
 
@@ -195,7 +204,7 @@ See [docs/API.md](docs/API.md) for full API documentation.
 | `DELETE` | `/api/v1/admin/projects/:id` | Delete project |
 | `GET` | `/api/v1/admin/health` | System health metrics |
 
-All admin endpoints require: `Authorization: Bearer $ADMIN_TOKEN`
+Admin endpoints accept a signed-in user session with the right role, or `Authorization: Bearer $ADMIN_TOKEN` as a break-glass credential. See [docs/API.md](docs/API.md).
 
 ## Development
 

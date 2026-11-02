@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file=../../.env src/index.ts",
-    "build": "tsup src/index.ts --format esm",
+    "build": "tsup src/index.ts src/migrate.ts --format esm",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",

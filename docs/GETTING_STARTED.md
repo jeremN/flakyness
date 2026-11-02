@@ -89,7 +89,15 @@ You now have:
 > section for what else changes.
 
 After running the migrations, create the first global admin with your
-`ADMIN_TOKEN`. There is no seeded account and no self-signup — deliberately:
+`ADMIN_TOKEN`. Export it in your shell first: the `curl` commands below read
+`$ADMIN_TOKEN`, and an unset variable sends `Bearer ` with no token, which the
+API answers with a `401`.
+
+```bash
+export ADMIN_TOKEN="$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)"
+```
+
+ There is no seeded account and no self-signup — deliberately:
 a migration that plants a default password is a migration that ships one to
 everybody.
 
@@ -183,6 +191,27 @@ subject to this refusal. Every admin endpoint stays reachable with it even if
 every human account on the instance is mid-reset — including the reset-password
 call above. Keep it available during the upgrade.
 
+### Recovery: the last global admin is locked out
+
+There is a supported recovery. It needs shell access to the server, not
+database access.
+
+- **The admin forgot their password, `ADMIN_TOKEN` is known:** issue a new
+  temporary password with the `reset-password` call above.
+- **`ADMIN_TOKEN` is lost too:** the API does not store it. It compares the
+  bearer with the `ADMIN_TOKEN` environment variable at each request. Set a
+  new value in `.env`, restart the API, then do the reset:
+
+  ```bash
+  sed -i "s/^ADMIN_TOKEN=.*/ADMIN_TOKEN=$(openssl rand -hex 32)/" .env
+  docker compose --profile production up -d api
+  export ADMIN_TOKEN="$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)"
+  curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/api/v1/admin/users
+  ```
+
+  The `GET /api/v1/admin/users` list gives the `<userId>` for the
+  `reset-password` call. On macOS, use `sed -i ''` instead of `sed -i`.
+
 ---
 
 ## Create Your First Project
@@ -192,8 +221,8 @@ Use the Admin API to create a project and get an API token.
 ### Using curl
 
 ```bash
-# Set your admin token
-export ADMIN_TOKEN="your-admin-token"
+# Already exported in "Create Your First User Account"; if not:
+export ADMIN_TOKEN="$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)"
 
 # Create a project
 curl -X POST "http://localhost:8080/api/v1/admin/projects" \
@@ -341,23 +370,31 @@ cat > .env << EOF
 # Required: docker-compose.yml declares this with \`:?\`, so compose refuses to
 # even parse its config without it — the stack will not start.
 DB_PASSWORD=$(openssl rand -hex 32)
-DATABASE_URL=postgres://postgres:secure-password@db:5432/flackyness
 ADMIN_TOKEN=$(openssl rand -hex 32)
 READ_TOKEN=$(openssl rand -hex 32)
-PUBLIC_API_URL=https://your-domain.com
 ORIGIN=https://your-domain.com
 COOKIE_SECURE=true
 EOF
 
-# Start production stack
+# Start production stack. `--profile production` is required: the
+# docker-compose.override.yml in a clone puts api and dashboard in that
+# profile, so without it only Postgres starts.
 docker compose --profile production up -d
 
-# Run migrations
-docker compose exec api pnpm db:migrate
+# Run migrations. The image has no tsx or drizzle-kit, so `pnpm db:migrate`
+# cannot run in it; this compiled runner needs only runtime dependencies.
+docker compose exec api node apps/api/dist/migrate.js
 
 # Create your first user — see "Create Your First User Account" above.
 # Nobody can sign in to the dashboard until you do this.
 ```
+
+> 💡 **Do not set `DATABASE_URL` or `PUBLIC_API_URL` in this `.env`.**
+> `docker-compose.yml` builds `DATABASE_URL` from `DB_PASSWORD`, and points
+> the dashboard at the API through the compose network
+> (`PUBLIC_API_URL=http://api:8080`). The dashboard calls the API from its
+> server only, never from the browser, so this is not your public URL. A
+> `localhost` value here makes every page redirect to `/login`.
 
 > ⚠️ **Set `ORIGIN` to the dashboard's externally visible URL, or every admin
 > form action 403s.** SvelteKit's CSRF check compares the browser's `Origin`

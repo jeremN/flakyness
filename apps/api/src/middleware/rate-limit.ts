@@ -150,17 +150,20 @@ export const reportRateLimit = createRateLimit(
  * Mount it ahead of projectAuth on every ingest router; reportRateLimit stays
  * after projectAuth, because it keys on the authenticated project.
  *
- * Only a 401 counts. An accepted upload is refunded, so bad-token traffic
- * from an address cannot use up the budget of valid uploads. It can still
- * fill the bucket and get the address 429'd for the rest of the window,
- * which is the cost of throttling by address at all.
+ * Every request counts, except one that projectAuth authenticated (it set
+ * `project`): that one is refunded, so bad-token traffic from an address
+ * cannot use up the budget of valid uploads. Refunding on positive evidence
+ * of success, not on "was not a 401", keeps the limiter closed when the token
+ * lookup itself fails (a 500 under database trouble still counts). Failed
+ * traffic can still fill the bucket and get the address 429'd for the rest of
+ * the window, which is the cost of throttling by address at all.
  */
 export const reportPreAuthRateLimit = createRateLimit(
   REPORT_PREAUTH_RATE_LIMIT,
   getClientIp,
   'Too many failed report uploads from this address. Please wait before retrying.',
   undefined,
-  (c: Context) => c.res.status === 401
+  (c: Context) => !c.get('project')
 );
 
 /**

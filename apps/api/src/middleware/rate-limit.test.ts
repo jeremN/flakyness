@@ -459,9 +459,10 @@ describe.each([
 });
 
 // The pre-auth limiter must not let failed traffic spend the budget of
-// accepted uploads: only a 401 counts, everything else is refunded.
-describe('reportPreAuthRateLimit counts only 401 responses', () => {
-  it('never throttles accepted uploads, however many', async () => {
+// accepted uploads, and must not fail open when authentication errors out:
+// only a request that projectAuth authenticated (it set `project`) is refunded.
+describe('reportPreAuthRateLimit refunds only authenticated requests', () => {
+  async function codesFor(handler: (c: import('hono').Context) => Response, extra = 1) {
     vi.resetModules();
     const { Hono } = await import('hono');
     const { reportPreAuthRateLimit, REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } =
@@ -469,35 +470,29 @@ describe('reportPreAuthRateLimit counts only 401 responses', () => {
     __setRateLimitEnabled(true);
     try {
       const app = new Hono();
-      app.post('/x', reportPreAuthRateLimit, (c) => c.json({}, 201));
-      const codes = new Set<number>();
-      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 5; i++) {
-        codes.add((await app.request('/x', { method: 'POST' })).status);
-      }
-      expect([...codes]).toEqual([201]);
-    } finally {
-      __setRateLimitEnabled(false);
-    }
-  });
-
-  it('throttles once 401s fill the bucket', async () => {
-    vi.resetModules();
-    const { Hono } = await import('hono');
-    const { reportPreAuthRateLimit, REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } =
-      await import('./rate-limit');
-    __setRateLimitEnabled(true);
-    try {
-      const app = new Hono();
-      app.post('/x', reportPreAuthRateLimit, (c) => c.json({}, 401));
+      app.post('/x', reportPreAuthRateLimit, handler);
       const codes: number[] = [];
-      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 1; i++) {
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + extra; i++) {
         codes.push((await app.request('/x', { method: 'POST' })).status);
       }
-      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit - 1]).toBe(401);
-      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit]).toBe(429);
+      return { codes, limit: REPORT_PREAUTH_RATE_LIMIT.limit };
     } finally {
       __setRateLimitEnabled(false);
     }
+  }
+
+  it('never throttles authenticated uploads, however many', async () => {
+    const { codes } = await codesFor((c) => {
+      c.set('project' as never, { id: 'p1' } as never);
+      return c.json({}, 201);
+    }, 5);
+    expect([...new Set(codes)]).toEqual([201]);
+  });
+
+  it.each([401, 500])('throttles once %i responses fill the bucket', async (status) => {
+    const { codes, limit } = await codesFor((c) => c.json({}, status as 401 | 500));
+    expect(codes[limit - 1]).toBe(status);
+    expect(codes[limit]).toBe(429);
   });
 });
 

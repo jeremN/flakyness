@@ -2530,7 +2530,7 @@ and it differs in the safe direction.
 
 | Endpoint | Limit |
 |----------|-------|
-| `POST /api/v1/reports`, `POST /api/v1/audits` (before authentication) | 300 **failed (401)** requests/minute per IP, **shared** between the two |
+| `POST /api/v1/reports`, `POST /api/v1/audits` (before authentication) | 300 **unauthenticated** requests/minute per IP, **shared** between the two |
 | `POST /api/v1/reports`, `POST /api/v1/audits` (after authentication) | 60 requests/minute per token, **shared** between the two |
 | Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no session) | 5 requests/minute per IP |
 | Admin endpoints (valid `ADMIN_TOKEN`, **or** any signed-in session) | not limited by the admin brute-force limiter |
@@ -2552,8 +2552,9 @@ outranks it for the exemption too.
 
 The ingest routes have two limiters. The per-IP one runs before the project
 token is checked, so a flood of bad tokens is throttled before it costs a
-database lookup per request. Only `401` responses count against it: accepted
-uploads are refunded, so bad-token traffic cannot spend their budget. It is five times the per-token limit, so
+database lookup per request. Every request counts against it except one that
+authenticated: accepted uploads are refunded, so bad-token traffic cannot
+spend their budget, and a token lookup that errors out (5xx) still counts. It is five times the per-token limit, so
 several projects that upload from one CI runner address do not throttle
 each other.
 

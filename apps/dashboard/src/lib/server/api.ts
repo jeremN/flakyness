@@ -45,11 +45,17 @@ export function createApi(sessionToken: string | null, clientIp: string | null) 
     // when both are present: the session is the more specific credential, and
     // the dashboard forwards both." This function is the "forwards both" half
     // of that contract.
+    //
+    // The bearer goes out ONLY together with a session (backlog #36). The API
+    // treats a bare READ_TOKEN as an unscoped reader that sees every team's
+    // projects, so sending it alone would turn a missing session into an
+    // escalation. Without a session this request is anonymous: a
+    // READ_TOKEN-hardened API answers 401, which is a denial.
     if (sessionToken) {
       headers.Cookie = `${SESSION_COOKIE}=${sessionToken}`;
-    }
-    if (READ_TOKEN) {
-      headers.Authorization = `Bearer ${READ_TOKEN}`;
+      if (READ_TOKEN) {
+        headers.Authorization = `Bearer ${READ_TOKEN}`;
+      }
     }
     // Delta §D1.2. Set only when present: an empty X-Forwarded-For would key
     // every such request into one bucket instead of falling back to the
@@ -69,7 +75,8 @@ export function createApi(sessionToken: string | null, clientIp: string | null) 
       const response = await fetch(`${API_URL}${path}`, { headers });
 
       // A 401 here means the API has READ_TOKEN set and this dashboard either
-      // has none or has the wrong one. Without this branch the generic message
+      // has none or has the wrong one (or the call had no session: the bearer
+      // only goes out with one, backlog #36). Without this branch the generic message
       // below would blame the network, sending the operator to debug
       // connectivity for a configuration problem.
       if (response.status === 401) {

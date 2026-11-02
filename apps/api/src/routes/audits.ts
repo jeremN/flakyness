@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { projectAuth } from '../middleware/auth';
-import { reportRateLimit } from '../middleware/rate-limit';
+import { reportPreAuthRateLimit, reportRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
 import { db, auditRuns, auditResults, Project, type AuditPageError } from '../db';
 import { auditReportSchema, compareAuditResults, summarizeScores } from '../services/audits';
@@ -26,6 +26,7 @@ const auditQuerySchema = z.object({
 
 // Same gate stack, same order, as the reports router: ingest is a CI/cron
 // upload authenticated by the project token, so it shares the ingest limiter.
+auditsRouter.use('*', reportPreAuthRateLimit);
 auditsRouter.use('*', projectAuth());
 auditsRouter.use('*', reportRateLimit);
 auditsRouter.use('*', passwordChangeGate());

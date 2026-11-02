@@ -19,6 +19,14 @@ export function __setRateLimitEnabled(value: boolean): void {
 // Single source of truth for the limits. Tests assert against these so a copy
 // can't drift from what production uses.
 export const REPORT_RATE_LIMIT = { windowMs: 60 * 1000, limit: 60 };
+/**
+ * Pre-auth ingest throttle, per client IP (backlog #26). It runs BEFORE
+ * projectAuth, so it caps the token-hash lookups an anonymous flood can cost.
+ * Five times the per-project limit: several projects often upload from one CI
+ * runner IP (a self-hosted runner, a NAT), and they must not throttle each
+ * other here. The per-project limit still applies after auth.
+ */
+export const REPORT_PREAUTH_RATE_LIMIT = { windowMs: 60 * 1000, limit: 300 };
 export const API_RATE_LIMIT = { windowMs: 60 * 1000, limit: 100 };
 export const ADMIN_RATE_LIMIT = { windowMs: 60 * 1000, limit: 5 };
 
@@ -128,6 +136,17 @@ export const reportRateLimit = createRateLimit(
     return project?.id || 'anonymous';
   },
   'Too many report uploads. Please wait before retrying.'
+);
+
+/**
+ * Rate limiter for ingest BEFORE authentication. Limit: 300/min per IP.
+ * Mount it ahead of projectAuth on every ingest router; reportRateLimit stays
+ * after projectAuth, because it keys on the authenticated project.
+ */
+export const reportPreAuthRateLimit = createRateLimit(
+  REPORT_PREAUTH_RATE_LIMIT,
+  getClientIp,
+  'Too many report uploads from this address. Please wait before retrying.'
 );
 
 /**

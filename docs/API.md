@@ -2530,12 +2530,13 @@ and it differs in the safe direction.
 
 | Endpoint | Limit |
 |----------|-------|
-| `POST /api/v1/reports`, `POST /api/v1/audits` | 60 requests/minute per token, **shared** between the two |
+| `POST /api/v1/reports`, `POST /api/v1/audits` (before authentication) | 300 requests/minute per IP, **shared** between the two |
+| `POST /api/v1/reports`, `POST /api/v1/audits` (after authentication) | 60 requests/minute per token, **shared** between the two |
 | Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no session) | 5 requests/minute per IP |
 | Admin endpoints (valid `ADMIN_TOKEN`, **or** any signed-in session) | not limited by the admin brute-force limiter |
 | Admin endpoints (session pending a forced password change) | 5 requests/minute per IP — **not** exempt, even with a valid `ADMIN_TOKEN` alongside |
 | `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password` | 10 requests/minute per IP |
-| All other endpoints (including `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`) | 100 requests/minute per IP |
+| All other endpoints (including `GET /api/v1`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`) | 100 requests/minute per IP |
 
 The admin limiter throttles only unauthenticated or wrong-token requests — its
 job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN`, or
@@ -2548,6 +2549,12 @@ anyway, so exempting it would leave an unthrottled path that still costs a
 session lookup per request. That holds even when a valid `ADMIN_TOKEN`
 accompanies the cookie — the session outranks the bearer for the refusal, so it
 outranks it for the exemption too.
+
+The ingest routes have two limiters. The per-IP one runs before the project
+token is checked, so a flood of bad tokens is throttled before it costs a
+database lookup per request. It is five times the per-token limit, so
+several projects that upload from one CI runner address do not throttle
+each other.
 
 When rate limited, you'll receive:
 

@@ -928,7 +928,7 @@ rationale. Items 5–7 remain unplanned.
     plus a route test pinning the shape so the next bump fails loudly. Note this is a **breaking
     change** for any existing consumer already parsing the current shape.
 
-26. **[OPEN — found 2026-08-15 in the `mustChangePassword` final review] `reports.ts` mounts
+26. **[RESOLVED 2026-11-02 — a new per-IP `reportPreAuthRateLimit` (300/min) runs before `projectAuth` on `/reports` and `/audits`; `reportRateLimit` stays after it because it keys on the project. Part (b), the 401-vs-403 password-change shape, is unchanged. Found 2026-08-15 in the `mustChangePassword` final review] `reports.ts` mounts
     `projectAuth()` BEFORE its rate limiter, so an unauthenticated flood costs a DB lookup per
     request before anything throttles it.** `routes/reports.ts:63-65` is
     `projectAuth()` → `reportRateLimit` → `passwordChangeGate()`. Every sibling router puts its
@@ -946,7 +946,7 @@ rationale. Items 5–7 remain unplanned.
     lines, add the third "limiter before auth" regression test alongside the two that exist, and
     re-check the ingest tests that currently assume a 401 arrives before any throttling.
 
-27. **[OPEN — found 2026-08-15 in the same review] `GET /api/v1` is outside every rate limiter.**
+27. **[RESOLVED 2026-11-02 — `GET /api/v1` mounts `apiRateLimit` route-level, asserted by `EXPECTED_GATE_ORDER`. Found 2026-08-15 in the same review] `GET /api/v1` is outside every rate limiter.**
     The version stub is mounted directly on the root app (`index.ts`), below `sessionAuth()` but
     inside no router, so no `*RateLimit` covers it. It now carries `passwordChangeGate()` as
     route-level middleware, but nothing throttles it. Impact is small — it returns two static

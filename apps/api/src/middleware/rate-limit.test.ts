@@ -412,6 +412,52 @@ describe('mute route rate-limits before auth (regression guard)', () => {
   });
 });
 
+// Backlog #26: projectAuth does a token-hash DB lookup. Mounted ahead of every
+// limiter, an anonymous bad-token flood paid one lookup per request and was
+// never throttled. The pre-auth limiter must run first on BOTH ingest routers.
+describe.each([
+  ['/api/v1/reports', '../routes/reports'],
+  ['/api/v1/audits', '../routes/audits'],
+])('%s rate-limits before projectAuth (regression guard)', (mount, modulePath) => {
+  it('throttles a bad-token flood by client IP before any token lookup', async () => {
+    // reportPreAuthRateLimit is ONE module-level limiter shared by both
+    // routers (one ingest budget per IP, by design). Fresh modules give each
+    // case its own empty bucket.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { HTTPException } = await import('hono/http-exception');
+    const { default: router } = await import(modulePath);
+    const { REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      app.route(mount, router);
+
+      const codes: number[] = [];
+      // No socket under app.request: every request shares the 'unknown' IP
+      // bucket. Without a database the token lookup answers 500, and with one
+      // it answers 401. Either way, a 429 can only come from a limiter that
+      // runs BEFORE projectAuth.
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request(mount, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer WRONG', 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        codes.push(res.status);
+      }
+      expect(codes[0]).not.toBe(429);
+      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit]).toBe(429);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+});
+
 describe('auth router: authRateLimit is scoped to /login + /change-password only (Important-1 regression guard)', () => {
   // Prior revision mounted `authRateLimit` on authRouter.use('*', ...), which
   // also capped GET /me at 10/min per IP. Since plan 059's dashboard

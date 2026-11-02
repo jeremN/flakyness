@@ -60,8 +60,7 @@ const EXPECTED_GATE_MOUNTS = [
   '/api/v1/admin/*',
   '/api/v1/auth/*',
   // Route-level, not a router mount: index.ts's GET /api/v1 version endpoint.
-  // Deliberately NOT in EXPECTED_GATE_ORDER — no rate limiter covers this path
-  // (it sits outside every router), so there is no ordering to assert.
+  // Its limiter is route-level too (backlog #27), see EXPECTED_GATE_ORDER.
   '/api/v1',
 ];
 
@@ -92,6 +91,9 @@ const EXPECTED_GATE_ORDER: ReadonlyArray<readonly [string, unknown]> = [
   ['/api/v1/admin/teams/*', adminRateLimit],
   ['/api/v1/admin/*', adminRateLimit],
   ['/api/v1/auth/*', apiRateLimit],
+  // Backlog #27: the version endpoint sits outside every router, so its
+  // limiter is route-level, registered before the gate on the same GET.
+  ['/api/v1', apiRateLimit],
 ];
 
 // Terminal route registrations under /api/v1/auth — everything else registered

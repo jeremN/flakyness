@@ -303,15 +303,37 @@ describe('admin/[projectId] prune actions', () => {
 });
 
 describe('admin/[projectId] delete action', () => {
+  // The server reads the authoritative name from the API (backlog #38). The
+  // form's own `name` field is client-controlled and must play no part.
+  beforeEach(() => {
+    mockedList.mockResolvedValue({ projects: [project] });
+  });
+
   it('maps NotAuthenticatedError to a 403 fail', async () => {
-    mockedDelete.mockRejectedValue(new NotAuthenticatedError());
-    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }, 'p1', null))) as any;
+    mockedList.mockRejectedValue(new NotAuthenticatedError());
+    const result = (await actions.delete(formEvent({ confirmName: 'Proj' }, 'p1', null))) as any;
     expect(result.status).toBe(403);
+    expect(mockedDelete).not.toHaveBeenCalled();
   });
 
   it('rejects when the typed name does not match', async () => {
-    const result = (await actions.delete(formEvent({ name: 'Proj', confirmName: 'wrong' }))) as any;
+    const result = (await actions.delete(formEvent({ confirmName: 'wrong' }))) as any;
     expect(result.status).toBe(400);
+    expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  // The bypass: a client that sends its own `name` equal to its own
+  // `confirmName` must not pass, because the real name is 'Proj'.
+  it('ignores a client-submitted name that matches the typed one', async () => {
+    const result = (await actions.delete(formEvent({ name: 'x', confirmName: 'x' }))) as any;
+    expect(result.status).toBe(400);
+    expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  it('404s without deleting when the project is not in the caller\'s list', async () => {
+    mockedList.mockResolvedValue({ projects: [] });
+    const result = (await actions.delete(formEvent({ confirmName: 'Proj' }))) as any;
+    expect(result.status).toBe(404);
     expect(mockedDelete).not.toHaveBeenCalled();
   });
 
@@ -320,14 +342,14 @@ describe('admin/[projectId] delete action', () => {
   // call-site assertion with two distinguishable values catches it.
   it('builds the admin client from the request session, not a swapped pair', async () => {
     mockedDelete.mockResolvedValue({ success: true, message: 'gone' });
-    await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' }, 'p1', 'sess-1', '203.0.113.7')).catch(() => {});
+    await actions.delete(formEvent({ confirmName: 'Proj' }, 'p1', 'sess-1', '203.0.113.7')).catch(() => {});
     expect(createAdminApi).toHaveBeenCalledWith('sess-1', '203.0.113.7');
   });
 
   it('deletes and redirects to /admin when the typed name matches', async () => {
     mockedDelete.mockResolvedValue({ success: true, message: 'gone' });
     // The success path throws redirect(303, '/admin'); catch it to inspect.
-    const thrown: any = await actions.delete(formEvent({ name: 'Proj', confirmName: 'Proj' })).catch((e) => e);
+    const thrown: any = await actions.delete(formEvent({ confirmName: 'Proj' })).catch((e) => e);
     expect(mockedDelete).toHaveBeenCalledWith('p1');
     expect(thrown.status).toBe(303);
     expect(thrown.location).toBe('/admin');

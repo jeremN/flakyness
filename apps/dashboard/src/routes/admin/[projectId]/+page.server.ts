@@ -113,11 +113,23 @@ export const actions = {
   delete: async ({ request, params, locals }) => {
     const adminApi = createAdminApi(locals.sessionToken, locals.clientIp);
     const form = await request.formData();
-    const name = String(form.get('name') ?? '');
     const confirmName = String(form.get('confirmName') ?? '');
-    // Server-side footgun guard: the typed name must match the name we showed.
-    // (The client also disables the button; this is the real check.)
-    if (confirmName !== name || name === '') {
+    // Server-side footgun guard (backlog #38): compare the typed name with the
+    // name the API holds, never with a name the form sends. A form field is
+    // client-controlled, so a DOM edit could make both sides match. Same rule
+    // as the teams console and plan 055's reorder. The API still enforces who
+    // may delete; this check only stops a delete the operator did not mean.
+    let projects;
+    try {
+      ({ projects } = await adminApi.listProjects());
+    } catch (e) {
+      return actionError('delete', e);
+    }
+    const project = projects.find((p) => p.id === params.projectId);
+    if (!project) {
+      return fail(404, { action: 'delete', message: 'Project not found.' });
+    }
+    if (confirmName !== project.name) {
       return fail(400, { action: 'delete', message: 'Type the exact project name to confirm.' });
     }
     try {

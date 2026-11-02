@@ -214,7 +214,6 @@
     <p class="text-sm text-red-600 mb-3">{form.message}</p>
   {/if}
   <form method="POST" action="?/delete" use:enhance class="flex flex-col gap-3">
-    <input type="hidden" name="name" value={project.name} />
     <label for="confirmName" class="text-sm text-gray-700">
       Type <span class="font-mono font-semibold">{project.name}</span> to confirm:
     </label>

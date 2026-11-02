@@ -1078,7 +1078,7 @@ rationale. Items 5–7 remain unplanned.
     has no consequence prose or confirmation despite revoking every session. Neither console
     guards self-demotion or self-deletion (bounded today by the API's last-admin 409). Teams'
     rename path is untested at every level.
-38. **[OPEN — 2026-08-15] The pre-existing project-delete confirmation is bypassable.**
+38. **[RESOLVED 2026-11-02 — the delete action reads the project name from `listProjects()` and ignores any form `name` field. Found 2026-08-15] The pre-existing project-delete confirmation is bypassable.**
     `admin/[projectId]/+page.server.ts` compares `confirmName` against `form.get('name')` —
     **both client-controlled** — and the comment claiming "this is the real check" is false.
     Confirmed pre-existing (`d2ec769`), and confirmed **not** a privilege escalation: a

@@ -419,7 +419,7 @@ describe.each([
   ['/api/v1/reports', '../routes/reports'],
   ['/api/v1/audits', '../routes/audits'],
 ])('%s rate-limits before projectAuth (regression guard)', (mount, modulePath) => {
-  it('throttles a bad-token flood by client IP before any token lookup', async () => {
+  it('throttles an unauthenticated flood by client IP before projectAuth', async () => {
     // reportPreAuthRateLimit is ONE module-level limiter shared by both
     // routers (one ingest budget per IP, by design). Fresh modules give each
     // case its own empty bucket.
@@ -439,18 +439,61 @@ describe.each([
 
       const codes: number[] = [];
       // No socket under app.request: every request shares the 'unknown' IP
-      // bucket. Without a database the token lookup answers 500, and with one
-      // it answers 401. Either way, a 429 can only come from a limiter that
-      // runs BEFORE projectAuth.
+      // bucket. No Authorization header, so projectAuth answers 401 without a
+      // database, and only 401s count. A 429 can only come from a limiter
+      // that runs BEFORE projectAuth.
       for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 2; i++) {
         const res = await app.request(mount, {
           method: 'POST',
-          headers: { Authorization: 'Bearer WRONG', 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json' },
           body: '{}',
         });
         codes.push(res.status);
       }
       expect(codes[0]).not.toBe(429);
+      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit]).toBe(429);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+});
+
+// The pre-auth limiter must not let failed traffic spend the budget of
+// accepted uploads: only a 401 counts, everything else is refunded.
+describe('reportPreAuthRateLimit counts only 401 responses', () => {
+  it('never throttles accepted uploads, however many', async () => {
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { reportPreAuthRateLimit, REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } =
+      await import('./rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.post('/x', reportPreAuthRateLimit, (c) => c.json({}, 201));
+      const codes = new Set<number>();
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 5; i++) {
+        codes.add((await app.request('/x', { method: 'POST' })).status);
+      }
+      expect([...codes]).toEqual([201]);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+
+  it('throttles once 401s fill the bucket', async () => {
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { reportPreAuthRateLimit, REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } =
+      await import('./rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.post('/x', reportPreAuthRateLimit, (c) => c.json({}, 401));
+      const codes: number[] = [];
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 1; i++) {
+        codes.push((await app.request('/x', { method: 'POST' })).status);
+      }
+      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit - 1]).toBe(401);
       expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit]).toBe(429);
     } finally {
       __setRateLimitEnabled(false);

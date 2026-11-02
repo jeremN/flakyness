@@ -108,13 +108,20 @@ export function createRateLimit(
   config: { windowMs: number; limit: number },
   keyGenerator: (c: Context) => string,
   message: string,
-  skip?: (c: Context) => boolean
+  skip?: (c: Context) => boolean,
+  countOnly?: (c: Context) => boolean
 ): MiddlewareHandler {
   const real = rateLimiter({
     windowMs: config.windowMs,
     limit: config.limit,
     standardHeaders: 'draft-7',
     keyGenerator,
+    // With countOnly, a request is refunded after the response unless
+    // countOnly says it should count (hono-rate-limiter's
+    // skipSuccessfulRequests, with "successful" meaning "must not count").
+    ...(countOnly
+      ? { skipSuccessfulRequests: true, requestWasSuccessful: (c: Context) => !countOnly(c) }
+      : {}),
     handler: (c: Context) => c.json({ error: message, retryAfter: 60 }, 429),
   });
   return createMiddleware(async (c, next) => {
@@ -142,11 +149,18 @@ export const reportRateLimit = createRateLimit(
  * Rate limiter for ingest BEFORE authentication. Limit: 300/min per IP.
  * Mount it ahead of projectAuth on every ingest router; reportRateLimit stays
  * after projectAuth, because it keys on the authenticated project.
+ *
+ * Only a 401 counts. An accepted upload is refunded, so bad-token traffic
+ * from an address cannot use up the budget of valid uploads. It can still
+ * fill the bucket and get the address 429'd for the rest of the window,
+ * which is the cost of throttling by address at all.
  */
 export const reportPreAuthRateLimit = createRateLimit(
   REPORT_PREAUTH_RATE_LIMIT,
   getClientIp,
-  'Too many report uploads from this address. Please wait before retrying.'
+  'Too many failed report uploads from this address. Please wait before retrying.',
+  undefined,
+  (c: Context) => c.res.status === 401
 );
 
 /**

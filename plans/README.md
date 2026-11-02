@@ -1029,7 +1029,7 @@ rationale. Items 5–7 remain unplanned.
     that an account must be created first, and it still asserts every admin endpoint needs
     `Authorization: Bearer $ADMIN_TOKEN`. (Plan 059 fixed only the single missing
     `DB_PASSWORD` line, which blocked compose from parsing at all.)
-31. **[OPEN — 2026-08-15] Per-user rate limiting does not work in either documented
+31. **[RESOLVED 2026-11-02 — the dashboard reads `DASHBOARD_TRUSTED_PROXY_IPS` (`runtime/client-address.js`; compose also adds `DASHBOARD_PUBLISH`), trusting `X-Forwarded-For` only from those sockets; nginx docs overwrite the header. Found 2026-08-15] Per-user rate limiting does not work in either documented
     deployment.** `GETTING_STARTED.md` claims compose solves the shared-bucket problem via
     `TRUSTED_PROXY_IPS`, but `hooks.server.ts`'s `event.getClientAddress()` only returns the
     real client when adapter-node's `ADDRESS_HEADER` is set — and that appears **only** in
@@ -1086,7 +1086,7 @@ rationale. Items 5–7 remain unplanned.
     guard, not a hole. Worth a row because both new consoles independently identified this
     class and fixed it properly, each citing plan 055 — the branch now ships two files
     documenting why the third one is wrong.
-39. **[OPEN — 2026-08-15] adapter-node and the API disagree on `X-Forwarded-For` convention.**
+39. **[RESOLVED 2026-11-02 — the API's `getClientIp` and the dashboard both take the rightmost hop that is not a trusted proxy. Found 2026-08-15] adapter-node and the API disagree on `X-Forwarded-For` convention.**
     `@sveltejs/adapter-node@5.5.7/files/handler.js` selects `addresses[length - depth]` — the
     **last** entry — while the API's `getClientIp` takes `.split(',')[0]`, the first. Benign
     today because the dashboard always sends a single-value header; the two conventions

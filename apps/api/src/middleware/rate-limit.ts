@@ -68,7 +68,8 @@ function normalizeIp(ip: string): string {
 /**
  * Extract the client IP using a reliable strategy:
  * 1. If TRUSTED_PROXY_IPS is set, trust x-forwarded-for only when the
- *    connecting socket IP is itself trusted.
+ *    connecting socket IP is itself trusted, and then take its rightmost hop
+ *    that is not a trusted proxy.
  * 2. Otherwise use the socket remote address (not spoofable).
  * 3. Last resort: 'unknown' (all unknown clients share one bucket).
  *
@@ -91,8 +92,16 @@ export function getClientIp(c: Context): string {
   if (trustedProxies && normalizedSocketIp) {
     const trusted = trustedProxies.map(normalizeIp);
     if (trusted.includes(normalizedSocketIp)) {
-      const forwarded = c.req.header('x-forwarded-for')?.split(',')[0].trim();
-      if (forwarded) return normalizeIp(forwarded);
+      // Proxies APPEND to X-Forwarded-For, so the entries left of the one a
+      // trusted proxy wrote came from the client. Walk from the right and
+      // take the first hop that is not itself a trusted proxy (backlog #39).
+      const hops = (c.req.header('x-forwarded-for') ?? '')
+        .split(',')
+        .map((hop) => normalizeIp(hop.trim()))
+        .filter((hop) => hop !== '');
+      for (let i = hops.length - 1; i >= 0; i--) {
+        if (!trusted.includes(hops[i])) return hops[i];
+      }
     }
   }
 

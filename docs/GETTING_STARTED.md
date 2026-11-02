@@ -443,25 +443,24 @@ docker compose exec api node apps/api/dist/migrate.js
 > project's reads — this is how the GitHub Action fetches its quarantine
 > list without a second secret.
 
-> ⚠️ **`TRUSTED_PROXY_IPS` matters as soon as the dashboard is your login
-> path — set to the wrong thing, or left unset, every user shares one
-> rate-limit bucket.** The dashboard is a confidential client: the browser
-> never calls the API directly, the dashboard *server* does, on behalf of
-> everyone who uses it. Without `TRUSTED_PROXY_IPS`, the API can't tell those
-> requests apart from one another and rate-limits them all by the same
-> socket address — `apiRateLimit` (100/min) and `authRateLimit` (10/min, the
-> login throttle) collapse into one shared bucket for the **whole
-> installation**, not per user. `docker-compose.yml` sets this for you
-> automatically: the `flackyness` network is pinned to `172.28.0.0/16` and
-> the `dashboard` service gets the fixed address `172.28.0.10`, which the
-> `api` service trusts by default (`TRUSTED_PROXY_IPS=172.28.0.10`). If you
-> run behind your own reverse proxy instead, set `TRUSTED_PROXY_IPS` to
-> *that* proxy's address — and **never** a whole subnet: with a published
-> port, Docker's userland proxy can present external traffic as a bridge
-> address, so trusting the range would let an internet client spoof
-> `X-Forwarded-For` and evade the login throttle entirely. Unset (or
-> misconfigured), the API only logs a warning at boot rather than refusing
-> to start, since an unset value is still correct for a genuinely
+> ⚠️ **Per-user rate limiting needs two links.** The browser never calls the
+> API; the dashboard server does, for everyone. Each link must pass on the
+> visitor's address, or `apiRateLimit` (100/min) and `authRateLimit` (10/min,
+> the login throttle) become one bucket for the whole installation.
+>
+> - **Dashboard to API:** the API trusts `X-Forwarded-For` only from the
+>   addresses in its own `TRUSTED_PROXY_IPS`. `docker-compose.yml` pins the
+>   dashboard to `172.28.0.10` and the API trusts exactly that address. Never
+>   trust a whole subnet: a published port can present outside traffic as a
+>   bridge address.
+> - **Browser to dashboard:** without a reverse proxy, the dashboard sees each
+>   visitor's own connection. Behind one, it sees the proxy for everyone until
+>   you set `DASHBOARD_TRUSTED_PROXY_IPS`, see [Reverse Proxy](#reverse-proxy-nginx).
+>
+> Both sides take the rightmost `X-Forwarded-For` entry that is not a trusted
+> proxy, because proxies append and everything to the left came from the
+> client. With `TRUSTED_PROXY_IPS` unset, the API logs a warning at boot
+> rather than refusing to start, since that is still correct for a genuinely
 > network-isolated deployment.
 
 ### Option 2: Kubernetes / Cloud Run
@@ -487,19 +486,42 @@ server {
 
     # API
     location /api/ {
-        proxy_pass http://localhost:8080;
+        proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
     # Dashboard
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host $host;
+        # OVERWRITE the header with the visitor's address. Never use
+        # $proxy_add_x_forwarded_for here: it appends to what the client sent.
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
 ```
+
+With nginx in front, the dashboard sees nginx's connection for every visitor,
+so all users share one login rate-limit bucket (10 sign-ins per minute for the
+whole installation). To give each visitor their own bucket, add to `.env`:
+
+```bash
+# Only the host (nginx) can reach the dashboard port.
+DASHBOARD_PUBLISH=127.0.0.1:3000
+# nginx on the host reaches the container through the compose network's
+# gateway. Trust it, and only it.
+DASHBOARD_TRUSTED_PROXY_IPS=172.28.0.1
+```
+
+Then `docker compose --profile production up -d`. The dashboard now trusts
+`X-Forwarded-For` only from `172.28.0.1`. From any other address it uses the
+connection's own address, so a client cannot choose its bucket.
+
+> ⚠️ **Set both lines or neither.** With the port published on every
+> interface (the default `3000`), outside traffic can also arrive from the
+> gateway address, and trusting it would let any client pick its own
+> rate-limit bucket by sending `X-Forwarded-For`.
 
 ---
 

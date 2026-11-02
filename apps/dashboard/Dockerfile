@@ -44,7 +44,7 @@ COPY --from=builder /repo/apps/dashboard/node_modules ./apps/dashboard/node_modu
 COPY --from=builder /repo/apps/dashboard/package.json ./apps/dashboard/package.json
 COPY --from=builder /repo/apps/dashboard/build ./apps/dashboard/build
 # Entry point: starts adapter-node and adds the runtime ORIGIN variable.
-COPY --from=builder /repo/apps/dashboard/runtime/origin.js /repo/apps/dashboard/runtime/server.js ./apps/dashboard/runtime/
+COPY --from=builder /repo/apps/dashboard/runtime/origin.js /repo/apps/dashboard/runtime/client-address.js /repo/apps/dashboard/runtime/server.js ./apps/dashboard/runtime/
 
 RUN chown -R sveltekit:nodejs /app
 USER sveltekit

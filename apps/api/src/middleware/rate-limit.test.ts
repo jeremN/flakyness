@@ -45,11 +45,17 @@ describe('getClientIp', () => {
     expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '9.9.9.9' }))).toBe('1.2.3.4');
   });
 
-  it('takes the first hop of a multi-value X-Forwarded-For and trims it', () => {
+  // Backlog #39: proxies APPEND to X-Forwarded-For, so every entry left of
+  // the one the trusted proxy wrote came from the client. The rightmost entry
+  // that is not itself a trusted proxy is the client; the first is spoofable.
+  it('takes the rightmost X-Forwarded-For hop, trimmed, not the client-written first one', () => {
     process.env.TRUSTED_PROXY_IPS = '1.2.3.4';
-    // Whitespaced, multi-hop XFF — proves `.split(',')[0].trim()`, not the
-    // whole header and not the second hop.
-    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '  9.9.9.9 , 10.0.0.1' }))).toBe('9.9.9.9');
+    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: '  9.9.9.9 , 10.0.0.1 ' }))).toBe('10.0.0.1');
+  });
+
+  it('skips trusted proxies from the right in a proxy chain', () => {
+    process.env.TRUSTED_PROXY_IPS = '1.2.3.4, 5.5.5.5';
+    expect(getClientIp(fakeCtx({ socketIp: '1.2.3.4', xff: 'spoofed, 9.9.9.9, 5.5.5.5' }))).toBe('9.9.9.9');
   });
 
   it('trims each entry of TRUSTED_PROXY_IPS when matching the socket IP', () => {

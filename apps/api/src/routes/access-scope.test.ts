@@ -239,11 +239,10 @@ describeScope('per-team read scoping — /tests/:testName/* routes', () => {
  * The READ_TOKEN-hardened posture, which nothing else in this repo exercises.
  *
  * readAuth and resolveAccess are two independent gates, and with READ_TOKEN set
- * a signed-in dashboard user must clear BOTH. readAuth (middleware/auth.ts) has
- * no session path — it looks only at the Authorization header — and it is
- * mounted ahead of resolveAccess on every read route. So a cookie alone 401s
- * before scoping ever runs, and a bearer alone passes readAuth but classifies
- * the caller as `read-token`, which is deliberately UNSCOPED.
+ * every caller must clear BOTH. Since backlog #41, readAuth (middleware/auth.ts)
+ * admits a validated session on its own, and resolveAccess then scopes it to
+ * the user's teams. A bearer alone also passes readAuth, but classifies the
+ * caller as `read-token`, which is deliberately UNSCOPED.
  *
  * That is why the dashboard sends both ($lib/server/api.ts's buildHeaders) and
  * why middleware/access.ts:42-43 promises it does. This block is the API-side
@@ -256,7 +255,7 @@ describeScope('per-team read scoping — /tests/:testName/* routes', () => {
  * the rest of this file — notably the `is unfiltered for a caller with no
  * session` test below, which short-circuits when READ_TOKEN is set.
  */
-describeScope('READ_TOKEN posture — the dashboard must send session AND bearer', () => {
+describeScope('READ_TOKEN posture — sessions and bearers', () => {
   async function withReadToken<T>(token: string, fn: () => Promise<T>): Promise<T> {
     const previous = process.env.READ_TOKEN;
     process.env.READ_TOKEN = token;
@@ -268,14 +267,26 @@ describeScope('READ_TOKEN posture — the dashboard must send session AND bearer
     }
   }
 
-  it('rejects a session cookie ALONE with 401 — readAuth has no session path', async () => {
+  it('accepts a session cookie ALONE and scopes it to the session\'s teams', async () => {
+    const mine = await fixture('member');
+    const theirs = await fixture('member');
+
+    await withReadToken('read-token-for-posture-test', async () => {
+      // Own team: the session satisfies readAuth (backlog #41) and scoping.
+      const own = await app.request(`/api/v1/projects/${mine.project.id}/stats`, as(mine.cookie));
+      expect(own.status).toBe(200);
+      // Other team: readAuth lets the session in, resolveAccess hides the
+      // project. 404, not 401: the session is a valid read credential now.
+      const other = await app.request(`/api/v1/projects/${theirs.project.id}/stats`, as(mine.cookie));
+      expect(other.status).toBe(404);
+    });
+  });
+
+  it('still 401s an unknown session cookie with no bearer', async () => {
     const f = await fixture('member');
 
     await withReadToken('read-token-for-posture-test', async () => {
-      const res = await app.request(`/api/v1/projects/${f.project.id}/stats`, as(f.cookie));
-      // 401, not 404: this dies in readAuth, before resolveAccess runs at all.
-      // The user is a legitimate member of this project's team — the cookie is
-      // simply a credential this gate cannot see.
+      const res = await app.request(`/api/v1/projects/${f.project.id}/stats`, as('not-a-real-session'));
       expect(res.status).toBe(401);
     });
   });
@@ -464,6 +475,28 @@ describeScope('flaky-test mute authorization', () => {
       body: JSON.stringify({ status: 'ignored' }),
     });
     expect(res.status).toBe(401);
+  });
+
+  // Backlog #41: the GET/PATCH pair agrees. With READ_TOKEN set, a team_admin
+  // with a session only used to be able to mute a row it could not read.
+  it('with READ_TOKEN set, a session alone can both read and mute its own row', async () => {
+    const f = await fixture('team_admin');
+    const flakyId = await seedFlaky(f);
+    const previous = process.env.READ_TOKEN;
+    process.env.READ_TOKEN = 'read-token-for-flaky-pair-test';
+    try {
+      const read = await app.request(`/api/v1/tests/flaky/${flakyId}`, as(f.cookie));
+      expect(read.status).toBe(200);
+      const mute = await app.request(`/api/v1/tests/flaky/${flakyId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: `${SESSION_COOKIE}=${f.cookie}` },
+        body: JSON.stringify({ status: 'ignored' }),
+      });
+      expect(mute.status).toBe(200);
+    } finally {
+      if (previous === undefined) delete process.env.READ_TOKEN;
+      else process.env.READ_TOKEN = previous;
+    }
   });
 
   it('GET /tests/flaky/:id hides another team\'s row', async () => {

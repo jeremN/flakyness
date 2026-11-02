@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db, projects } from '../db';
 import { extractBearerToken, tokensMatch } from './token';
 import { resolveAccessValue } from './access';
+import { getSessionUser } from './session';
 import { canEnterAdminApi } from '../services/auth/access';
 
 // extractBearerToken/tokensMatch moved to the DB-free ./token module (so the
@@ -195,6 +196,15 @@ export function readAuth(
   const mw: MiddlewareHandler = async (c, next) => {
     const readToken = process.env.READ_TOKEN;
     if (!readToken) return await next();
+
+    // A signed-in user may read (backlog #41). sessionAuth, mounted globally
+    // in index.ts, has already validated the session (expiry, revocation,
+    // password version), and the check is in memory, so D3 still holds.
+    // readAuth only answers "may you read at all"; resolveAccess, mounted
+    // after it, scopes a user to their teams' projects. Before this, a
+    // session-only client got 401 here although PATCH /tests/flaky/:id
+    // accepted it: write without read.
+    if (getSessionUser(c)) return await next();
 
     const token = extractBearerToken(c.req.header('Authorization'));
     if (!token) {

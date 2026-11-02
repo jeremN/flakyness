@@ -1100,7 +1100,7 @@ rationale. Items 5–7 remain unplanned.
     the shape is recorded so a future reader knows it was measured. Related: mutation floors
     for the four new `$lib` modules (`permissions.ts`, `password-form.ts`, `project-groups.ts`,
     `team-members.ts`) still cannot be set without a real CI Stryker baseline.
-41. **[OPEN — 2026-08-15] Sessions do not satisfy `readAuth` at all, and the `flaky/:id` route
+41. **[RESOLVED 2026-11-02 — `readAuth` admits a validated session (`getSessionUser`), and `resolveAccess` scopes it; the `flaky/:id` GET/PATCH pair now agrees. Found 2026-08-15] Sessions do not satisfy `readAuth` at all, and the `flaky/:id` route
     pair is inconsistent about it.** On a deployment with `READ_TOKEN` set,
     `GET /api/v1/tests/flaky/:id` mounts `readAuth()` (`routes/tests.ts:301`) and so `401`s a
     session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts only `resolveAccess()`

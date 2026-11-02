@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { hashToken, generateToken, adminAuth, projectAuth, readAuth } from '../middleware/auth';
+import type { SessionUser } from '../middleware/session';
 
 describe('Auth Utilities', () => {
   describe('hashToken', () => {
@@ -230,6 +231,38 @@ describe('readAuth', () => {
       headers: { Authorization: 'Bearer wrong' },
     });
     expect(res.status).toBe(401);
+  });
+
+  // Backlog #41: a signed-in user satisfies readAuth on its own. sessionAuth
+  // (mounted globally in index.ts) has already validated the session; the
+  // read SCOPE is resolveAccess's job, which scopes a user to their teams.
+  function appWithSession(mw: ReturnType<typeof readAuth>) {
+    const app = new Hono<{ Variables: { sessionUser: SessionUser } }>();
+    app.use('*', async (c, next) => {
+      c.set('sessionUser', {
+        id: 'u1',
+        email: 'u1@example.test',
+        displayName: null,
+        isGlobalAdmin: false,
+        mustChangePassword: false,
+        sessionId: 's1',
+      });
+      await next();
+    });
+    app.get('/p/:id', mw, (c) => c.json({ ok: true }));
+    return app;
+  }
+
+  it('lets a validated session through with no bearer when READ_TOKEN is set', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const res = await appWithSession(readAuth((c) => c.req.param('id'))).request('/p/abc');
+    expect(res.status).toBe(200);
+  });
+
+  it('lets a validated session through on a route with no project resolver', async () => {
+    process.env.READ_TOKEN = 'read-secret';
+    const res = await appWithSession(readAuth()).request('/p/abc');
+    expect(res.status).toBe(200);
   });
 
   it('marque le middleware retourné pour la garde de couverture', () => {

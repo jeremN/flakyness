@@ -412,6 +412,90 @@ describe('mute route rate-limits before auth (regression guard)', () => {
   });
 });
 
+// Backlog #26: projectAuth does a token-hash DB lookup. Mounted ahead of every
+// limiter, an anonymous bad-token flood paid one lookup per request and was
+// never throttled. The pre-auth limiter must run first on BOTH ingest routers.
+describe.each([
+  ['/api/v1/reports', '../routes/reports'],
+  ['/api/v1/audits', '../routes/audits'],
+])('%s rate-limits before projectAuth (regression guard)', (mount, modulePath) => {
+  it('throttles an unauthenticated flood by client IP before projectAuth', async () => {
+    // reportPreAuthRateLimit is ONE module-level limiter shared by both
+    // routers (one ingest budget per IP, by design). Fresh modules give each
+    // case its own empty bucket.
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { HTTPException } = await import('hono/http-exception');
+    const { default: router } = await import(modulePath);
+    const { REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
+
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.onError((err, c) =>
+        err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+      );
+      app.route(mount, router);
+
+      const codes: number[] = [];
+      // No socket under app.request: every request shares the 'unknown' IP
+      // bucket. No Authorization header, so projectAuth answers 401 without a
+      // database, and only 401s count. A 429 can only come from a limiter
+      // that runs BEFORE projectAuth.
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + 2; i++) {
+        const res = await app.request(mount, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        codes.push(res.status);
+      }
+      expect(codes[0]).not.toBe(429);
+      expect(codes[REPORT_PREAUTH_RATE_LIMIT.limit]).toBe(429);
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  });
+});
+
+// The pre-auth limiter must not let failed traffic spend the budget of
+// accepted uploads, and must not fail open when authentication errors out:
+// only a request that projectAuth authenticated (it set `project`) is refunded.
+describe('reportPreAuthRateLimit refunds only authenticated requests', () => {
+  async function codesFor(handler: (c: import('hono').Context) => Response, extra = 1) {
+    vi.resetModules();
+    const { Hono } = await import('hono');
+    const { reportPreAuthRateLimit, REPORT_PREAUTH_RATE_LIMIT, __setRateLimitEnabled } =
+      await import('./rate-limit');
+    __setRateLimitEnabled(true);
+    try {
+      const app = new Hono();
+      app.post('/x', reportPreAuthRateLimit, handler);
+      const codes: number[] = [];
+      for (let i = 0; i < REPORT_PREAUTH_RATE_LIMIT.limit + extra; i++) {
+        codes.push((await app.request('/x', { method: 'POST' })).status);
+      }
+      return { codes, limit: REPORT_PREAUTH_RATE_LIMIT.limit };
+    } finally {
+      __setRateLimitEnabled(false);
+    }
+  }
+
+  it('never throttles authenticated uploads, however many', async () => {
+    const { codes } = await codesFor((c) => {
+      c.set('project' as never, { id: 'p1' } as never);
+      return c.json({}, 201);
+    }, 5);
+    expect([...new Set(codes)]).toEqual([201]);
+  });
+
+  it.each([401, 500])('throttles once %i responses fill the bucket', async (status) => {
+    const { codes, limit } = await codesFor((c) => c.json({}, status as 401 | 500));
+    expect(codes[limit - 1]).toBe(status);
+    expect(codes[limit]).toBe(429);
+  });
+});
+
 describe('auth router: authRateLimit is scoped to /login + /change-password only (Important-1 regression guard)', () => {
   // Prior revision mounted `authRateLimit` on authRouter.use('*', ...), which
   // also capped GET /me at 10/min per IP. Since plan 059's dashboard

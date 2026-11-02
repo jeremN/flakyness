@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { dispatchReport } from '../parsers/registry';
 import { projectAuth } from '../middleware/auth';
-import { reportRateLimit } from '../middleware/rate-limit';
+import { reportPreAuthRateLimit, reportRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
 import { db, testRuns, testResults, Project } from '../db';
 import { updateFlakyTests, resolveProjectConfig } from '../services/flakiness';
@@ -59,7 +59,11 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// Apply auth and rate limiting to all routes
+// Apply auth and rate limiting to all routes. The per-IP limiter runs first, so
+// an anonymous flood is throttled before projectAuth's token lookup (backlog
+// #26). reportRateLimit keys on the authenticated project, so it must follow
+// projectAuth.
+reports.use('*', reportPreAuthRateLimit);
 reports.use('*', projectAuth());
 reports.use('*', reportRateLimit);
 reports.use('*', passwordChangeGate());

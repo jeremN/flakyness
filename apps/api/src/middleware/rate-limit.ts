@@ -19,6 +19,14 @@ export function __setRateLimitEnabled(value: boolean): void {
 // Single source of truth for the limits. Tests assert against these so a copy
 // can't drift from what production uses.
 export const REPORT_RATE_LIMIT = { windowMs: 60 * 1000, limit: 60 };
+/**
+ * Pre-auth ingest throttle, per client IP (backlog #26). It runs BEFORE
+ * projectAuth, so it caps the token-hash lookups an anonymous flood can cost.
+ * Five times the per-project limit: several projects often upload from one CI
+ * runner IP (a self-hosted runner, a NAT), and they must not throttle each
+ * other here. The per-project limit still applies after auth.
+ */
+export const REPORT_PREAUTH_RATE_LIMIT = { windowMs: 60 * 1000, limit: 300 };
 export const API_RATE_LIMIT = { windowMs: 60 * 1000, limit: 100 };
 export const ADMIN_RATE_LIMIT = { windowMs: 60 * 1000, limit: 5 };
 
@@ -100,13 +108,20 @@ export function createRateLimit(
   config: { windowMs: number; limit: number },
   keyGenerator: (c: Context) => string,
   message: string,
-  skip?: (c: Context) => boolean
+  skip?: (c: Context) => boolean,
+  countOnly?: (c: Context) => boolean
 ): MiddlewareHandler {
   const real = rateLimiter({
     windowMs: config.windowMs,
     limit: config.limit,
     standardHeaders: 'draft-7',
     keyGenerator,
+    // With countOnly, a request is refunded after the response unless
+    // countOnly says it should count (hono-rate-limiter's
+    // skipSuccessfulRequests, with "successful" meaning "must not count").
+    ...(countOnly
+      ? { skipSuccessfulRequests: true, requestWasSuccessful: (c: Context) => !countOnly(c) }
+      : {}),
     handler: (c: Context) => c.json({ error: message, retryAfter: 60 }, 429),
   });
   return createMiddleware(async (c, next) => {
@@ -128,6 +143,27 @@ export const reportRateLimit = createRateLimit(
     return project?.id || 'anonymous';
   },
   'Too many report uploads. Please wait before retrying.'
+);
+
+/**
+ * Rate limiter for ingest BEFORE authentication. Limit: 300/min per IP.
+ * Mount it ahead of projectAuth on every ingest router; reportRateLimit stays
+ * after projectAuth, because it keys on the authenticated project.
+ *
+ * Every request counts, except one that projectAuth authenticated (it set
+ * `project`): that one is refunded, so bad-token traffic from an address
+ * cannot use up the budget of valid uploads. Refunding on positive evidence
+ * of success, not on "was not a 401", keeps the limiter closed when the token
+ * lookup itself fails (a 500 under database trouble still counts). Failed
+ * traffic can still fill the bucket and get the address 429'd for the rest of
+ * the window, which is the cost of throttling by address at all.
+ */
+export const reportPreAuthRateLimit = createRateLimit(
+  REPORT_PREAUTH_RATE_LIMIT,
+  getClientIp,
+  'Too many failed report uploads from this address. Please wait before retrying.',
+  undefined,
+  (c: Context) => !c.get('project')
 );
 
 /**

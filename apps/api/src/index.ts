@@ -11,7 +11,7 @@ import { requestLogger, logError, logger } from './middleware/logger';
 import { extractBearerToken, tokensMatch } from './middleware/auth';
 import { sessionAuth } from './middleware/session';
 import { passwordChangeGate } from './middleware/password-change';
-import { trustedProxyWarning } from './middleware/rate-limit';
+import { apiRateLimit, trustedProxyWarning } from './middleware/rate-limit';
 import { closeDb } from './db';
 import { renderMetrics } from './metrics';
 
@@ -109,12 +109,10 @@ app.use('*', sessionAuth());
 // mount-point comment in middleware/password-change.ts describes. Route-level
 // middleware runs only for this one exact route.
 //
-// This route is deliberately absent from EXPECTED_GATE_ORDER in
-// password-change-coverage.test.ts: no rate limiter covers /api/v1 (it is
-// outside every router), so there is no order to assert. That is pre-existing
-// and unchanged by gating it — the endpoint returns two static strings and
-// touches neither the database nor any credential.
-app.get('/api/v1', passwordChangeGate(), (c) => {
+// The limiter is route-level for the same reason (backlog #27): a request with
+// an fk_session cookie pays sessionAuth's DB lookup, so this path must be
+// throttled like every router. EXPECTED_GATE_ORDER asserts the order.
+app.get('/api/v1', apiRateLimit, passwordChangeGate(), (c) => {
   return c.json({
     name: 'Flackyness API',
     version: '0.0.1',

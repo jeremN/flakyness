@@ -81,6 +81,11 @@ describe('anonymousAccess', () => {
     expect(a.isGlobalAdmin).toBe(false);
     expect(a.teamIds).toEqual([]);
     expect(a.userId).toBeNull();
+    // Every token-kind Access spreads this object, so a non-null default
+    // would hand a READ_TOKEN or ADMIN_TOKEN caller a project scope.
+    expect(a.projectId).toBeNull();
+    expect(a.roleByTeam).toEqual({});
+    expect(a.mustChangePassword).toBe(false);
   });
 });
 
@@ -250,6 +255,7 @@ describe('scopesProjectList', () => {
   it.each([
     ['global-admin user', globalAdminUser],
     ['ADMIN_TOKEN', adminToken],
+    ['ADMIN_TOKEN kind without the isGlobalAdmin flag', adminTokenKindOnly],
     ['READ_TOKEN', readToken],
     ['anonymous', anonymousAccess()],
   ])('does not scope %s', (_label, access) => {

@@ -857,7 +857,7 @@ rationale. Items 5–7 remain unplanned.
     Fix is cheap — export one schema and import it in both. Note this compounds with the
     designed-in seam that `canReadProject` returns `true` for `anonymous`: on the read side a
     missing scope check degrades to "everyone can read", not "nobody can".
-20. **[OPEN — deferred from plan 058's final review] Two one-line `access.test.ts` additions
+20. **[RESOLVED 2026-11-02 — `anonymousAccess()` now asserts `projectId: null` (plus `roleByTeam`, `mustChangePassword`; mutation-checked), and `scopesProjectList` covers `adminTokenKindOnly`. Part (a) had drifted: `scopesProjectList` no longer has an `admin-token` clause, so the new case is a belt, not a kill.] — deferred from plan 058's final review] Two one-line `access.test.ts` additions
     would take it 95.4% → ~97.7%.** Of `access.ts`'s four surviving mutants, two are genuine
     coverage gaps and two are verified-equivalent. The gaps: (a) `scopesProjectList`'s
     `|| access.kind === 'admin-token'` survives because the test uses a fixture carrying
@@ -866,7 +866,7 @@ rationale. Items 5–7 remain unplanned.
     here; (b) `anonymousAccess`'s `projectId: null` is never asserted, and that field is
     spread into every non-user `Access` in `resolveAccessValue`. Not urgent (floor is 90), but
     it is two lines.
-21. **[OPEN — deferred from plan 058's review, Minors #5/#8] Security properties proven only at
+21. **[RESOLVED 2026-11-02 — HTTP case added in `access-scope.test.ts` (global-admin session in no team mutes another team's test; only that test reds when `canWriteProject`'s global-admin branch is dropped for users), and the fail-open note is written above `assertProjectReadable` in `GET /tests/flaky/:id`.] — deferred from plan 058's review, Minors #5/#8] Security properties proven only at
     unit level, plus an unwritten fail-open comment.** The global-admin *user* mute path is
     covered in `access.test.ts` but has no HTTP case (six of seven `AccessKind`s do). And
     `resolveAccess`'s asymmetry deserves three lines at `tests.ts:299`: if it is ever unmounted
@@ -963,7 +963,7 @@ rationale. Items 5–7 remain unplanned.
     `password-change-coverage.test.ts`, which was deliberately left out of that list precisely
     because no limiter covers the path today.
 
-28. **[OPEN — found 2026-08-15 in the `mustChangePassword` fix-round re-review] The gate
+28. **[RESOLVED 2026-11-02 — `uncoveredV1Routes` is order-aware: a gate covers a registration only at a lower `app.routes` index. Router-level layers on a gate's exact path and the known limiters may precede it. Self-tests cover the out-of-order sub-router and pre-gate layers; a real ungated `/api/v1/admin/billing` router mounted above `adminRouter` now reds the live assertion.] — found 2026-08-15 in the `mustChangePassword` fix-round re-review] The gate
     coverage guard checks path SHAPE but not registration ORDER, and Hono dispatches by
     order.** `buildGateCoverage()` in `password-change-coverage.test.ts` answers "is this path
     under a gated wildcard mount?" — it cannot see that a router mounted UNDER an already-gated

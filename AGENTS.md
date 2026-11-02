@@ -217,7 +217,8 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `password-change-coverage.test.ts`: named mounts in the right order, the
   auth-route decision list, and — the assertion that actually catches a NEW
   ungated router — a completeness check that derives the `/api/v1` surface
-  from `app.routes` and demands every route be covered by some mount. The
+  from `app.routes` and demands every route be covered by some mount
+  registered BEFORE it (Hono dispatches by order, backlog #28). The
   named-inventory assertions cannot do that job: a router with no gate
   contributes nothing to the set they compare, so both sides stay equal and
   they pass. `routes-auth-coverage.test.ts` cannot either — it filters on

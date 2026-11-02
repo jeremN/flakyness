@@ -50,14 +50,14 @@ differs by credential, and the split is deliberate:
   deployment; the static token is break-glass. The same applies to the mute
   route, which is why `PATCH /api/v1/tests/flaky/:id` answers `403` rather
   than `401` to a session that is recognised but lacks the role.
-- **In place of a project token or `READ_TOKEN`: no.** `projectAuth` and
-  `readAuth` read the `Authorization` header only and never look at the cookie.
-  On an install with `READ_TOKEN` set this matters to any client: a session
-  cookie alone is `401`ed by `readAuth` before per-team scoping runs, so a
-  caller must send **both** the cookie and the `READ_TOKEN` bearer. The session
-  still wins where they disagree — see `middleware/access.ts:42-43` — so
-  sending both authenticates as the user, scoped to their teams, rather than as
-  the unscoped `read-token` principal. This is exactly what the dashboard does.
+- **In place of `READ_TOKEN`: yes. In place of a project token: no.** Since
+  backlog #41, `readAuth` admits a validated session on its own: on an install
+  with `READ_TOKEN` set, a signed-in user reads without the bearer, and
+  `resolveAccess` scopes them to their teams' projects (a cross-team read is
+  `404`). `projectAuth` (ingest) still reads the `Authorization` header only.
+  A client that sends both the cookie and the `READ_TOKEN` bearer, as the
+  dashboard does, authenticates as the user: the session wins, see
+  `middleware/access.ts:42-43`.
 
 Accounts are provisioned by a global admin via
 [User Provisioning](#user-provisioning) (`/api/v1/admin/users`, `ADMIN_TOKEN`
@@ -343,17 +343,11 @@ to be surprised by if you only read the table above:
    **permissive** direction — a reader would have expected a team_admin to be
    able to create and delete projects, and to manage teams and users.
 
-**One known asymmetry, recorded rather than fixed here:** on a deployment
-with `READ_TOKEN` set, `GET /api/v1/tests/flaky/:id` mounts `readAuth()` and
-so `401`s a session-only caller, while `PATCH /api/v1/tests/flaky/:id` mounts
-none — so a `team_admin` can mute a test they cannot read. Write-without-read
-is incoherent. The root cause — sessions do not satisfy `readAuth` at all —
-is systemic to plan 041 and predates per-team access control; only the
-asymmetry on this specific route pair is new. **Plan 059 did not fix it** —
-it made the dashboard forward the session cookie and `READ_TOKEN` together,
-so the dashboard itself no longer produces a session-only read, but any other
-session-only client still trips this. Tracked as a follow-up in
-`plans/README.md`, not as scope for a plan already merged.
+**`GET` and `PATCH /api/v1/tests/flaky/:id` agree (backlog #41).** With
+`READ_TOKEN` set, a session-only caller used to get `401` on the `GET` while
+the `PATCH` accepted it, so a `team_admin` could mute a test they could not
+read. Now a session satisfies `readAuth`, so both routes accept the same
+session and scope it the same way.
 
 ---
 

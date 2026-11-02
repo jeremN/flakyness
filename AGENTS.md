@@ -173,7 +173,9 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   fast-follow (see `plans/README.md`).
 - **Every read route needs BOTH `readAuth()` and `resolveAccess()`, sharing one
   resolver (plan 058).** `readAuth` decides *whether* the caller may read
-  (`READ_TOKEN` posture, plan 041); `resolveAccess` decides *which projects*
+  (`READ_TOKEN` posture, plan 041; a validated session also passes it, backlog
+  #41, so `resolveAccess` is the only gate that scopes a signed-in user);
+  `resolveAccess` decides *which projects*
   (team membership) and 404s — never 403s — on a cross-team read. Both are
   enforced by `routes-auth-coverage.test.ts`, which carries a hard-coded route
   count you must bump deliberately. **Anonymous callers stay unscoped**: teams

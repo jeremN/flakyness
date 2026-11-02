@@ -138,6 +138,8 @@ Create a `.env` file based on `.env.example`:
 | `ORIGIN` | Dashboard's externally visible URL, for the CSRF check | compose: `http://localhost:3000` |
 | `COOKIE_SECURE` | Mark the dashboard session cookie `Secure`; set `true` behind https | `false` |
 | `TRUSTED_PROXY_IPS` | Addresses the API trusts for `X-Forwarded-For` | compose: `172.28.0.10` |
+| `DASHBOARD_TRUSTED_PROXY_IPS` | Reverse proxies the dashboard trusts for `X-Forwarded-For` (compose); see the nginx section of GETTING_STARTED | (unset) |
+| `DASHBOARD_PUBLISH` | Published dashboard port, e.g. `127.0.0.1:3000` behind nginx (compose) | `3000` |
 
 > 💡 Generate a secure admin token: `openssl rand -hex 32`
 

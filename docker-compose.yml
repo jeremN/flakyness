@@ -110,8 +110,18 @@ services:
       # READ_TOKEN above — set both or neither. If the API's is set and this
       # one isn't, every dashboard page 500s instead of loading.
       READ_TOKEN: ${READ_TOKEN:-}
+      # Reverse proxies whose X-Forwarded-For the dashboard trusts, to find
+      # each visitor's address (read by apps/dashboard/runtime/server.js).
+      # Unset: the dashboard uses the socket address, which behind a proxy is
+      # the proxy's for everyone, so all users share one login rate-limit
+      # bucket. With nginx on the host, set it to this network's gateway
+      # (172.28.0.1) AND set DASHBOARD_PUBLISH=127.0.0.1:3000, so that only
+      # the host can reach the port. Never trust the gateway while the port is
+      # published on every interface: outside traffic can arrive from that
+      # address too. See docs/GETTING_STARTED.md "Reverse Proxy".
+      TRUSTED_PROXY_IPS: ${DASHBOARD_TRUSTED_PROXY_IPS:-}
     ports:
-      - "3000:3000"
+      - "${DASHBOARD_PUBLISH:-3000}:3000"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000"]
       interval: 30s

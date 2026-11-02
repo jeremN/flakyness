@@ -271,19 +271,17 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   `global-setup.ts`'s own seeding login) must send the header for this
   reason — both already do.
   **`ADDRESS_HEADER` is a test-harness setting here — do NOT carry it into a
-  deployment just because this sharp edge presents it as the fix.** The
-  shared-rate-limit-bucket symptom above reappears in production the moment
-  the dashboard sits behind a reverse proxy, so the trail is tempting.
-  `ADDRESS_HEADER` makes adapter-node trust whatever `X-Forwarded-For` it is
-  handed, and it is safe in production **only** behind a proxy that
-  *overwrites* that header (nginx `proxy_set_header X-Forwarded-For
-  $remote_addr`) — never one that *appends* to a client-supplied value. Set it
-  on a dashboard that is directly reachable and every client picks its own
-  `authRateLimit` bucket by choosing its own address, which defeats the login
-  brute-force throttle outright. It is deliberately absent from
-  `docker-compose.yml`, `.env.example` and `docs/`; shipping it needs the
-  proxy guidance shipped with it (recorded as a follow-up in
-  `plans/README.md`).
+  deployment.** It makes adapter-node trust `X-Forwarded-For` from ANY
+  socket, so on a directly reachable dashboard every client picks its own
+  `authRateLimit` bucket. Production uses the dashboard's
+  `TRUSTED_PROXY_IPS` instead (backlog #31, `runtime/client-address.js`,
+  compose `DASHBOARD_TRUSTED_PROXY_IPS`): `runtime/server.js` points
+  `ADDRESS_HEADER` at an internal header it OVERWRITES on every request,
+  with `X-Forwarded-For` honoured only from a trusted socket, and refuses to
+  start if `ADDRESS_HEADER` or `XFF_DEPTH` is also set. Both the dashboard and
+  the API (`getClientIp`, backlog #39) take the rightmost
+  `X-Forwarded-For` hop that is not a trusted proxy: proxies append, so the
+  left side is client-written.
 
 - **GitGuardian flags the password test fixtures, and `.gitguardian.yaml`
   will NOT silence it.** PR #135 tripped 8 "Generic Password" findings, all

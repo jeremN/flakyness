@@ -218,3 +218,62 @@ describe('admin users page — delete confirm state machine (findings-r1 I-3)', 
     await expect.element(page.getByRole('button', { name: 'Confirm delete' })).toBeDisabled();
   });
 });
+
+// Backlog #37: several resets in a row used to yield identical, unlabelled
+// panels. The label names the account, looked up in the reloaded user list.
+describe('admin users page — attributed temporary password (backlog #37)', () => {
+  it('names the user the temporary password belongs to', async () => {
+    render(Page, {
+      props: {
+        data: { ...layoutData, users: [user(), user({ id: 'u2', email: 'bob@x.test' })] },
+        form: { success: true, temporaryPassword: 'tmp_reset', warning: 'w', forUserId: 'u2' },
+      },
+    });
+    await expect.element(page.getByText('Temporary password for bob@x.test')).toBeInTheDocument();
+    await expect.element(page.getByText('Temporary password for alice@x.test')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the plain label when the user is not in the list', async () => {
+    render(Page, {
+      props: {
+        data: { ...layoutData, users: [user()] },
+        form: { success: true, temporaryPassword: 'tmp_reset', warning: 'w', forUserId: 'gone' },
+      },
+    });
+    await expect.element(page.getByText('Temporary password', { exact: true })).toBeInTheDocument();
+  });
+});
+
+// Backlog #37: a reset revokes every session of the user, so it takes a
+// confirmation that says so, like delete.
+describe('admin users page — reset password confirmation (backlog #37)', () => {
+  it('asks for confirmation and states the consequence before resetting', async () => {
+    render(Page, { props: { data: { ...layoutData, users: [user({ email: 'alice@x.test' })] }, form: null } });
+    await expect.element(page.getByRole('button', { name: 'Confirm reset' })).not.toBeInTheDocument();
+
+    await page.getByRole('button', { name: 'Reset password' }).click();
+
+    await expect.element(page.getByRole('button', { name: 'Reset password' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Confirm reset' })).toBeInTheDocument();
+    await expect.element(page.getByText('out everywhere and sets a new temporary password.', { exact: false })).toBeInTheDocument();
+  });
+
+  it('Cancel returns to the Reset password button', async () => {
+    render(Page, { props: { data: { ...layoutData, users: [user()] }, form: null } });
+    await page.getByRole('button', { name: 'Reset password' }).click();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+
+    await expect.element(page.getByRole('button', { name: 'Reset password' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Confirm reset' })).not.toBeInTheDocument();
+  });
+
+  it('opens the confirmation for one row only', async () => {
+    render(Page, {
+      props: { data: { ...layoutData, users: [user(), user({ id: 'u2', email: 'bob@x.test' })] }, form: null },
+    });
+    await page.getByRole('button', { name: 'Reset password' }).first().click();
+
+    await expect.element(page.getByRole('button', { name: 'Confirm reset' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Reset password' })).toBeInTheDocument();
+  });
+});

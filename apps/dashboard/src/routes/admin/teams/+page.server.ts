@@ -55,6 +55,9 @@ export const actions: Actions = {
     const form = await request.formData();
     const teamId = String(form.get('teamId') ?? '');
     const name = String(form.get('name') ?? '').trim();
+    // Same id-presence check as users and rules (backlog #37): a missing id
+    // can only 404, so do not spend an admin round-trip on it.
+    if (!teamId) return fail(400, { error: 'Missing team.' });
     if (!name) return fail(400, { error: 'Enter a team name.' });
     try {
       await createAdminApi(locals.sessionToken, locals.clientIp).patchTeam(teamId, name);
@@ -69,6 +72,8 @@ export const actions: Actions = {
     const form = await request.formData();
     const teamId = String(form.get('teamId') ?? '');
     const typedName = String(form.get('confirmName') ?? '');
+    // Checked before the listTeams() pre-fetch: that is two admin calls saved.
+    if (!teamId) return fail(400, { error: 'Missing team.' });
 
     const api = createAdminApi(locals.sessionToken, locals.clientIp);
     // Re-fetch the authoritative name server-side and compare there. A

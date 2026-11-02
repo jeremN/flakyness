@@ -1,0 +1,29 @@
+{
+  "name": "auditor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Quality auditor (a11y / SEO / perf) for Flackyness — plan 060",
+  "bin": {
+    "flackyness-audit": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm",
+    "audit": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fixture:api": "tsx scripts/regenerate-api-fixture.ts"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "playwright": "1.64.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsup": "^9.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

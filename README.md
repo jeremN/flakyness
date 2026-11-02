@@ -9,6 +9,7 @@ A self-hosted flaky test tracking system for CI/CD pipelines. Collect, analyze, 
 - 📈 **Trend Analysis** - Track flake rates over time with ECharts
 - 🔌 **GitLab CI Integration** - Simple curl-based report upload
 - 🐙 **GitHub Action** - Upload reports and comment known-flaky failures on PRs
+- ♿ **Quality Audits** - a11y / SEO / perf checks over a URL list with per-branch regression detection ([apps/auditor](apps/auditor/README.md))
 - 🐳 **Docker Ready** - Easy self-hosted deployment
 
 ## Tech Stack
@@ -98,6 +99,8 @@ flackyness/
 │   │   │   ├── parsers/        # Playwright JSON parser
 │   │   │   └── db/             # Drizzle schema
 │   │   └── Dockerfile
+│   │
+│   ├── auditor/                # a11y / SEO / perf runner (Playwright + axe-core)
 │   │
 │   └── dashboard/              # SvelteKit frontend
 │       ├── src/

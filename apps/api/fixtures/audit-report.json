@@ -1,0 +1,518 @@
+{
+  "version": 1,
+  "tool": {
+    "name": "flackyness-auditor",
+    "version": "0.0.1"
+  },
+  "startedAt": "2026-09-26T20:52:09.730Z",
+  "finishedAt": "2026-09-26T20:52:24.893Z",
+  "pages": [
+    {
+      "url": "https://fixture.flackyness.test/good.html",
+      "device": "mobile",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 1,
+          "metrics": {
+            "lcp": 68,
+            "fcp": 68,
+            "cls": 0,
+            "tbt": 0,
+            "ttfb": 9
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 1,
+          "issues": []
+        },
+        {
+          "category": "a11y",
+          "score": 1,
+          "issues": []
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/good.html",
+      "device": "desktop",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 1,
+          "metrics": {
+            "lcp": 36,
+            "fcp": 36,
+            "cls": 0,
+            "tbt": 0,
+            "ttfb": 4
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 1,
+          "issues": []
+        },
+        {
+          "category": "a11y",
+          "score": 1,
+          "issues": []
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/bad.html",
+      "device": "mobile",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 0.9099,
+          "metrics": {
+            "lcp": 68,
+            "fcp": 68,
+            "cls": 0.0375,
+            "tbt": 352,
+            "ttfb": 6
+          },
+          "issues": [
+            {
+              "id": "tbt-needs-improvement",
+              "severity": "moderate",
+              "message": "Total Blocking Time is 352 ms (good: <= 200 ms)"
+            }
+          ]
+        },
+        {
+          "category": "seo",
+          "score": 0.5,
+          "issues": [
+            {
+              "id": "canonical-multiple",
+              "severity": "serious",
+              "message": "2 different canonicals — search engines ignore all of them: https://staging.example.test/bad, https://www.example.test/bad"
+            },
+            {
+              "id": "title-length",
+              "severity": "minor",
+              "message": "Title is 3 characters (aim for 10–60): \"Bad\""
+            },
+            {
+              "id": "meta-description-missing",
+              "severity": "moderate",
+              "message": "Missing or empty meta description"
+            },
+            {
+              "id": "h1-multiple",
+              "severity": "minor",
+              "message": "2 <h1> elements on the page"
+            },
+            {
+              "id": "html-lang-missing",
+              "severity": "moderate",
+              "message": "Missing <html lang>"
+            },
+            {
+              "id": "viewport-missing",
+              "severity": "moderate",
+              "message": "Missing <meta name=\"viewport\">"
+            },
+            {
+              "id": "hreflang-invalid-code",
+              "severity": "moderate",
+              "message": "Invalid hreflang code(s): \"english\""
+            },
+            {
+              "id": "hreflang-relative",
+              "severity": "moderate",
+              "message": "hreflang URLs must be absolute: /bad-en.html"
+            },
+            {
+              "id": "hreflang-no-self",
+              "severity": "minor",
+              "message": "hreflang set has no self-referencing entry"
+            },
+            {
+              "id": "jsonld-invalid",
+              "severity": "serious",
+              "message": "1 JSON-LD block(s) are not valid JSON"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 0.3462,
+          "issues": [
+            {
+              "id": "image-alt",
+              "severity": "critical",
+              "message": "Images must have alternative text",
+              "count": 1
+            },
+            {
+              "id": "label",
+              "severity": "critical",
+              "message": "Form elements must have labels",
+              "count": 1
+            },
+            {
+              "id": "color-contrast",
+              "severity": "serious",
+              "message": "Elements must meet minimum color contrast ratio thresholds",
+              "count": 1
+            },
+            {
+              "id": "html-has-lang",
+              "severity": "serious",
+              "message": "<html> element must have a lang attribute",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/bad.html",
+      "device": "desktop",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 0.7922,
+          "metrics": {
+            "lcp": 32,
+            "fcp": 32,
+            "cls": 0.1185,
+            "tbt": 350,
+            "ttfb": 2
+          },
+          "issues": [
+            {
+              "id": "cls-needs-improvement",
+              "severity": "moderate",
+              "message": "Cumulative Layout Shift is 0.118 (good: <= 0.100)"
+            },
+            {
+              "id": "tbt-needs-improvement",
+              "severity": "moderate",
+              "message": "Total Blocking Time is 350 ms (good: <= 200 ms)"
+            }
+          ]
+        },
+        {
+          "category": "seo",
+          "score": 0.5,
+          "issues": [
+            {
+              "id": "canonical-multiple",
+              "severity": "serious",
+              "message": "2 different canonicals — search engines ignore all of them: https://staging.example.test/bad, https://www.example.test/bad"
+            },
+            {
+              "id": "title-length",
+              "severity": "minor",
+              "message": "Title is 3 characters (aim for 10–60): \"Bad\""
+            },
+            {
+              "id": "meta-description-missing",
+              "severity": "moderate",
+              "message": "Missing or empty meta description"
+            },
+            {
+              "id": "h1-multiple",
+              "severity": "minor",
+              "message": "2 <h1> elements on the page"
+            },
+            {
+              "id": "html-lang-missing",
+              "severity": "moderate",
+              "message": "Missing <html lang>"
+            },
+            {
+              "id": "viewport-missing",
+              "severity": "moderate",
+              "message": "Missing <meta name=\"viewport\">"
+            },
+            {
+              "id": "hreflang-invalid-code",
+              "severity": "moderate",
+              "message": "Invalid hreflang code(s): \"english\""
+            },
+            {
+              "id": "hreflang-relative",
+              "severity": "moderate",
+              "message": "hreflang URLs must be absolute: /bad-en.html"
+            },
+            {
+              "id": "hreflang-no-self",
+              "severity": "minor",
+              "message": "hreflang set has no self-referencing entry"
+            },
+            {
+              "id": "jsonld-invalid",
+              "severity": "serious",
+              "message": "1 JSON-LD block(s) are not valid JSON"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 0.3462,
+          "issues": [
+            {
+              "id": "image-alt",
+              "severity": "critical",
+              "message": "Images must have alternative text",
+              "count": 1
+            },
+            {
+              "id": "label",
+              "severity": "critical",
+              "message": "Form elements must have labels",
+              "count": 1
+            },
+            {
+              "id": "color-contrast",
+              "severity": "serious",
+              "message": "Elements must meet minimum color contrast ratio thresholds",
+              "count": 1
+            },
+            {
+              "id": "html-has-lang",
+              "severity": "serious",
+              "message": "<html> element must have a lang attribute",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/noindex.html",
+      "device": "mobile",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 1,
+          "metrics": {
+            "lcp": 60,
+            "fcp": 60,
+            "cls": 0,
+            "tbt": 0,
+            "ttfb": 4
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 0.9123,
+          "issues": [
+            {
+              "id": "noindex",
+              "severity": "serious",
+              "message": "Page is excluded from indexing (X-Robots-Tag \"noindex\")"
+            },
+            {
+              "id": "canonical-not-self",
+              "severity": "info",
+              "message": "Canonical points elsewhere: https://fixture.flackyness.test/good.html"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 1,
+          "issues": []
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/noindex.html",
+      "device": "desktop",
+      "checks": [
+        {
+          "category": "perf",
+          "score": 1,
+          "metrics": {
+            "lcp": 40,
+            "fcp": 40,
+            "cls": 0,
+            "tbt": 0,
+            "ttfb": 5
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 0.9123,
+          "issues": [
+            {
+              "id": "noindex",
+              "severity": "serious",
+              "message": "Page is excluded from indexing (X-Robots-Tag \"noindex\")"
+            },
+            {
+              "id": "canonical-not-self",
+              "severity": "info",
+              "message": "Canonical points elsewhere: https://fixture.flackyness.test/good.html"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 1,
+          "issues": []
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/missing",
+      "device": "mobile",
+      "checks": [
+        {
+          "category": "perf",
+          "score": null,
+          "metrics": {
+            "cls": 0,
+            "ttfb": 4
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 0.2632,
+          "issues": [
+            {
+              "id": "http-status",
+              "severity": "critical",
+              "message": "Document returned HTTP 404 (expected 2xx)"
+            },
+            {
+              "id": "canonical-missing",
+              "severity": "serious",
+              "message": "No <link rel=\"canonical\">"
+            },
+            {
+              "id": "title-length",
+              "severity": "minor",
+              "message": "Title is 9 characters (aim for 10–60): \"Not found\""
+            },
+            {
+              "id": "meta-description-missing",
+              "severity": "moderate",
+              "message": "Missing or empty meta description"
+            },
+            {
+              "id": "h1-missing",
+              "severity": "moderate",
+              "message": "No <h1> on the page"
+            },
+            {
+              "id": "html-lang-missing",
+              "severity": "moderate",
+              "message": "Missing <html lang>"
+            },
+            {
+              "id": "viewport-missing",
+              "severity": "moderate",
+              "message": "Missing <meta name=\"viewport\">"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 0.4615,
+          "issues": [
+            {
+              "id": "html-has-lang",
+              "severity": "serious",
+              "message": "<html> element must have a lang attribute",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "url": "https://fixture.flackyness.test/missing",
+      "device": "desktop",
+      "checks": [
+        {
+          "category": "perf",
+          "score": null,
+          "metrics": {
+            "cls": 0,
+            "ttfb": 5
+          },
+          "issues": []
+        },
+        {
+          "category": "seo",
+          "score": 0.2632,
+          "issues": [
+            {
+              "id": "http-status",
+              "severity": "critical",
+              "message": "Document returned HTTP 404 (expected 2xx)"
+            },
+            {
+              "id": "canonical-missing",
+              "severity": "serious",
+              "message": "No <link rel=\"canonical\">"
+            },
+            {
+              "id": "title-length",
+              "severity": "minor",
+              "message": "Title is 9 characters (aim for 10–60): \"Not found\""
+            },
+            {
+              "id": "meta-description-missing",
+              "severity": "moderate",
+              "message": "Missing or empty meta description"
+            },
+            {
+              "id": "h1-missing",
+              "severity": "moderate",
+              "message": "No <h1> on the page"
+            },
+            {
+              "id": "html-lang-missing",
+              "severity": "moderate",
+              "message": "Missing <html lang>"
+            },
+            {
+              "id": "viewport-missing",
+              "severity": "moderate",
+              "message": "Missing <meta name=\"viewport\">"
+            }
+          ]
+        },
+        {
+          "category": "a11y",
+          "score": 0.4615,
+          "issues": [
+            {
+              "id": "html-has-lang",
+              "severity": "serious",
+              "message": "<html> element must have a lang attribute",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:1/unreachable",
+      "device": "mobile",
+      "error": "page.goto: net::ERR_UNSAFE_PORT at http://127.0.0.1:1/unreachable",
+      "checks": []
+    },
+    {
+      "url": "http://127.0.0.1:1/unreachable",
+      "device": "desktop",
+      "error": "page.goto: net::ERR_UNSAFE_PORT at http://127.0.0.1:1/unreachable",
+      "checks": []
+    }
+  ]
+}

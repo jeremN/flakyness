@@ -25,6 +25,7 @@ function sessionUser(mustChangePassword: boolean): SessionUser {
     email: 'u@example.com',
     displayName: null,
     isGlobalAdmin: true,
+    isTeamAdmin: false,
     mustChangePassword,
     sessionId: 's1',
   };

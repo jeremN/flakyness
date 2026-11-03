@@ -2533,16 +2533,22 @@ and it differs in the safe direction.
 |----------|-------|
 | `POST /api/v1/reports`, `POST /api/v1/audits` (before authentication) | 300 **unauthenticated** requests/minute per IP, **shared** between the two |
 | `POST /api/v1/reports`, `POST /api/v1/audits` (after authentication) | 60 requests/minute per token, **shared** between the two |
-| Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no session) | 5 requests/minute per IP |
-| Admin endpoints (valid `ADMIN_TOKEN`, **or** any signed-in session) | not limited by the admin brute-force limiter |
+| Admin endpoints (missing/invalid `ADMIN_TOKEN`, and no admin session) | 5 requests/minute per IP |
+| Admin endpoints (session of a plain member: not a global admin, `team_admin` in no team) | 5 requests/minute per IP |
+| Admin endpoints (valid `ADMIN_TOKEN`, **or** a global-admin or `team_admin` session) | not limited by the admin brute-force limiter |
 | Admin endpoints (session pending a forced password change) | 5 requests/minute per IP — **not** exempt, even with a valid `ADMIN_TOKEN` alongside |
 | `POST /api/v1/auth/login`, `POST /api/v1/auth/change-password` | 10 requests/minute per IP |
 | All other endpoints (including `GET /api/v1`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`) | 100 requests/minute per IP |
 
-The admin limiter throttles only unauthenticated or wrong-token requests — its
-job is to slow brute-force guessing. A request bearing a valid `ADMIN_TOKEN`, or
-one carrying a signed-in session, is exempt, so a server-mediated admin console
-(whose calls all originate from one IP) is not throttled for legitimate use.
+The admin limiter slows brute-force guessing. A request bearing a valid
+`ADMIN_TOKEN`, or one carrying the session of a global admin or of a
+`team_admin` in at least one team, is exempt. A server-mediated admin console
+(whose calls all originate from one IP) is therefore not throttled for
+legitimate use.
+
+The session of a plain member is throttled. It can only get a `403` from the
+admin endpoints, and an exemption would let it repeat that refusal without
+limit (backlog #22a).
 
 The one session that is **not** exempt is one pending a forced password change:
 every such request is going to be refused with `403 password_change_required`

@@ -17,7 +17,7 @@ const { selectMock, deleteMock, updateMock, eqSpy } = vi.hoisted(() => ({
   eqSpy: vi.fn(),
 }));
 
-const { sessionsTable, usersTable } = vi.hoisted(() => ({
+const { sessionsTable, usersTable, teamMembersTable } = vi.hoisted(() => ({
   sessionsTable: {
     id: 'sessions.id',
     tokenHash: 'sessions.token_hash',
@@ -32,6 +32,12 @@ const { sessionsTable, usersTable } = vi.hoisted(() => ({
     isGlobalAdmin: 'users.is_global_admin',
     mustChangePassword: 'users.must_change_password',
   },
+  // Only interpolated into the isTeamAdmin subquery; the fake select never
+  // runs that SQL.
+  teamMembersTable: {
+    userId: 'team_members.user_id',
+    role: 'team_members.role',
+  },
 }));
 
 const { loggerWarnMock } = vi.hoisted(() => ({ loggerWarnMock: vi.fn() }));
@@ -40,6 +46,7 @@ vi.mock('../db', () => ({
   db: { select: selectMock, delete: deleteMock, update: updateMock },
   sessions: sessionsTable,
   users: usersTable,
+  teamMembers: teamMembersTable,
 }));
 
 vi.mock('./logger', () => ({
@@ -91,6 +98,7 @@ interface FakeRow {
   email: string;
   displayName: string | null;
   isGlobalAdmin: boolean;
+  isTeamAdmin: boolean;
   mustChangePassword: boolean;
 }
 
@@ -133,7 +141,7 @@ describe('sessionAuth() - no or unknown cookie', () => {
 });
 
 describe('sessionAuth() - valid session', () => {
-  it('populates sessionUser with all six fields', async () => {
+  it('populates sessionUser with all seven fields', async () => {
     const row: FakeRow = {
       sessionId: 'sess-live',
       expiresAt: new Date(Date.now() + 60_000),
@@ -142,6 +150,9 @@ describe('sessionAuth() - valid session', () => {
       email: 'ada@example.com',
       displayName: 'Ada Lovelace',
       isGlobalAdmin: true,
+      // true on purpose: a projection that hard-coded `isTeamAdmin: false`
+      // would fail this, not just the shape.
+      isTeamAdmin: true,
       mustChangePassword: false,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -156,6 +167,7 @@ describe('sessionAuth() - valid session', () => {
         email: 'ada@example.com',
         displayName: 'Ada Lovelace',
         isGlobalAdmin: true,
+        isTeamAdmin: true,
         mustChangePassword: false,
         sessionId: 'sess-live',
       },
@@ -174,6 +186,7 @@ describe('sessionAuth() - valid session', () => {
       email: 'grace@example.com',
       displayName: 'Grace Hopper',
       isGlobalAdmin: false,
+      isTeamAdmin: false,
       mustChangePassword: true,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -196,6 +209,7 @@ describe('sessionAuth() - expired session', () => {
       email: 'ada@example.com',
       displayName: null,
       isGlobalAdmin: false,
+      isTeamAdmin: false,
       mustChangePassword: false,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -225,6 +239,7 @@ describe('sessionAuth() - sliding TTL', () => {
       email: 'ada@example.com',
       displayName: null,
       isGlobalAdmin: false,
+      isTeamAdmin: false,
       mustChangePassword: false,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -266,6 +281,7 @@ describe('sessionAuth() - sliding TTL', () => {
       email: 'ada@example.com',
       displayName: null,
       isGlobalAdmin: false,
+      isTeamAdmin: false,
       mustChangePassword: false,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -280,6 +296,7 @@ describe('sessionAuth() - sliding TTL', () => {
         email: 'ada@example.com',
         displayName: null,
         isGlobalAdmin: false,
+        isTeamAdmin: false,
         mustChangePassword: false,
         sessionId: 'sess-fresh',
       },
@@ -298,6 +315,7 @@ describe('sessionAuth() - best-effort writes swallow their own failures', () => 
       email: 'ada@example.com',
       displayName: null,
       isGlobalAdmin: false,
+      isTeamAdmin: false,
       mustChangePassword: false,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -327,6 +345,7 @@ describe('sessionAuth() - best-effort writes swallow their own failures', () => 
       email: 'ada@example.com',
       displayName: 'Ada',
       isGlobalAdmin: true,
+      isTeamAdmin: false,
       mustChangePassword: true,
     };
     selectMock.mockReturnValue(chain(Promise.resolve([row])));
@@ -342,6 +361,7 @@ describe('sessionAuth() - best-effort writes swallow their own failures', () => 
         email: 'ada@example.com',
         displayName: 'Ada',
         isGlobalAdmin: true,
+        isTeamAdmin: false,
         mustChangePassword: true,
         sessionId: 'sess-slide-fail',
       },

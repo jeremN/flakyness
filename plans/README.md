@@ -874,11 +874,17 @@ rationale. Items 5–7 remain unplanned.
     `anonymousAccess()`), whereas `PATCH` fails **closed** under the same mutation via its early
     401. `sessionUser` is untyped in Hono's `Variables` map, so tsc will never say it. Both the
     static guard and a behavioural test now red on that mutation, so this is belt-and-braces.
-22. **[PARTLY RESOLVED 2026-11-03 — (a) fixed: `hasAdminStanding` exempts only a global-admin
+22. **[RESOLVED 2026-11-03 — (a) PR #209: `hasAdminStanding` exempts only a global-admin
     or `team_admin` session. The `team_admin` bit comes from an `EXISTS` subquery in
     `sessionAuth`'s own query (`SessionUser.isTeamAdmin`), so the check adds no query and a
-    throttled request pays none. A plain member is back in the 5/min bucket. Covered by
-    `routes/admin-rate-limit-standing.test.ts` (real DB). (b) and (c) still open. Deferred from
+    throttled request pays none. A plain member is back in the 5/min bucket. (b) `adminAuth()`
+    deleted: `adminOrGlobalAdminAuth()` already takes `ADMIN_TOKEN` as the break-glass
+    credential, without the 500 on an unset token. Its unit tests moved to the surviving gate.
+    (c) no longer reproduces: the limiter counts only callers that auth then refuses before
+    `next()`, so the request never reaches `adminRouter`'s copy. Measured: one slot per
+    request. `routes/admin-rate-limit-standing.test.ts` guards it with a global-admin session
+    on an unrouted `/admin/users` path (only a global admin or `ADMIN_TOKEN` reaches the second router); a
+    predicate that exempts nobody turns it red. Deferred from
     plan 058's review, Minors #6/#9 + M5] Three small admin-surface
     decisions.** (a) `hasAdminStanding` exempts *any* session from `adminRateLimit`, not just
     admin ones — an authenticated plain member can hammer `/api/v1/admin/*` unthrottled, each

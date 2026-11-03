@@ -14,7 +14,7 @@ export function extractBearerToken(authHeader: string | undefined | null): strin
 }
 
 /**
- * Constant-time token comparison, shared by adminAuth and any other route
+ * Constant-time token comparison, shared by resolveAccessValue and any other route
  * gated by a bearer token compared against a single expected value (e.g. the
  * /metrics endpoint's METRICS_TOKEN, and the admin rate limiter's valid-token
  * exemption).

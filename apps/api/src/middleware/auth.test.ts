@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { hashToken, generateToken, adminAuth, projectAuth, readAuth } from '../middleware/auth';
+import { HTTPException } from 'hono/http-exception';
+import { hashToken, generateToken, adminOrGlobalAdminAuth, projectAuth, readAuth } from '../middleware/auth';
 import type { SessionUser } from '../middleware/session';
 
 describe('Auth Utilities', () => {
@@ -71,77 +72,57 @@ describe('Auth Utilities', () => {
   });
 });
 
-describe('adminAuth middleware', () => {
+// adminAuth() (ADMIN_TOKEN only) was deleted in backlog #22b; this gate is the
+// only admin-API gate. These cases need no database: a session or an unknown
+// bearer makes resolveAccessValue query it, and routes/admin.test.ts covers
+// those against a real Postgres.
+describe('adminOrGlobalAdminAuth middleware (no session)', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
   function makeApp() {
     const app = new Hono();
-    app.use('/admin/*', adminAuth());
+    app.onError((err, c) =>
+      err instanceof HTTPException ? c.json({ error: err.message }, err.status) : c.json({}, 500)
+    );
+    app.use('/admin/*', adminOrGlobalAdminAuth());
     app.get('/admin/ping', (c) => c.json({ ok: true }));
     return app;
   }
 
-  it('should return 401 when no Authorization header is provided', async () => {
+  it('returns 401 when no Authorization header is provided', async () => {
     vi.stubEnv('ADMIN_TOKEN', 'right-token');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping');
+    const res = await makeApp().request('/admin/ping');
     expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('Authorization header required');
   });
 
-  it('should return 401 for a non-Bearer authorization scheme', async () => {
+  it.each([
+    ['a non-Bearer scheme', 'Basic x'],
+    ['a Bearer header without a token', 'Bearer'],
+  ])('returns 401 for %s', async (_label, header) => {
     vi.stubEnv('ADMIN_TOKEN', 'right-token');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping', {
-      headers: { Authorization: 'Basic x' },
-    });
+    const res = await makeApp().request('/admin/ping', { headers: { Authorization: header } });
     expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe('Invalid authorization format. Use: Bearer <token>');
   });
 
-  it('should return 401 for a malformed Bearer header without a token', async () => {
+  it('returns 200 for the correct ADMIN_TOKEN', async () => {
     vi.stubEnv('ADMIN_TOKEN', 'right-token');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping', {
-      headers: { Authorization: 'Bearer' },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('should return 401 for a wrong token', async () => {
-    vi.stubEnv('ADMIN_TOKEN', 'right-token');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping', {
-      headers: { Authorization: 'Bearer wrong-token' },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('should return 200 for the correct token', async () => {
-    vi.stubEnv('ADMIN_TOKEN', 'right-token');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping', {
+    const res = await makeApp().request('/admin/ping', {
       headers: { Authorization: 'Bearer right-token' },
     });
     expect(res.status).toBe(200);
-
-    const body = await res.json();
-    expect(body.ok).toBe(true);
+    expect((await res.json()).ok).toBe(true);
   });
 
-  it('should return 500 when ADMIN_TOKEN is not configured', async () => {
+  it('returns 401, not 500, when ADMIN_TOKEN is not configured', async () => {
+    // The trap that got adminAuth() deleted: it answered 500 here. With
+    // accounts, an install without a static admin token is a valid setup.
     vi.stubEnv('ADMIN_TOKEN', '');
-    const app = makeApp();
-
-    const res = await app.request('/admin/ping', {
-      headers: { Authorization: 'Bearer any-token' },
-    });
-    expect(res.status).toBe(500);
+    const res = await makeApp().request('/admin/ping');
+    expect(res.status).toBe(401);
   });
 });
 

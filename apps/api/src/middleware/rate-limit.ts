@@ -204,9 +204,10 @@ export const authRateLimit = createRateLimit(
  * server-mediated dashboard console, whose calls all share one dashboard-server
  * IP and would otherwise exhaust a per-IP bucket.
  *
- * MUST mirror adminAuth's extraction/compare exactly — it reuses the same
- * ./token helpers — so a request is never classed valid here yet rejected by
- * auth (or vice versa). Returns false (never throws) on a missing header via
+ * MUST mirror resolveAccessValue's ADMIN_TOKEN check exactly (the access
+ * middleware behind adminOrGlobalAdminAuth) — it reuses the same ./token
+ * helpers — so a request is never classed valid here yet rejected by auth
+ * (or vice versa). Returns false (never throws) on a missing header via
  * the `token !== null` guard, and false when ADMIN_TOKEN is unconfigured.
  * Exported for direct, deterministic unit testing of each branch.
  */

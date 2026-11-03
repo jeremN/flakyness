@@ -1201,7 +1201,7 @@ describeAdmin('Admin API Integration Tests', () => {
       expect(await runSurvives(runId)).toBe(true);
     });
 
-    // Test plan #8 — the route is actually behind adminAuth().
+    // Test plan #8 — the route is actually behind the admin auth gate.
     it('rejects requests without an auth header', async () => {
       const { projectId } = await createPruneProject('no-auth');
       const res = await app.request(`/api/v1/admin/projects/${projectId}/prune`, {

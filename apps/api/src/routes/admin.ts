@@ -1,6 +1,7 @@
 import { Hono, Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { eq, and, lt, inArray, sql, desc } from 'drizzle-orm';
 import { db, projects, testRuns, testResults, flakyTests, quarantineRules, teams } from '../db';
 import { adminOrGlobalAdminAuth, hashToken, generateToken } from '../middleware/auth';
@@ -304,7 +305,7 @@ adminRouter.get('/projects', async (c) => {
  */
 adminRouter.post(
   '/projects',
-  zValidator('json', createProjectSchema),
+  zValidator('json', createProjectSchema, validationHook),
   async (c) => {
     if (!canAdministerTeams(getAccess(c))) {
       return c.json({ error: 'Global admin required' }, 403);
@@ -414,7 +415,7 @@ adminRouter.post('/projects/:id/rotate-token', async (c) => {
  */
 adminRouter.patch(
   '/projects/:id',
-  zValidator('json', projectConfigPatchSchema),
+  zValidator('json', projectConfigPatchSchema, validationHook),
   async (c) => {
     const parsed = uuidSchema.safeParse(c.req.param('id'));
     if (!parsed.success) {
@@ -769,7 +770,7 @@ adminRouter.get('/projects/:id/rules', async (c) => {
  * appended after the current highest position (evaluated last / lowest
  * priority).
  */
-adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema), async (c) => {
+adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema, validationHook), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('id'));
   if (!parsed.success) {
     return c.json({ error: 'Invalid project ID format' }, 400);
@@ -818,7 +819,7 @@ adminRouter.post('/projects/:id/rules', zValidator('json', quarantineRuleSchema)
  */
 adminRouter.patch(
   '/projects/:id/rules/:ruleId',
-  zValidator('json', quarantineRulePatchSchema),
+  zValidator('json', quarantineRulePatchSchema, validationHook),
   async (c) => {
     const idParsed = uuidSchema.safeParse(c.req.param('id'));
     if (!idParsed.success) {
@@ -898,7 +899,7 @@ adminRouter.delete('/projects/:id/rules/:ruleId', async (c) => {
  */
 adminRouter.post(
   '/projects/:id/rules/reorder',
-  zValidator('json', reorderRulesSchema),
+  zValidator('json', reorderRulesSchema, validationHook),
   async (c) => {
     const parsed = uuidSchema.safeParse(c.req.param('id'));
     if (!parsed.success) {

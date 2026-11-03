@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { dispatchReport } from '../parsers/registry';
 import { projectAuth } from '../middleware/auth';
 import { reportPreAuthRateLimit, reportRateLimit } from '../middleware/rate-limit';
@@ -96,7 +97,7 @@ reports.use('*', passwordChangeGate());
  */
 reports.post(
   '/',
-  zValidator('query', reportQuerySchema),
+  zValidator('query', reportQuerySchema, validationHook),
   async (c) => {
     const project = c.get('project');
     const { branch, commit, pipeline } = c.req.valid('query');

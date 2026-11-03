@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { and, eq, sql } from 'drizzle-orm';
 import { setCookie, deleteCookie } from 'hono/cookie';
 import { db, users, teams, teamMembers } from '../db';
@@ -138,7 +139,7 @@ function setSessionCookie(c: Context, token: string) {
 /**
  * POST /api/v1/auth/login
  */
-authRouter.post('/login', zValidator('json', loginSchema), async (c) => {
+authRouter.post('/login', zValidator('json', loginSchema, validationHook), async (c) => {
   const { email, password } = c.req.valid('json');
   const normalisedEmail = normaliseEmail(email);
 
@@ -244,7 +245,7 @@ authRouter.get('/me', async (c) => {
  * change that leaves other devices signed in has not actually revoked
  * anything.
  */
-authRouter.post('/change-password', zValidator('json', changePasswordSchema), async (c) => {
+authRouter.post('/change-password', zValidator('json', changePasswordSchema, validationHook), async (c) => {
   const sessionUser = getSessionUser(c);
   if (!sessionUser) {
     return c.json({ error: 'Not authenticated' }, 401);

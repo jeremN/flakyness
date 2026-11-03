@@ -2421,31 +2421,43 @@ Most errors carry an `error` **string**:
 }
 ```
 
-Some also carry a machine-readable `code` alongside it — see
-[Password change required](#password-change-required) below for the one
-that does today.
+Some also carry a machine-readable `code` alongside it: see
+[Password change required](#password-change-required) and the validation
+errors below.
 
-**Request-validation failures are the exception.** Routes validated by
-`@hono/zod-validator` are mounted without a custom error hook, so a `400`
-from schema validation returns the validator's own shape, in which `error`
-is an **object**, not a string:
+### Validation errors
+
+A request that fails schema validation (body, query string) returns `400`
+with `code: "validation_failed"`. `error` is a one-line summary, still a
+string. `issues` lists every problem:
 
 ```json
 {
-  "success": false,
-  "error": {
-    "name": "ZodError",
-    "message": "[\n  {\n    \"expected\": \"string\", ... }\n]"
-  }
+  "error": "Invalid request body: email: Invalid email address (and 1 more)",
+  "code": "validation_failed",
+  "issues": [
+    { "path": "email", "message": "Invalid email address", "code": "invalid_format" },
+    { "path": "password", "message": "Too small: expected string to have >=1 characters", "code": "too_small" }
+  ]
 }
 ```
 
-Note that `message` is itself a JSON-encoded string of the issue array —
-parse it a second time to read the individual issues. Do not write a
-client that assumes `typeof body.error === 'string'`; branch on the
-status code, or check `body.success === false`, to tell the two shapes
-apart. (This shape is the validator library's default and is not part of
-a stability guarantee — see follow-up #25 in `plans/README.md`.)
+| Field | Meaning |
+|-------|---------|
+| `issues[].path` | Dotted path to the field (`teams.0.role`). `""` means the whole input. |
+| `issues[].message` | Human-readable reason. Do not parse it: the wording can change. |
+| `issues[].code` | Zod issue code (`invalid_type`, `too_small`, `invalid_format`, …). |
+
+The rejected value is never echoed back.
+
+> **Changed (backlog #25).** Before this, a validation `400` returned the
+> validator library's default body: `{"success": false, "error": {"name":
+> "ZodError", "message": "<JSON string>"}}`, where `error` was an object. A
+> client that parsed that shape must read `issues` instead. A client that
+> read `body.error` only when it is a string now gets the summary.
+
+A body that is not valid JSON is rejected before schema validation, with
+`400` and the plain `{ "error": "<string>" }` shape.
 
 ### Common Status Codes
 

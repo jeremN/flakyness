@@ -926,7 +926,7 @@ rationale. Items 5–7 remain unplanned.
     silently carried. Fix shapes worth weighing: a last-global-admin guard on self-reset, or
     generating the temp password before the write and making delivery idempotent.
 
-25. **[OPEN — found 2026-08-15 while fact-checking plan 058b's docs] Validation `400`s return
+25. **[RESOLVED 2026-11-03 — one shared `validationHook` (`middleware/validation.ts`) at all 15 `zValidator` sites (the 14 listed below plus `audits.ts`) answers `400 {error: '<summary>', code: 'validation_failed', issues: [{path, message, code}]}`. `error` is a string again; the rejected input is never copied. `validation-hook-coverage.test.ts` fails on a site without the hook; `middleware/validation.test.ts` pins the shape end to end on `POST /auth/login`. Breaking for a client of the old shape, documented in `docs/API.md` (Validation errors). Found 2026-08-15 while fact-checking plan 058b's docs] Validation `400`s return
     `@hono/zod-validator`'s internal shape, breaking the API's own `{error: string}` contract.**
     All 14 `zValidator(...)` call sites (`routes/{admin,admin-users,admin-teams,auth,reports}.ts`)
     are mounted **without** the optional third `hook` argument, so the library's default runs:

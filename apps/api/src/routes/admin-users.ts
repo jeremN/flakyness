@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { eq, sql } from 'drizzle-orm';
 import { db, users, teams, teamMembers } from '../db';
 import { logger } from '../middleware/logger';
@@ -178,7 +179,7 @@ adminUsersRouter.get('/', async (c) => {
  * in this response and nowhere else — not in the database, not in the log.
  * Same contract as project-token creation.
  */
-adminUsersRouter.post('/', zValidator('json', createUserSchema), async (c) => {
+adminUsersRouter.post('/', zValidator('json', createUserSchema, validationHook), async (c) => {
   const { email, displayName, isGlobalAdmin } = c.req.valid('json');
   const normalisedEmail = normaliseEmail(email);
 
@@ -215,7 +216,7 @@ adminUsersRouter.post('/', zValidator('json', createUserSchema), async (c) => {
 /**
  * PATCH /api/v1/admin/users/:userId
  */
-adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema), async (c) => {
+adminUsersRouter.patch('/:userId', zValidator('json', patchUserSchema, validationHook), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('userId'));
   if (!parsed.success) return c.json({ error: 'Invalid user ID format' }, 400);
 

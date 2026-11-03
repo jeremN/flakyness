@@ -35,6 +35,31 @@ describe.skipIf(!DB)('reconcileQuarantine — rule path', () => {
     expect(ev.ruleId).toBeTruthy();      // provenance: which rule fired
   });
 
+  // Backlog #16 (mutation gate): pins the VALUES a rule-driven promotion
+  // writes, not just its outcome. Mixed statuses so the flake rate counts
+  // `failed` and `flaky` only: 3 failed + 1 flaky of 8 results = 0.5. A
+  // skipped or passed result counted as bad would give 1.0 or 0.875.
+  it('a rule-driven promotion records the slice flake rate, run count and rule provenance', async () => {
+    const p = await project();
+    const [rule] = await db.insert(quarantineRules).values({ projectId: p.id, position: 0, action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: 3, selectorBranch: 'main' }).returning();
+    for (let d = 0; d < 3; d++) await run(p.id, 'M', 'failed', 'main', d, 'e2e/m.spec.ts');
+    await run(p.id, 'M', 'flaky', 'main', 3, 'e2e/m.spec.ts');
+    for (const d of [4, 5]) await run(p.id, 'M', 'passed', 'main', d, 'e2e/m.spec.ts');
+    for (const d of [6, 7]) await run(p.id, 'M', 'skipped', 'main', d, 'e2e/m.spec.ts');
+
+    const transitions = await reconcileQuarantine(p.id, asOverrides(p));
+    const entered = transitions.find((t) => t.testName === 'M' && t.event === 'entered');
+    expect(entered).toMatchObject({ flakeRate: 0.5, ruleId: rule.id });
+
+    const [row] = await db.select().from(flakyTests).where(eq(flakyTests.projectId, p.id));
+    expect(row).toMatchObject({ flakeRate: '0.5000', totalRuns: 8, testFile: 'e2e/m.spec.ts', status: 'ignored', muteSource: 'auto' });
+
+    const [ev] = await db.select().from(quarantineEvents).where(eq(quarantineEvents.projectId, p.id));
+    // Rule-driven: rule_id is the provenance; the project threshold and TTL
+    // would mislead, so both are null.
+    expect(ev).toMatchObject({ event: 'entered', source: 'auto', flakeRate: '0.5000', ruleId: rule.id, threshold: null, ttlDays: null });
+  });
+
   it('does NOT re-enter an already auto-quarantined test on a repeat reconcile (no duplicate webhook/audit; Release owns its TTL)', async () => {
     const p = await project();
     await db.insert(quarantineRules).values({ projectId: p.id, position: 0, action: 'quarantine', conditionType: 'consecutive', consecutiveFailures: 3, selectorBranch: 'main' });

@@ -152,6 +152,13 @@ import { pathToFileURL } from 'node:url';
 // `mutation-reports` artifact): every score identical across both runs
 // (deterministic, pure modules). permissions.ts 96.67% (29/30, one survivor),
 // password-form.ts, project-groups.ts and team-members.ts 100.00%.
+// Backlog #16 promoted services/quarantine.ts into the gate 2026-11-03 from the
+// same two CI runs: 63.86% (129/202) in both. The 73 survivors (66 Survived,
+// 7 NoCoverage) cluster in three places: the audit row's field values
+// (flakeRate/threshold/ttlDays/ruleId), the rule-path upsert values, and
+// sliceFlakeRate (14). The same change added a rule-path test that pins
+// those values (quarantine-rules.engine.test.ts, "records the slice flake
+// rate"): re-baseline from the next nightly run and raise this floor.
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -165,6 +172,7 @@ export const HARDENED = [
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/session.ts',  floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 056)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/membership.ts', floor: 95 }, // baseline: 100.00% (reliable, reproduced 2x; plan 057)
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/auth/access.ts',   floor: 90 }, // baseline: 95.40% (reliable, reproduced 2x; plan 058; 4 verified-equivalent survivors)
+  { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/services/quarantine.ts',    floor: 58 }, // baseline: 63.86% (backlog #16; CI runs, reproduced 2x)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/format.ts',            floor: 91 }, // baseline: 96.88%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/status.ts',            floor: 61 }, // baseline: 66.04%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/error-page.ts',        floor: 95 }, // baseline: 100.00%

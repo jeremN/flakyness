@@ -46,67 +46,77 @@ export interface QuarantineTransition {
  * on the already-reconciled flaky_tests rows. Writes quarantine_events and
  * returns the transitions for the caller to notify on. No network I/O here.
  */
+
+/** A Drizzle transaction handle, as `db.transaction` passes it. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export async function reconcileQuarantine(
   projectId: string,
   project: ProjectQuarantineOverrides
 ): Promise<QuarantineTransition[]> {
   const cfg = resolveQuarantineConfig(project);
   const now = new Date();
-  const transitions: QuarantineTransition[] = [];
+  // One transaction for every status write AND the audit rows (backlog #16).
+  // A failed quarantine_events insert used to leave a transition with no
+  // audit row; now it rolls the transitions back too. The caller notifies
+  // only after this resolves, so a rolled-back transition is never announced.
+  return db.transaction(async (tx) => {
+    const transitions: QuarantineTransition[] = [];
 
-  // Phase 1: RELEASE expired auto-mutes (runs even if disabled — nothing stays
-  // stuck skipped). Manual/NULL mute_source is never touched.
-  const released = await db
-    .update(flakyTests)
-    .set({ status: 'active', muteSource: null, quarantineExpiresAt: null, quarantineReleasedAt: now })
-    .where(and(
-      eq(flakyTests.projectId, projectId),
-      eq(flakyTests.status, 'ignored'),
-      eq(flakyTests.muteSource, 'auto'),
-      lt(flakyTests.quarantineExpiresAt, now),
-    ))
-    .returning({ testName: flakyTests.testName, flakeRate: flakyTests.flakeRate });
+    // Phase 1: RELEASE expired auto-mutes (runs even if disabled — nothing stays
+    // stuck skipped). Manual/NULL mute_source is never touched.
+    const released = await tx
+      .update(flakyTests)
+      .set({ status: 'active', muteSource: null, quarantineExpiresAt: null, quarantineReleasedAt: now })
+      .where(and(
+        eq(flakyTests.projectId, projectId),
+        eq(flakyTests.status, 'ignored'),
+        eq(flakyTests.muteSource, 'auto'),
+        lt(flakyTests.quarantineExpiresAt, now),
+      ))
+      .returning({ testName: flakyTests.testName, flakeRate: flakyTests.flakeRate });
 
-  for (const r of released) {
-    transitions.push({ testName: r.testName, event: 'released', flakeRate: r.flakeRate ? Number(r.flakeRate) : null, expiresAt: null });
-  }
-
-  // Phase 2 (DETECT) already ran in updateFlakyTests before this call.
-
-  // Phase 3: PROMOTE — only when enabled.
-  if (cfg.enabled) {
-    const rules = await db
-      .select()
-      .from(quarantineRules)
-      .where(and(eq(quarantineRules.projectId, projectId), eq(quarantineRules.enabled, true)))
-      .orderBy(quarantineRules.position);
-
-    if (rules.length === 0) {
-      await promoteLegacy(projectId, cfg, now, transitions); // plan-051 path, unchanged
-    } else {
-      await promoteWithRules(projectId, project, cfg, rules, now, transitions);
+    for (const r of released) {
+      transitions.push({ testName: r.testName, event: 'released', flakeRate: r.flakeRate ? Number(r.flakeRate) : null, expiresAt: null });
     }
-  }
 
-  // Audit: one row per transition.
-  if (transitions.length > 0) {
-    await db.insert(quarantineEvents).values(transitions.map((t) => ({
-      projectId,
-      testName: t.testName,
-      event: t.event,
-      source: 'auto' as const,
-      flakeRate: t.flakeRate != null ? t.flakeRate.toFixed(4) : null,
-      // Rule-driven mutes: rule_id is the authoritative provenance, so the
-      // project threshold/ttl would be misleading (a consecutive rule has no
-      // threshold; a rule may override ttl) → null them. Legacy/no-match mutes
-      // (ruleId null) keep the project cfg values.
-      threshold: t.event === 'entered' ? (t.ruleId ? null : cfg.threshold.toFixed(4)) : null,
-      ttlDays: t.event === 'entered' ? (t.ruleId ? null : cfg.ttlDays) : null,
-      ruleId: t.event === 'entered' ? (t.ruleId ?? null) : null,
-    })));
-  }
+    // Phase 2 (DETECT) already ran in updateFlakyTests before this call.
 
-  return transitions;
+    // Phase 3: PROMOTE — only when enabled.
+    if (cfg.enabled) {
+      const rules = await tx
+        .select()
+        .from(quarantineRules)
+        .where(and(eq(quarantineRules.projectId, projectId), eq(quarantineRules.enabled, true)))
+        .orderBy(quarantineRules.position);
+
+      if (rules.length === 0) {
+        await promoteLegacy(tx, projectId, cfg, now, transitions); // plan-051 path, unchanged
+      } else {
+        await promoteWithRules(tx, projectId, project, cfg, rules, now, transitions);
+      }
+    }
+
+    // Audit: one row per transition.
+    if (transitions.length > 0) {
+      await tx.insert(quarantineEvents).values(transitions.map((t) => ({
+        projectId,
+        testName: t.testName,
+        event: t.event,
+        source: 'auto' as const,
+        flakeRate: t.flakeRate != null ? t.flakeRate.toFixed(4) : null,
+        // Rule-driven mutes: rule_id is the authoritative provenance, so the
+        // project threshold/ttl would be misleading (a consecutive rule has no
+        // threshold; a rule may override ttl) → null them. Legacy/no-match mutes
+        // (ruleId null) keep the project cfg values.
+        threshold: t.event === 'entered' ? (t.ruleId ? null : cfg.threshold.toFixed(4)) : null,
+        ttlDays: t.event === 'entered' ? (t.ruleId ? null : cfg.ttlDays) : null,
+        ruleId: t.event === 'entered' ? (t.ruleId ?? null) : null,
+      })));
+    }
+
+    return transitions;
+  });
 }
 
 /**
@@ -116,15 +126,16 @@ export async function reconcileQuarantine(
  * decision to `legacyThresholdDecision`.
  */
 async function promoteLegacy(
+  tx: Tx,
   projectId: string,
   cfg: QuarantineConfig,
   now: Date,
   transitions: QuarantineTransition[],
 ): Promise<void> {
-  const activeRows = await db.select().from(flakyTests)
+  const activeRows = await tx.select().from(flakyTests)
     .where(and(eq(flakyTests.projectId, projectId), eq(flakyTests.status, 'active')));
   for (const active of activeRows) {
-    const t = await legacyThresholdDecision(projectId, active, cfg, now);
+    const t = await legacyThresholdDecision(tx, projectId, active, cfg, now);
     if (t) transitions.push(t);
   }
 }
@@ -146,6 +157,7 @@ function toEvalRule(row: typeof quarantineRules.$inferSelect, defaultWindowDays:
 }
 
 async function promoteWithRules(
+  tx: Tx,
   projectId: string,
   project: ProjectQuarantineOverrides,
   cfg: QuarantineConfig,
@@ -160,7 +172,7 @@ async function promoteWithRules(
   const cutoff = new Date(now.getTime() - windowDays * DAY);
 
   // One fetch of the whole window; the engine slices per rule in memory (no N+1).
-  const rows = await db.select({
+  const rows = await tx.select({
       testName: testResults.testName, testFile: testResults.testFile, status: testResults.status,
       tags: testResults.tags, branch: testRuns.branch, createdAt: testResults.createdAt,
     })
@@ -178,7 +190,7 @@ async function promoteWithRules(
   // fallback; ignored rows let us leave MANUAL mutes untouched — they are
   // indefinite and must never become an auto mute (which the Release phase would
   // later auto-release).
-  const allRows = await db.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
+  const allRows = await tx.select().from(flakyTests).where(eq(flakyTests.projectId, projectId));
   const rowByName = new Map(allRows.map((r) => [r.testName, r]));
   const candidateNames = new Set<string>([...byTest.keys(), ...allRows.filter((r) => r.status === 'active').map((r) => r.testName)]);
 
@@ -192,10 +204,10 @@ async function promoteWithRules(
       const active = existing?.status === 'active' ? existing : undefined;
       const ttlDays = decision.ttlDays ?? cfg.ttlDays;
       // Clean slate only applies to a previously-released row.
-      if (active?.quarantineReleasedAt && !(await hasFreshRuns(projectId, testName, active.quarantineReleasedAt, cfg.minRuns))) continue;
+      if (active?.quarantineReleasedAt && !(await hasFreshRuns(tx, projectId, testName, active.quarantineReleasedAt, cfg.minRuns))) continue;
       const expiresAt = new Date(now.getTime() + ttlDays * DAY);
       const flakeRate = sliceFlakeRate(entry?.results ?? []);
-      await db.insert(flakyTests).values({
+      await tx.insert(flakyTests).values({
           projectId, testName, testFile: entry?.file ?? active?.testFile ?? null,
           firstDetected: active?.firstDetected ?? now, lastSeen: now,
           flakeCount: 0, totalRuns: entry?.results.length ?? active?.totalRuns ?? 0,
@@ -211,7 +223,7 @@ async function promoteWithRules(
       // via the same helper promoteLegacy uses (single source of truth).
       const active = existing?.status === 'active' ? existing : undefined;
       if (!active) continue;
-      const t = await legacyThresholdDecision(projectId, active, cfg, now);
+      const t = await legacyThresholdDecision(tx, projectId, active, cfg, now);
       if (t) transitions.push(t);
     }
     // exempt / leave → no promotion.
@@ -225,6 +237,7 @@ async function promoteWithRules(
  * path and the rule path's no-match fallback so the two never diverge.
  */
 async function legacyThresholdDecision(
+  tx: Tx,
   projectId: string,
   active: typeof flakyTests.$inferSelect,
   cfg: QuarantineConfig,
@@ -232,12 +245,12 @@ async function legacyThresholdDecision(
 ): Promise<QuarantineTransition | null> {
   if (Number(active.flakeRate ?? 0) < cfg.threshold) return null;
   if (active.quarantineReleasedAt) {
-    if (!(await hasFreshRuns(projectId, active.testName, active.quarantineReleasedAt, cfg.minRuns))) return null;
+    if (!(await hasFreshRuns(tx, projectId, active.testName, active.quarantineReleasedAt, cfg.minRuns))) return null;
   } else if ((active.totalRuns ?? 0) < cfg.minRuns) {
     return null;
   }
   const expiresAt = new Date(now.getTime() + cfg.ttlDays * DAY);
-  await db.update(flakyTests)
+  await tx.update(flakyTests)
     .set({ status: 'ignored', muteSource: 'auto', quarantineExpiresAt: expiresAt })
     .where(eq(flakyTests.id, active.id));
   return { testName: active.testName, event: 'entered', flakeRate: active.flakeRate ? Number(active.flakeRate) : null, expiresAt, ruleId: null };
@@ -249,8 +262,8 @@ function sliceFlakeRate(results: TestSliceResult[]): number {
   return bad / results.length;
 }
 
-async function hasFreshRuns(projectId: string, testName: string, since: Date, minRuns: number): Promise<boolean> {
-  const [{ count }] = await db.select({ count: sql<number>`count(*)` })
+async function hasFreshRuns(tx: Tx, projectId: string, testName: string, since: Date, minRuns: number): Promise<boolean> {
+  const [{ count }] = await tx.select({ count: sql<number>`count(*)` })
     .from(testResults).innerJoin(testRuns, eq(testResults.testRunId, testRuns.id))
     .where(and(eq(testRuns.projectId, projectId), eq(testResults.testName, testName), gt(testResults.createdAt, since)));
   return Number(count) >= minRuns;

@@ -92,6 +92,13 @@ export const actions: Actions = {
     // is the privilege flag, so it doesn't get an implicit fallback.
     if (raw !== 'true' && raw !== 'false') return fail(400, { error: 'Invalid value.' });
     const isGlobalAdmin = raw === 'true';
+    // Self-demotion locks the caller out of this console on the next load,
+    // with no way back from their own seat (backlog #37). The API's 409 only
+    // covers the LAST global admin. Another global admin, or ADMIN_TOKEN, can
+    // still demote this account.
+    if (!isGlobalAdmin && userId === locals.user.id) {
+      return fail(400, { error: 'You cannot remove your own global admin access. Ask another global admin.' });
+    }
     try {
       await createAdminApi(locals.sessionToken, locals.clientIp).patchUser(userId, { isGlobalAdmin });
       return { success: true };
@@ -108,6 +115,12 @@ export const actions: Actions = {
     const userId = String(form.get('userId') ?? '');
     const typedEmail = String(form.get('confirmEmail') ?? '');
     if (!userId) return fail(400, { error: 'Missing user.' });
+    // Deleting your own account ends your own session mid-action (backlog
+    // #37). Another global admin, or ADMIN_TOKEN, can still delete it.
+    // Checked before the listUsers() pre-fetch: no admin call is spent.
+    if (userId === locals.user.id) {
+      return fail(400, { error: 'You cannot delete your own account. Ask another global admin.' });
+    }
 
     const api = createAdminApi(locals.sessionToken, locals.clientIp);
     // Re-fetch the authoritative email server-side and compare there. A

@@ -277,3 +277,30 @@ describe('admin users page — reset password confirmation (backlog #37)', () =>
     await expect.element(page.getByRole('button', { name: 'Reset password' })).toBeInTheDocument();
   });
 });
+
+// Backlog #37: the signed-in admin's own row offers no self-demotion, no
+// self-deletion and no self-reset. Another user's row keeps all three. One
+// render holds both rows, so each assertion has its own control.
+describe('admin users page: your own row', () => {
+  const me = user({ id: 'admin1', email: 'admin@x.test', isGlobalAdmin: true });
+  const other = user({ id: 'u2', email: 'bob@x.test', isGlobalAdmin: true });
+
+  it('marks your row and hides the self-destructive actions there only', async () => {
+    render(Page, { props: { data: { ...layoutData, users: [me, other] }, form: null } });
+    await expect.element(page.getByText('(you)')).toBeInTheDocument();
+    // One of each button: the other admin's row.
+    expect(page.getByRole('button', { name: 'Remove global admin' }).elements()).toHaveLength(1);
+    expect(page.getByRole('button', { name: 'Delete' }).elements()).toHaveLength(1);
+    expect(page.getByRole('button', { name: 'Reset password' }).elements()).toHaveLength(1);
+    await expect.element(page.getByRole('link', { name: 'Change password' })).toHaveAttribute('href', '/change-password');
+  });
+
+  it('still lets a non-admin you be promoted: the server only refuses demotion', async () => {
+    // Not reachable in practice (this page 404s for a non-admin), but the
+    // hide rule is "self AND admin", so pin it.
+    render(Page, {
+      props: { data: { ...layoutData, users: [{ ...me, isGlobalAdmin: false }] }, form: null },
+    });
+    await expect.element(page.getByRole('button', { name: 'Make global admin' })).toBeInTheDocument();
+  });
+});

@@ -394,6 +394,48 @@ describe('delete action', () => {
   });
 });
 
+// Backlog #37: the console refuses self-demotion and self-deletion before any
+// API call. The acting user's id is set on purpose: every other test here
+// passes `{ isGlobalAdmin }` alone, so `locals.user.id` is undefined there.
+describe('self-guard', () => {
+  const me = { id: 'me', isGlobalAdmin: true };
+
+  it('refuses to remove your own global admin access, without calling the API', async () => {
+    const r = (await actions.toggleGlobalAdmin(formEvent({ userId: 'me', isGlobalAdmin: 'false' }, me))) as any;
+    expect(r.status).toBe(400);
+    expect(r.data).toEqual({ error: 'You cannot remove your own global admin access. Ask another global admin.' });
+    expect(mockedPatchUser).not.toHaveBeenCalled();
+  });
+
+  it('still lets you demote another user, and promote yourself', async () => {
+    mockedPatchUser.mockResolvedValue({ user: user() });
+    expect(await actions.toggleGlobalAdmin(formEvent({ userId: 'u1', isGlobalAdmin: 'false' }, me))).toEqual({
+      success: true,
+    });
+    expect(await actions.toggleGlobalAdmin(formEvent({ userId: 'me', isGlobalAdmin: 'true' }, me))).toEqual({
+      success: true,
+    });
+    expect(mockedPatchUser).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses to delete your own account, before the listUsers() pre-fetch', async () => {
+    const r = (await actions.delete(formEvent({ userId: 'me', confirmEmail: 'me@x.test' }, me))) as any;
+    expect(r.status).toBe(400);
+    expect(r.data).toEqual({ error: 'You cannot delete your own account. Ask another global admin.' });
+    expect(mockedListUsers).not.toHaveBeenCalled();
+    expect(mockedDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it('still lets you delete another user', async () => {
+    mockedListUsers.mockResolvedValue({ users: [user({ email: 'alice@x.test' })] });
+    mockedDeleteUser.mockResolvedValue({ success: true });
+    expect(await actions.delete(formEvent({ userId: 'u1', confirmEmail: 'alice@x.test' }, me))).toEqual({
+      success: true,
+    });
+    expect(mockedDeleteUser).toHaveBeenCalledWith('u1');
+  });
+});
+
 describe('authorization', () => {
   // A hand-listed set of action names cannot see a NEWLY added action with no
   // guard — the new action contributes nothing to either side of a

@@ -26,6 +26,10 @@
   let { data, form }: Props = $props();
 
   const users = $derived(data.users);
+  // The signed-in admin's own row hides self-demotion, self-deletion and
+  // self-reset. The server refuses the first two (backlog #37), the API the
+  // third (backlog #24).
+  const myId = $derived(data.user?.id ?? null);
 
   // Name the account the temporary password belongs to (backlog #37). After
   // several resets in a row, an unlabelled panel cannot be told apart. The
@@ -149,7 +153,10 @@
       <tbody class="divide-y divide-gray-100">
         {#each users as u (u.id)}
           <tr class="hover:bg-gray-50 transition-colors">
-            <td class="py-4 px-4 font-medium text-gray-900">{u.email}</td>
+            <td class="py-4 px-4 font-medium text-gray-900">
+              {u.email}
+              {#if u.id === myId}<span class="text-xs text-muted font-normal">(you)</span>{/if}
+            </td>
             <td class="py-4 px-4 text-muted">{u.displayName ?? '—'}</td>
             <td class="py-4 px-4 text-muted">{u.isGlobalAdmin ? 'Yes' : 'No'}</td>
             <td class="py-4 px-4 text-muted">
@@ -158,14 +165,19 @@
             <td class="py-4 px-4 text-muted">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : 'Never'}</td>
             <td class="py-4 px-4">
               <div class="flex items-center justify-end gap-2">
-                <form method="POST" action="?/toggleGlobalAdmin" use:enhance>
-                  <input type="hidden" name="userId" value={u.id} />
-                  <input type="hidden" name="isGlobalAdmin" value={(!u.isGlobalAdmin).toString()} />
-                  <button type="submit" class="pill-btn pill-btn-ghost text-xs">
-                    {u.isGlobalAdmin ? 'Remove global admin' : 'Make global admin'}
-                  </button>
-                </form>
-                {#if confirmingResetId === u.id}
+                {#if !(u.id === myId && u.isGlobalAdmin)}
+                  <form method="POST" action="?/toggleGlobalAdmin" use:enhance>
+                    <input type="hidden" name="userId" value={u.id} />
+                    <input type="hidden" name="isGlobalAdmin" value={(!u.isGlobalAdmin).toString()} />
+                    <button type="submit" class="pill-btn pill-btn-ghost text-xs">
+                      {u.isGlobalAdmin ? 'Remove global admin' : 'Make global admin'}
+                    </button>
+                  </form>
+                {/if}
+                {#if u.id === myId}
+                  <!-- The API refuses a self-reset (backlog #24): use change-password. -->
+                  <a href="/change-password" class="pill-btn pill-btn-ghost text-xs">Change password</a>
+                {:else if confirmingResetId === u.id}
                   <div class="flex flex-col items-end gap-1">
                     <span class="text-xs text-red-700">
                       Signs <span class="font-semibold">{u.email}</span> out everywhere and sets a new temporary password.
@@ -185,7 +197,9 @@
                     Reset password
                   </button>
                 {/if}
-                {#if confirmingDeleteId === u.id}
+                {#if u.id === myId}
+                  <!-- No self-delete: the server refuses it (backlog #37). -->
+                {:else if confirmingDeleteId === u.id}
                   <div class="flex flex-col items-end gap-1">
                     <span class="text-xs text-red-700">
                       Type <span class="font-mono font-semibold">{u.email}</span> to confirm

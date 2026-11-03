@@ -244,6 +244,7 @@ describe('readAuth', () => {
         email: 'u1@example.test',
         displayName: null,
         isGlobalAdmin: false,
+        isTeamAdmin: false,
         mustChangePassword: false,
         sessionId: 's1',
       });

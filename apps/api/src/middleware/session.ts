@@ -1,7 +1,7 @@
 import { Context, MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { eq } from 'drizzle-orm';
-import { db, users, sessions } from '../db';
+import { eq, sql } from 'drizzle-orm';
+import { db, users, sessions, teamMembers } from '../db';
 import { logger } from './logger';
 import {
   SESSION_COOKIE,
@@ -18,6 +18,12 @@ export interface SessionUser {
   email: string;
   displayName: string | null;
   isGlobalAdmin: boolean;
+  /**
+   * True when the user holds `team_admin` in at least one team. Read in the
+   * same query as the session, so the admin rate limiter can tell an admin
+   * from a plain member without a second query (backlog #22a).
+   */
+  isTeamAdmin: boolean;
   mustChangePassword: boolean;
   /** The session row backing this request — needed by logout. */
   sessionId: string;
@@ -59,6 +65,11 @@ export function sessionAuth(): MiddlewareHandler {
         displayName: users.displayName,
         isGlobalAdmin: users.isGlobalAdmin,
         mustChangePassword: users.mustChangePassword,
+        // Interpolating ${users.id} is safe here: this select joins two
+        // tables, so Drizzle keeps every column's table qualifier (checked
+        // with .toSQL()). The AGENTS.md subquery trap hits single-table
+        // selects only, where Drizzle drops the qualifier.
+        isTeamAdmin: sql<boolean>`exists (select 1 from ${teamMembers} where ${teamMembers.userId} = ${users.id} and ${teamMembers.role} = 'team_admin')`,
       })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
@@ -110,6 +121,7 @@ export function sessionAuth(): MiddlewareHandler {
       email: found.email,
       displayName: found.displayName,
       isGlobalAdmin: found.isGlobalAdmin,
+      isTeamAdmin: found.isTeamAdmin,
       mustChangePassword: found.mustChangePassword,
       sessionId: found.sessionId,
     } satisfies SessionUser);

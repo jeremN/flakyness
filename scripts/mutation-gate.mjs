@@ -147,6 +147,11 @@ import { pathToFileURL } from 'node:url';
 //    the type contract to chase a mutant of an invariant no real code path
 //    can break, unlike the admin-token pair above (which guards against a
 //    plausible FUTURE call-site bug, not a DB-enforced impossibility).
+// Backlog #40 baselined four dashboard $lib modules 2026-11-03 from the CI
+// Stryker reports of nightly runs 41429167346 and 41295604926 (the
+// `mutation-reports` artifact): every score identical across both runs
+// (deterministic, pure modules). permissions.ts 96.67% (29/30, one survivor),
+// password-form.ts, project-groups.ts and team-members.ts 100.00%.
 export const HARDENED = [
   // { report, file, floor }  // baseline: <score>%
   { report: 'apps/api/reports/mutation/mutation.json',       file: 'src/middleware/logger.ts',     floor: 67 }, // baseline: 72.06% (reliable, reproduced 4x)
@@ -166,6 +171,10 @@ export const HARDENED = [
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/href.ts',              floor: 95 }, // baseline: 100.00%
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/rule-summary.ts',      floor: 95 }, // baseline: 100.00% (plan 055; pure/deterministic)
   { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/rules-validation.ts',  floor: 83 }, // baseline: 88.05% (plan 055; survivors led by equivalent `?? ''` fallbacks over always-string readRuleForm output)
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/permissions.ts',       floor: 91 }, // baseline: 96.67% (backlog #40; CI runs, reproduced 2x)
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/password-form.ts',     floor: 95 }, // baseline: 100.00% (backlog #40; CI runs, reproduced 2x)
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/project-groups.ts',    floor: 95 }, // baseline: 100.00% (backlog #40; CI runs, reproduced 2x)
+  { report: 'apps/dashboard/reports/mutation/mutation.json', file: 'src/lib/team-members.ts',      floor: 95 }, // baseline: 100.00% (backlog #40; CI runs, reproduced 2x)
 ];
 
 // Stryker mutation score: (Killed + Timeout) / (Killed + Timeout + Survived + NoCoverage).

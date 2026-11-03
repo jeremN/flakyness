@@ -1107,7 +1107,7 @@ rationale. Items 5–7 remain unplanned.
     **last** entry — while the API's `getClientIp` takes `.split(',')[0]`, the first. Benign
     today because the dashboard always sends a single-value header; the two conventions
     disagree the moment a real proxy chain appends. Pairs naturally with item 31.
-40. **[OPEN — 2026-08-15] Mutation-coverage note for the client-IP threading, recorded as
+40. **[RESOLVED 2026-11-03 — the four `$lib` floors are set in `scripts/mutation-gate.mjs` from two nightly CI Stryker reports (runs 41429167346 and 41295604926, identical scores): `permissions.ts` 96.67% (floor 91), `password-form.ts`, `project-groups.ts`, `team-members.ts` 100% (floor 95). The client-IP note below stays as recorded: measured and accepted. 2026-08-15] Mutation-coverage note for the client-IP threading, recorded as
     measured-and-accepted rather than missed.** Hardcoding the test fixture literal in place of
     `locals.clientIp` survives at all **13** route files; only `hooks.server.ts`, `login`,
     `logout` and `change-password` catch it. Replacing `locals.clientIp` with `null` produces

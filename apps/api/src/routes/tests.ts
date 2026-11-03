@@ -422,27 +422,34 @@ testsRouter.patch('/flaky/:id', resolveAccess(), async (c) => {
   }
 
   const now = new Date();
-  const [updated] = await db
-    .update(flakyTests)
-    .set(
-      parsedBody.data.status === 'ignored'
-        ? { status: 'ignored', muteSource: 'manual', quarantineExpiresAt: null }
-        : { status: 'active', muteSource: null, quarantineExpiresAt: null, quarantineReleasedAt: now }
-    )
-    .where(eq(flakyTests.id, parsed.data))
-    .returning();
+  // The status change and its audit row commit together (backlog #16): a
+  // failed quarantine_events insert rolls the mute back, so no transition
+  // ever exists without its audit row.
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(flakyTests)
+      .set(
+        parsedBody.data.status === 'ignored'
+          ? { status: 'ignored', muteSource: 'manual', quarantineExpiresAt: null }
+          : { status: 'active', muteSource: null, quarantineExpiresAt: null, quarantineReleasedAt: now }
+      )
+      .where(eq(flakyTests.id, parsed.data))
+      .returning();
+    if (!row) return null;
+
+    await tx.insert(quarantineEvents).values({
+      projectId: row.projectId,
+      testName: row.testName,
+      event: parsedBody.data.status === 'ignored' ? 'manual_mute' : 'manual_unmute',
+      source: 'manual',
+      flakeRate: row.flakeRate,
+    });
+    return row;
+  });
 
   if (!updated) {
     return c.json({ error: 'Flaky test not found' }, 404);
   }
-
-  await db.insert(quarantineEvents).values({
-    projectId: updated.projectId,
-    testName: updated.testName,
-    event: parsedBody.data.status === 'ignored' ? 'manual_mute' : 'manual_unmute',
-    source: 'manual',
-    flakeRate: updated.flakeRate,
-  });
 
   return c.json({ flakyTest: updated });
 });

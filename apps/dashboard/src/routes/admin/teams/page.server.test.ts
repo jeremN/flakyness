@@ -429,3 +429,81 @@ describe('authorization', () => {
     expect(mockedRemoveTeamMember).not.toHaveBeenCalled();
   });
 });
+
+// Backlog #37: the two derived safety nets the users console test already has
+// (admin/users/page.server.test.ts, findings-r1 I-1). A `fail()` payload is
+// serialized into the page data and reaches the browser, so an extra key is a
+// leak even when nothing renders it. And the validation check is derived from
+// `actions`, so a new action with no input check fails here by name.
+describe('fail() payloads never carry an extra field, and empty input never reaches the API', () => {
+  function assertOnlyErrorKey(result: any) {
+    expect(result).toBeTruthy();
+    expect(Object.keys(result.data ?? {})).toEqual(['error']);
+  }
+
+  const apiMocks = [
+    mockedListTeams,
+    mockedListUsers,
+    mockedCreateTeam,
+    mockedPatchTeam,
+    mockedDeleteTeam,
+    mockedAddTeamMember,
+    mockedPatchTeamMember,
+    mockedRemoveTeamMember,
+  ];
+
+  for (const [name, action] of Object.entries(actions)) {
+    it(`${name}: the auth-guard fail() carries only { error }`, async () => {
+      assertOnlyErrorKey(await (action as any)(formEvent({}, { isGlobalAdmin: false })));
+    });
+
+    it(`${name}: empty input is a 400 { error } with no API call`, async () => {
+      const r = (await (action as any)(formEvent({}))) as any;
+      expect({ name, status: r?.status }).toEqual({ name, status: 400 });
+      assertOnlyErrorKey(r);
+      for (const mock of apiMocks) expect(mock).not.toHaveBeenCalled();
+    });
+  }
+
+  // Hand-maintained: each entry knows the action's minimal valid fields and
+  // the API call that `toFail` wraps. The completeness check below fails by
+  // name when an action is added without an entry.
+  const TOFAIL_FIXTURES: Record<string, { validFields: () => Record<string, string>; primaryMock: ReturnType<typeof vi.fn> }> = {
+    create: { validFields: () => ({ name: 'New Team' }), primaryMock: mockedCreateTeam },
+    rename: { validFields: () => ({ teamId: 't1', name: 'Renamed' }), primaryMock: mockedPatchTeam },
+    delete: { validFields: () => ({ teamId: 't1', confirmName: 'Team One' }), primaryMock: mockedDeleteTeam },
+    addMember: {
+      validFields: () => ({ teamId: 't1', userId: 'u1', role: 'member' }),
+      primaryMock: mockedAddTeamMember,
+    },
+    setRole: {
+      validFields: () => ({ teamId: 't1', userId: 'u1', role: 'team_admin' }),
+      primaryMock: mockedPatchTeamMember,
+    },
+    removeMember: { validFields: () => ({ teamId: 't1', userId: 'u1' }), primaryMock: mockedRemoveTeamMember },
+  };
+
+  it('TOFAIL_FIXTURES covers every exported action', () => {
+    expect(Object.keys(TOFAIL_FIXTURES).sort()).toEqual(Object.keys(actions).sort());
+  });
+
+  for (const [name, fixture] of Object.entries(TOFAIL_FIXTURES)) {
+    const action = (actions as any)[name];
+
+    it(`${name}: toFail's AdminApiError branch carries only { error }`, async () => {
+      if (name === 'delete') mockedListTeams.mockResolvedValue({ teams: [team()] });
+      fixture.primaryMock.mockRejectedValue(new AdminApiError(409, 'conflict'));
+      const r = (await action(formEvent(fixture.validFields()))) as any;
+      expect(r.status).toBe(409);
+      assertOnlyErrorKey(r);
+    });
+
+    it(`${name}: toFail's unrecognized-throw (502) branch carries only { error }`, async () => {
+      if (name === 'delete') mockedListTeams.mockResolvedValue({ teams: [team()] });
+      fixture.primaryMock.mockRejectedValue(new TypeError('fetch failed'));
+      const r = (await action(formEvent(fixture.validFields()))) as any;
+      expect(r.status).toBe(502);
+      assertOnlyErrorKey(r);
+    });
+  }
+});

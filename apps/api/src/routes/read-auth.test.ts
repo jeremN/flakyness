@@ -15,9 +15,9 @@ import app from '../index';
  *     project-token fallback and calls db.query.projects.findFirst. Without
  *     DATABASE_URL, the lazy `db` Proxy (db/index.ts) throws synchronously
  *     and the request 500s instead of 401ing — skipped unless `hasDatabase`.
- *   - "le PATCH admin reste gouverné par ADMIN_TOKEN" hits adminAuth(),
- *     which itself 500s when ADMIN_TOKEN is unset, before ever comparing
- *     tokens — skipped unless `hasAdminToken`.
+ *   - "le PATCH admin reste gouverné par ADMIN_TOKEN" was written against
+ *     adminAuth() (deleted, backlog #22b), which 500'd when ADMIN_TOKEN was
+ *     unset — hence the `hasAdminToken` skip, kept as is.
  * Both stay in this describe (rather than moving to describeWithDb below)
  * because they only need the bare env var, not the fixture projects that
  * block creates.

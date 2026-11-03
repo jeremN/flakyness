@@ -398,7 +398,7 @@ describe('mute route rate-limits before auth (regression guard)', () => {
       let saw401 = false;
       // apiRateLimit is 100/min; send enough to cross it. All share the
       // 'unknown' bucket (no socket under app.request). If apiRateLimit ran
-      // AFTER adminAuth, every bad token would 401 and 429 would never appear.
+      // AFTER auth, every bad token would 401 and 429 would never appear.
       for (let i = 0; i < API_RATE_LIMIT.limit + 3; i++) {
         const res = await app.request('/api/v1/tests/flaky/00000000-0000-0000-0000-000000000000', {
           method: 'PATCH',
@@ -937,7 +937,7 @@ describe('admin limiter exempts a valid admin token (not just throttles bad ones
   it('lets a valid-ADMIN_TOKEN flood through well past the 5/min limit', async () => {
     const { Hono } = await import('hono');
     const { adminRateLimit, ADMIN_RATE_LIMIT, __setRateLimitEnabled } = await import('./rate-limit');
-    const { adminAuth } = await import('./auth');
+    const { adminOrGlobalAdminAuth } = await import('./auth');
 
     const prevToken = process.env.ADMIN_TOKEN;
     process.env.ADMIN_TOKEN = 'valid-admin-token';
@@ -946,7 +946,7 @@ describe('admin limiter exempts a valid admin token (not just throttles bad ones
       const app = new Hono();
       // Same order production uses: limiter first, then auth.
       app.use('*', adminRateLimit);
-      app.use('*', adminAuth());
+      app.use('*', adminOrGlobalAdminAuth());
       app.get('/x', (c) => c.json({ ok: true }));
 
       // Valid requests are SKIPPED, so they never touch the (module-shared)

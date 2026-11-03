@@ -67,47 +67,11 @@ export function projectAuth(): MiddlewareHandler {
 }
 
 /**
- * Admin authentication middleware
- *
- * Validates the ADMIN_TOKEN from environment variables.
- * Comparison is done by hashing both tokens so the comparison is always
- * constant-time and doesn't leak the token length.
- */
-export function adminAuth(): MiddlewareHandler {
-  return async (c: Context, next) => {
-    const adminToken = process.env.ADMIN_TOKEN;
-
-    if (!adminToken) {
-      throw new HTTPException(500, {
-        message: 'Admin functionality not configured. Set ADMIN_TOKEN environment variable.',
-      });
-    }
-
-    const authHeader = c.req.header('Authorization');
-
-    if (!authHeader) {
-      throw new HTTPException(401, { message: 'Authorization header required' });
-    }
-
-    const token = extractBearerToken(authHeader);
-    if (!token) {
-      throw new HTTPException(401, { message: 'Invalid authorization format. Use: Bearer <token>' });
-    }
-
-    if (!tokensMatch(token, adminToken)) {
-      throw new HTTPException(401, { message: 'Invalid admin token' });
-    }
-
-    await next();
-  };
-}
-
-/**
  * Admin-API gate that accepts EITHER a valid ADMIN_TOKEN bearer OR a session
  * with standing on this surface (global admin, or team_admin in some team).
  *
- * Note the deliberate asymmetry with adminAuth(): an unset ADMIN_TOKEN is no
- * longer a 500. Once accounts exist, "the operator did not configure a static
+ * The only admin-API gate: the ADMIN_TOKEN-only adminAuth() was deleted
+ * (backlog #22b). An unset ADMIN_TOKEN is not a 500 here. Once accounts exist, "the operator did not configure a static
  * admin token" is a legitimate, in fact preferable, deployment — the account
  * system is the intended path and the static token is break-glass. A session
  * must still be able to get in.
@@ -136,7 +100,7 @@ export function adminOrGlobalAdminAuth(): MiddlewareHandler {
     }
 
     // Below this point the caller could not be identified as a session or a
-    // recognised token — the same territory adminAuth() used to cover alone.
+    // recognised token — the territory the deleted adminAuth() used to cover.
     // Mirror its exact message text for these two sub-cases: admin.test.ts
     // (predates this plan, out of scope for this task, "fix the handler, not
     // the test") pins both strings verbatim.

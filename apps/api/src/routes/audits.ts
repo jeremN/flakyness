@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { projectAuth } from '../middleware/auth';
 import { reportPreAuthRateLimit, reportRateLimit } from '../middleware/rate-limit';
 import { passwordChangeGate } from '../middleware/password-change';
@@ -42,7 +43,7 @@ auditsRouter.use('*', passwordChangeGate());
  * same branch, computed synchronously (it is two indexed reads over at most a
  * few thousand rows) so a CI job can fail on it without a second request.
  */
-auditsRouter.post('/', zValidator('query', auditQuerySchema), async (c) => {
+auditsRouter.post('/', zValidator('query', auditQuerySchema, validationHook), async (c) => {
   const project = c.get('project');
   const { branch, commit, pipeline } = c.req.valid('query');
 

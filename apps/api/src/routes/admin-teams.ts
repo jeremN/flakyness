@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
+import { validationHook } from '../middleware/validation';
 import { eq, and, ne, count, sql } from 'drizzle-orm';
 import { db, teams, teamMembers, users, projects } from '../db';
 import { logger } from '../middleware/logger';
@@ -89,7 +90,7 @@ adminTeamsRouter.get('/', async (c) => {
 /**
  * POST /api/v1/admin/teams
  */
-adminTeamsRouter.post('/', zValidator('json', createTeamSchema), async (c) => {
+adminTeamsRouter.post('/', zValidator('json', createTeamSchema, validationHook), async (c) => {
   const { name } = c.req.valid('json');
 
   const existing = await db.query.teams.findFirst({ where: eq(teams.name, name) });
@@ -110,7 +111,7 @@ adminTeamsRouter.post('/', zValidator('json', createTeamSchema), async (c) => {
  * carries a DB unique constraint, and without this check a rename to an
  * in-use name would surface as a raw 500 instead of a purposeful 409.
  */
-adminTeamsRouter.patch('/:teamId', zValidator('json', patchTeamSchema), async (c) => {
+adminTeamsRouter.patch('/:teamId', zValidator('json', patchTeamSchema, validationHook), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('teamId'));
   if (!parsed.success) return c.json({ error: 'Invalid team ID format' }, 400);
 
@@ -193,7 +194,7 @@ adminTeamsRouter.get('/:teamId/members', async (c) => {
  * The FK-existence check and the duplicate check are explicit, so both
  * produce a purposeful status instead of a 500 from the database.
  */
-adminTeamsRouter.post('/:teamId/members', zValidator('json', addMemberSchema), async (c) => {
+adminTeamsRouter.post('/:teamId/members', zValidator('json', addMemberSchema, validationHook), async (c) => {
   const parsed = uuidSchema.safeParse(c.req.param('teamId'));
   if (!parsed.success) return c.json({ error: 'Invalid team ID format' }, 400);
   const { userId, role } = c.req.valid('json');
@@ -223,7 +224,7 @@ adminTeamsRouter.post('/:teamId/members', zValidator('json', addMemberSchema), a
  */
 adminTeamsRouter.patch(
   '/:teamId/members/:userId',
-  zValidator('json', patchMemberSchema),
+  zValidator('json', patchMemberSchema, validationHook),
   async (c) => {
     const parsedTeam = uuidSchema.safeParse(c.req.param('teamId'));
     if (!parsedTeam.success) return c.json({ error: 'Invalid team ID format' }, 400);

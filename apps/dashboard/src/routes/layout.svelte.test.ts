@@ -216,26 +216,10 @@ describe('+layout', () => {
     // (`sticky top-0 h-screen`) and leaves the outer wrapper at
     // `min-h-screen`, so the window stays the scroller.
     //
-    // This asserts classList membership ONLY, not computed style — verified
-    // by hand that this harness cannot honestly assert the latter. A probe
-    // rendering this same layout and reading `getComputedStyle` on an element
-    // carrying `class="flex ..."` returned `display: "block"`, and on
-    // `class="... sticky ..."` returned `position: "static"`: the two
-    // stylesheets present in this render totalled 36 CSS rules combined —
-    // consistent with Svelte's per-component scoped `<style>` output, not
-    // Tailwind's generated utility layer, which is thousands of rules in the
-    // real app. Tailwind's utility CSS is not applied in this render context,
-    // so a `getComputedStyle` assertion here would silently pass or fail for
-    // reasons unrelated to this component's classes — theatre, per the
-    // finding's own escape hatch. No other test in this codebase asserts
-    // `getComputedStyle` for exactly this reason; every existing styling
-    // assertion uses `toHaveClass` (see e.g. the "applies the active
-    // styling…" test above). This test follows that precedent and pins the
-    // two literal, load-bearing facts the real (Tailwind-built) app's
-    // behaviour depends on: which element carries the bounding classes, and
-    // which one must not. It WOULD catch the exact regression class this
-    // finding describes: reverting `<aside>`'s classes, or moving
-    // `h-screen` back to the outer wrapper.
+    // The first test pins the classes. The second one checks the rendered
+    // layout: vitest.browser.config.ts registers tailwindcss(), so the
+    // utility classes have real CSS here (before, `sticky` computed to
+    // `position: static` and no computed-style assertion could be trusted).
     it('bounds the sidebar (not the outer wrapper) to the viewport', async () => {
       render(Layout, { props: { children, data: data() } });
 
@@ -257,6 +241,24 @@ describe('+layout', () => {
       // reintroduce the <main> `overflow-y-auto` regression.
       expect(outer?.classList.contains('min-h-screen')).toBe(true);
       expect(outer?.classList.contains('h-screen')).toBe(false);
+    });
+
+    it('keeps Sign out inside the viewport when the project list is longer than the screen', async () => {
+      const many = Array.from({ length: 200 }, (_, i) => ({ ...project, id: `p${i}`, name: `Project ${i}` }));
+      render(Layout, { props: { children, data: data({ projects: many }) } });
+      await expect.element(vitestPage.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+
+      const aside = document.querySelector('aside');
+      expect(aside && getComputedStyle(aside).position).toBe('sticky');
+
+      // The project list absorbs the overflow: it scrolls, the sidebar does not.
+      const list = vitestPage.getByRole('link', { name: 'Project 0' }).element().closest('div.overflow-y-auto');
+      expect(list).not.toBeNull();
+      expect(list!.scrollHeight).toBeGreaterThan(list!.clientHeight);
+
+      const signOut = vitestPage.getByRole('button', { name: 'Sign out' }).element().getBoundingClientRect();
+      expect(signOut.height).toBeGreaterThan(0);
+      expect(signOut.bottom).toBeLessThanOrEqual(window.innerHeight);
     });
   });
 });

@@ -78,19 +78,14 @@ SvelteKit dashboard. Deep context: `.agent/CONTEXT.md`. API contract:
   (`Chart.stub.svelte`) in these tests, so a rendered assertion still cannot
   catch the chart-registration no-op — that stays guarded by
   `chart-registration.test.ts`. See plans 045 (extraction) and 046 (render
-  tests). **Browser-mode tests apply NO Tailwind CSS**, found while writing
-  plan 059 Task 8: `vitest.browser.config.ts` registers only `sveltekit()`,
-  not the `tailwindcss()` plugin `vite.config.ts` also registers (with a
-  comment that the order matters) — so `@import "tailwindcss"` is never
-  expanded and no utility classes are generated. Measured: `class="flex"`
-  computes `display: block` and `sticky` computes `position: static`, with
-  36 CSS rules present versus Tailwind's thousands. Consequence: **no
-  browser-mode test can honestly assert a computed style** — the codebase's
-  `toHaveClass` convention is a necessity here, not a style preference.
-  Whether to register `tailwindcss()` too is an open follow-up (see
-  `plans/README.md`); it is not a trivial flip, since real CSS could hide
-  elements that `vitest-browser-svelte`'s visibility-checking locators
-  currently find.
+  tests). **Browser-mode tests apply real Tailwind CSS**:
+  `vitest.browser.config.ts` registers `tailwindcss()` before `sveltekit()`,
+  the same order as `vite.config.ts`. Before 2026-11-03 it
+  registered `sveltekit()` only, so `class="flex"` computed `display: block`
+  and no computed-style assertion could be trusted. A layout test can now
+  assert `getComputedStyle` and `getBoundingClientRect` (see the sidebar test
+  in `src/routes/layout.svelte.test.ts`). Keep the two plugin lists in step:
+  a plugin added to `vite.config.ts` only is invisible to these tests.
 - **Tailwind v4 is CSS-first**: config lives in `apps/dashboard/src/app.css`
   (`@import 'tailwindcss'`); do not create a `tailwind.config.js`.
 - **Playwright report shape**: real reporter output nests attempts under

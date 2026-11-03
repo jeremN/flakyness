@@ -350,8 +350,11 @@ real CI Stryker baseline, not guessed at plan-write time — run the dashboard's
 `$lib`-scoped nightly Stryker job once these modules exist on `main`, read
 the actual mutation score each one lands at, and set the floor from that.
 
-**Follow-up noticed during 059 (no plan yet): should `vitest.browser.config.ts`
-register `tailwindcss()`?** Browser-mode component tests currently render with
+**Follow-up noticed during 059: should `vitest.browser.config.ts`
+register `tailwindcss()`?** — **RESOLVED (2026-11-03): yes.** Registered
+before `sveltekit()`. All 19 browser files stayed green with no triage needed
+(no template uses `hidden`/`sr-only`/responsive hiding). A new sidebar test
+asserts the rendered layout; it fails without the plugin. Original note: Browser-mode component tests currently render with
 **no Tailwind CSS at all** — `vitest.browser.config.ts` registers only
 `sveltekit()`, not the `tailwindcss()` plugin `vite.config.ts` also registers
 (measured: `class="flex"` computes `display: block`, `sticky` computes

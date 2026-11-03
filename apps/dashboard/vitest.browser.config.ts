@@ -1,3 +1,4 @@
+import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
@@ -7,7 +8,9 @@ import { playwright } from '@vitest/browser-playwright';
 // Vitest's node SSR transform — compiles .svelte correctly under Vite 8 +
 // vite-plugin-svelte 7.2 (the A3 blocker). See plan 046 / spec A3b.
 export default defineConfig({
-  plugins: [sveltekit()],
+  // Same order as vite.config.ts: Tailwind first. Without it, no utility
+  // class has any CSS, and a computed-style assertion cannot be trusted.
+  plugins: [tailwindcss(), sveltekit()],
   test: {
     include: ['src/**/*.svelte.test.ts'],
     browser: {
